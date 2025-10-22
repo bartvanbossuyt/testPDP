@@ -1,8 +1,16 @@
 # 🎥 Videos
 
-This folder contains **informative and instructional videos** that support the main codebase in the [`scripts/`](./scripts) directory.
+This section provides access to **informative and instructional videos** that support the main codebase in the [`scripts/`](./scripts) directory.
 
-Each video provides context, explanations, or demonstrations related to the **Point-Descriptor-Precedence (PDP)** framework used in this project.
+Each video offers context, explanations, or demonstrations related to the **Point-Descriptor-Precedence (PDP)** framework used in this project.
+
+---
+
+## 🔗 Access
+
+The videos are available via [`this shared link`](https://ugentbe.sharepoint.com/:f:/r/teams/WE12_TMP01448-PDP/Gedeelde%20documenten/PDP!/PDP%20videos?csf=1&web=1&e=rgh7b8) provided to all collaborators  
+Please use the link to view or download the materials.  
+If you don’t have access yet, contact the project admin.
 
 ---
 
@@ -15,8 +23,8 @@ Each video provides context, explanations, or demonstrations related to the **Po
 
 ## 💡 Usage
 
-These videos are intended as reference material to complement the Python scripts in the main project.  
-They can be used for onboarding new contributors, supporting presentations, or reviewing the PDP workflow step by step.
+These videos serve as reference material to complement the Python scripts in the main project.  
+They are particularly useful for onboarding new contributors, supporting presentations, and understanding the PDP workflow step by step.
 
 ---
 
