@@ -22,7 +22,7 @@ The scripts in this folder are designed to:
 | Script | Description |
 |--------|-------------|
 | **`av.py`** | Core configuration file — defines global settings such as PDP variants, buffer/rough parameters, and visualization options. |
-| **`GUI.py`** | Optional graphical user interface for activating PDP settings interactively. |
+| **`GUI.py`** | Optional graphical user interface for activating PDP settings interactively. *(Currently experimental — may not function fully as intended.)* |
 | **`N_D_CreateDataset.py`** | Generates or prepares input datasets for PDP analysis. |
 | **`N_PDP.py`** | Core transformation: converts spatiotemporal data into PDP-based inequality and distance matrices. |
 | **`N_T_Report.py`** | Generates structured PDF reports compiling static and dynamic visualizations. |
@@ -30,15 +30,15 @@ The scripts in this folder are designed to:
 | **`N_Moving_Objects.py`** | Handles data processing for moving-object visualizations and simulation examples. |
 | **`N_VA_HeatMap.py`** | Creates heatmaps from PDP distance matrices to visualize configuration differences. |
 | **`N_VA_HClust.py`** | Performs hierarchical clustering and generates dendrograms of configuration similarities. |
-| **`N_VA_ClusterMap.py`** | Combines clustering and heatmap views for enhanced interpretation of configuration distances. |
+| **`N_VA_ClusterMap.py`** | Combines clustering and heatmap views for enhanced interpretation of configuration distances. *(Currently experimental — may not function fully as intended.)* |
 | **`N_VA_Mds.py`** | Runs multidimensional scaling (MDS) for low-dimensional representation of configuration similarities. |
 | **`N_VA_Mds_autoencoder.py`** | Experimental variant using autoencoders for nonlinear dimensionality reduction. |
 | **`N_VA_TopK.py`** | Identifies and plots the top-K most similar configurations per case. |
-| **`N_VA_DynamicAbsolute.py`** | Generates dynamic PDP visualizations of moving objects in absolute coordinates. |
+| **`N_VA_DynamicAbsolute.py`** | Generates dynamic PDP visualizations of moving objects in absolute coordinates. *(Currently experimental — may not function fully as intended.)* |
 | **`N_VA_StaticAbsolute.py`** | Creates static visualizations showing object positions in absolute space. |
-| **`N_VA_StaticRelative.py`** | Creates static visualizations relative to a reference frame or object. |
-| **`N_VA_StaticFinetuned.py`** | Produces refined, high-quality static visuals for reporting and publications. |
-| **`N_VA_Inverse.py`** | Performs inverse or contrast analyses on existing PDP matrices (advanced use). |
+| **`N_VA_StaticRelative.py`** | Creates static visualizations relative to a reference frame or object. *(Currently experimental — may not function fully as intended.)* |
+| **`N_VA_StaticFinetuned.py`** | Produces refined, high-quality static visuals for reporting and publications. *(Currently experimental — may not function fully as intended.)* |
+| **`N_VA_Inverse.py`** | Performs inverse or contrast analyses on existing PDP matrices (advanced use). *(Currently experimental — may not function fully as intended.)* |
 
 ---
 
