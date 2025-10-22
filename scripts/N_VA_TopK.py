@@ -72,9 +72,31 @@ else:
     file_name = None
 
 if file_name is not None:
-    with open(file_name) as csv_file:
+    full_file_name = file_name
+    if getattr(av, 'INPUT_DISTANCE_MATRIX', None):
+        inp = av.INPUT_DISTANCE_MATRIX
+        if os.path.isdir(inp):
+            full_file_name = os.path.join(inp, file_name)
+        elif isinstance(inp, str) and inp.lower().endswith('.csv'):
+            full_file_name = inp
+        else:
+            full_file_name = os.path.join(inp, file_name)
+
+    with open(full_file_name) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
+            poi_id = L_row[0]
+            if dim == -1:
+                dim = len(L_row) - 3
+            # Check if poi_id is a string, if it is, map to int
+            try:
+                int(poi_id)
+            except ValueError:
+                if poi_id not in D_poi_mapping:
+                    D_poi_mapping[poi_id] = cur_poi_id
+                    cur_poi_id += 1
+                L_row[2] = D_poi_mapping[poi_id]
+            av.L_dataset.append(list(map(float, L_row)))
             poi_id = L_row[0]
             if dim == -1:
                 dim = len(L_row) - 3
@@ -117,15 +139,32 @@ for i in range(av.con):
     ax.tick_params(axis='both', labelsize=15, labelcolor='black')  # Change tick 
     ax.yaxis.grid(True, linestyle='dotted', linewidth=0.5, color='black', alpha=0.5)  # Add horizontal grid lines
     
+    #if av.PDPg_fundamental_active == 1:
+    #    filename = 'N_C_PDPg_fundamental_TopK_c' + str(i) + '.png'
+    #elif av.PDPg_buffer_active == 1:
+    #    filename = 'N_C_PDPg_buffer_TopK_c' + str(i) + '.png'
+    #elif av.PDPg_rough_active == 1:
+    #    filename = 'N_C_PDPg_rough_TopK_c' + str(i) + '.png'
+    #elif av.PDPg_bufferrough_active == 1:
+    #    filename = 'N_C_PDPg_bufferrough_TopK_c' + str(i) + '.png'
+
+        # Define output folder once
+    output_folder = os.path.join(av.OUTPUT_FOLDER, 'topk')
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Choose filename depending on which PDPg mode is active
     if av.PDPg_fundamental_active == 1:
-        filename = 'N_C_PDPg_fundamental_TopK_c' + str(i) + '.png'
+        filename = os.path.join(output_folder, f'N_C_PDPg_fundamental_TopK_c{i}.png')
+
     elif av.PDPg_buffer_active == 1:
-        filename = 'N_C_PDPg_buffer_TopK_c' + str(i) + '.png'
+        filename = os.path.join(output_folder, f'N_C_PDPg_buffer_TopK_c{i}.png')
+
     elif av.PDPg_rough_active == 1:
-        filename = 'N_C_PDPg_rough_TopK_c' + str(i) + '.png'
+        filename = os.path.join(output_folder, f'N_C_PDPg_rough_TopK_c{i}.png')
+
     elif av.PDPg_bufferrough_active == 1:
-        filename = 'N_C_PDPg_bufferrough_TopK_c' + str(i) + '.png'
-        
+        filename = os.path.join(output_folder, f'N_C_PDPg_bufferrough_TopK_c{i}.png')
+    
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.clf()  # Clear the figure to start with a new blank figure
 

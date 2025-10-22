@@ -107,58 +107,96 @@ if graphical_user_interface == 1:
     submit_btn.pack(pady=20)
     root.mainloop()
 
-# Output the current working directory and dataset details
-dataset_name = 'N_C_Dataset.csv'  # The name of the dataset file
-dataset_name_exclusive = dataset_name [:-4]  # The name of the dataset file without the extension
+# ---------------- Choose active dataset ----------------
+DATA_NOCLASS   = ""
+DATA_WITHCLASS = ""
 
-# Initialize D_point_mapping and curr_point_id
-D_point_mapping = {}  # Initialize the dictionary for point ID mapping
-curr_point_id = 1  # Initialize the current point ID counter
+# Pick which one you want active right now:
+dataset_name = DATA_WITHCLASS # ← switch to DATA_NOCLASS if you want the 5-col file
+dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 
-# Read and process the dataset
-Df_dataset = pd.read_csv("N_C_Dataset.csv", header=None)  # Read the dataset
-Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']  # Set the column names
+# Central output folder for distance matrices, images and other generated files.
+# Change this single variable if you move the output folder.
+# Use an absolute path or a path relative to the project root. Example:
+# OUTPUT_FOLDER = '/Users/olivier/Documents/STREAMS/Test_datalvlX_output'
+OUTPUT_FOLDER = os.path.expanduser('')
 
-# Load the dataset into a list for further processing
-L_dataset = []  # Initialize an empty list for dataset entries
-with open(dataset_name) as csv_file:
-    csv_reader = csv.reader(csv_file, delimiter=',')
-    
-    # Read each row from the CSV file
-    for L_row in csv_reader:
-        poi_id = L_row[0]
+# Path or folder where distance-matrix CSV files live. You can set this to either:
+# - an absolute path to a directory (then scripts will look for filenames inside that dir),
+# - or a full path to a single CSV file (then that file will be used directly),
+# - or None to keep existing relative-file behavior.
+# Example (directory): av.INPUT_DISTANCE_MATRIX = '/Users/olivier/Documents/STREAMS/Test_datalvlX_output'
+# Example (single file): av.INPUT_DISTANCE_MATRIX = '/path/to/N_C_PDPg_fundamental_DistanceMatrix.csv'
+INPUT_DISTANCE_MATRIX = ''
+
+# ---------------- Load & normalize data ----------------
+# Detect number of columns: 5 (no class) or 6 (with class)
+_probe = pd.read_csv(dataset_name, header=None, nrows=1)
+ncols = _probe.shape[1]
+
+if ncols == 5:
+    colnames = ['conID', 'tstID', 'poiID', 'x', 'y']
+    has_class = False
+elif ncols == 6:
+    colnames = ['conID', 'tstID', 'poiID', 'x', 'y', 'class']
+    has_class = True
+else:
+    raise ValueError(f"Unexpected number of columns ({ncols}) in {dataset_name}. Expected 5 or 6.")
+
+# Read full dataset with proper names
+Df_raw = pd.read_csv(dataset_name, header=None, names=colnames)
+
+# Force numeric on core columns; leave 'class' untouched
+for c in ['conID', 'tstID', 'poiID', 'x', 'y']:
+    Df_raw[c] = pd.to_numeric(Df_raw[c], errors='ignore')
+
+if not pd.api.types.is_integer_dtype(Df_raw['poiID']):
+    D_point_mapping = {}
+    _state = {"curr": 0}
+
+    def map_poi(v, _state=_state):
         try:
-            # Attempt to convert poiID to integer
-            int(poi_id)
-        except ValueError:
-            # Handle non-integer poiID by mapping it to a unique integer
-            if poi_id not in D_point_mapping:
-                D_point_mapping[poi_id] = curr_point_id
-                curr_point_id += 1
-            L_row[2] = D_point_mapping[poi_id]
-        L_dataset.append(list(map(float, L_row)))
+            return int(v)
+        except (ValueError, TypeError):
+            if v not in D_point_mapping:
+                D_point_mapping[v] = _state["curr"]
+                _state["curr"] += 1
+            return D_point_mapping[v]
 
-# Convert list to a numpy array for efficient numerical processing
-A_dataset = np.array(L_dataset, dtype=np.float32)
+    Df_raw['poiID'] = Df_raw['poiID'].apply(map_poi).astype(int)
 
-# Save the processed dataset back to a CSV file
+
+# Split into numeric base and optional classes
+Df_dataset = Df_raw[['conID', 'tstID', 'poiID', 'x', 'y']].copy()
+Df_dataset.to_csv(f"{dataset_name_exclusive}__Df_dataset.csv", index=False)
+
+Df_classes = None
+if has_class:
+    Df_classes = Df_raw[['conID', 'tstID', 'poiID', 'class']].copy()
+    Df_classes.to_csv(f"{dataset_name_exclusive}__Df_classes.csv", index=False)
+
+# Legacy outputs you already rely on
+L_dataset = Df_dataset.values.tolist()
+A_dataset = Df_dataset[['conID','tstID','poiID','x','y']].to_numpy(dtype=np.float32)
+
+# Detect counts (max+1)
+con = int(Df_dataset['conID'].max()) + 1
+tst = int(Df_dataset['tstID'].max()) + 1
+poi = int(Df_dataset['poiID'].max()) + 1
+print("poi =", poi)
+
+# Keep standard export name if other modules expect it
 Df_dataset.to_csv("Df_dataset.csv", index=False)
 
-# Detect variables
-con = Df_dataset['conID'].max() + 1  # The number of configurations
-tst = Df_dataset['tstID'].max() + 1  # The number of time stamps
-poi = Df_dataset['poiID'].max() + 1  # The number of points
-
-# !!! Activation status of each PDP type; this has to be left here to 0 for all. It is just important that this can be activated during the code running.
+# ---------------- PDP activation flags (runtime) ----------------
 PDPg_fundamental_active = 0
 PDPg_buffer_active = 0
 PDPg_rough_active = 0
 PDPg_bufferrough_active = 0
 
-# Check if the window length exceeds the number of timestamps
+# ---------------- Basic validity checks ----------------
 if window_length_tst > tst: 
-    #print("ERROR IN VALUE OF VARIABLE: window_length_tst > tst")
-    raise ValueError("window_length_tst cannot be greater than tst")
+    print("ERROR IN VALUE OF VARIABLE: window_length_tst > tst")
 
-# Final output to indicate the duration the script has run
-print('Time elapsed for running module "av": {:.3f} sec.'.format(time.time() - t_start))
+# ---------------- Done ----------------
+print('Time elapsed for running module: {:.3f} sec.'.format(time.time() - t_start))
