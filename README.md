@@ -5,5 +5,3 @@ PDP-Analysis provides a modular environment for exploring and comparing movement
 
 This repository is developed collaboratively by four contributors, each applying and extending PDP on their own datasets and experimental setups. The framework supports multiple PDP variants.
 
-
-Test Olivier
