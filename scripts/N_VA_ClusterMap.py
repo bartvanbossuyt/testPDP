@@ -58,7 +58,17 @@ else:
 
 av.L_dataset = []
 if file_name is not None:
-    with open(file_name) as csv_file:
+    full_file_name = file_name
+    if getattr(av, 'INPUT_DISTANCE_MATRIX', None):
+        inp = av.INPUT_DISTANCE_MATRIX
+        if os.path.isdir(inp):
+            full_file_name = os.path.join(inp, file_name)
+        elif isinstance(inp, str) and inp.lower().endswith('.csv'):
+            full_file_name = inp
+        else:
+            full_file_name = os.path.join(inp, file_name)
+
+    with open(full_file_name) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -95,14 +105,34 @@ plt.show()
 
 
 # Save the plot as a PNG image in the "dir" directory
+
+#if av.PDPg_fundamental_active == 1:
+    #filename = 'N_C_PDPg_fundamental_ClusterMap.png'
+#elif av.PDPg_buffer_active == 1:
+    #filename = 'N_C_PDPg_buffer_ClusterMap.png'
+#elif av.PDPg_rough_active == 1:
+    #filename = 'N_C_PDPg_rough_ClusterMap.png'
+#elif av.PDPg_bufferrough_active == 1:
+    #filename = 'N_C_PDPg_bufferrough_ClusterMap.png'
+
+# Define output folder once using the central av.OUTPUT_FOLDER
+output_folder = os.path.join(av.OUTPUT_FOLDER, 'clustermap')
+os.makedirs(output_folder, exist_ok=True)
+
+# Select the filename based on which PDPg variant is active
 if av.PDPg_fundamental_active == 1:
-    filename = 'N_C_PDPg_fundamental_ClusterMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_fundamental_ClusterMap.png')
+
 elif av.PDPg_buffer_active == 1:
-    filename = 'N_C_PDPg_buffer_ClusterMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_buffer_ClusterMap.png')
+
 elif av.PDPg_rough_active == 1:
-    filename = 'N_C_PDPg_rough_ClusterMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_rough_ClusterMap.png')
+
 elif av.PDPg_bufferrough_active == 1:
-    filename = 'N_C_PDPg_bufferrough_ClusterMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_bufferrough_ClusterMap.png')
+
+
 
 plt.savefig(filename, dpi=300, bbox_inches='tight')
 plt.clf()  # clear the figure to start with a new blank figure

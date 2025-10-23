@@ -27,6 +27,10 @@ import seaborn as sns; sns.set_theme()
 import sklearn.datasets as dt
 import time
 
+
+plt.rcParams['font.family'] = 'monospace'
+plt.rcParams['font.size'] = 12
+
 # Start time
 t_start = time.time()
 
@@ -52,7 +56,17 @@ else:
 
 av.L_dataset = []
 if file_name is not None:
-    with open(file_name) as csv_file:
+    full_file_name = file_name
+    if getattr(av, 'INPUT_DISTANCE_MATRIX', None):
+        inp = av.INPUT_DISTANCE_MATRIX
+        if os.path.isdir(inp):
+            full_file_name = os.path.join(inp, file_name)
+        elif isinstance(inp, str) and inp.lower().endswith('.csv'):
+            full_file_name = inp
+        else:
+            full_file_name = os.path.join(inp, file_name)
+
+    with open(full_file_name) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             # Add a delay after reading each row
@@ -73,7 +87,7 @@ if file_name is not None:
 av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
 
 # Set the figure size in inches
-plt.figure(figsize=(12, 8))
+plt.figure(figsize=(20, 15), dpi = 300.0)
 
 # Create heat map
 fig, ax = plt.subplots()
@@ -99,15 +113,17 @@ plt.grid(which='both', color='white', linestyle='-', linewidth=0)  # Optional: a
 plt.title('Heatmap of A_dataset')
 #plt.show()
 
-# Save the plot as a PNG image in the "dir" directory
+# Save the plot as a PNG image in the centralized output folder
+output_folder = os.path.join(av.OUTPUT_FOLDER, 'heatmap')
+os.makedirs(output_folder, exist_ok=True)
 if av.PDPg_fundamental_active == 1:
-    filename = 'N_C_PDPg_fundamental_HeatMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_fundamental_HeatMap.png')
 elif av.PDPg_buffer_active == 1:
-    filename = 'N_C_PDPg_buffer_HeatMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_buffer_HeatMap.png')
 elif av.PDPg_rough_active == 1:
-    filename = 'N_C_PDPg_rough_HeatMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_rough_HeatMap.png')
 elif av.PDPg_bufferrough_active == 1:
-    filename = 'N_C_PDPg_bufferrough_HeatMap.png'
+    filename = os.path.join(output_folder, 'N_C_PDPg_bufferrough_HeatMap.png')
 
 plt.savefig(filename, dpi=300, bbox_inches='tight')
 #plt.show()

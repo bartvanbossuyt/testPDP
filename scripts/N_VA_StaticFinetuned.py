@@ -86,7 +86,11 @@ for config in configurations:
     plt.vlines(4.115, -11.885, 11.885, linewidth=0.5, colors='g', linestyles='solid')
 
     plt.title('Configuration ' + str(config),fontname="Arial", fontsize=40)  # increment the configuration by 1
-    file_name = 'N_C_Csf' + str(config) + '.png'  # increment the filename by 1
+    output_folder = os.path.join(av.OUTPUT_FOLDER, 'configuraties')
+    os.makedirs(output_folder, exist_ok=True)
+
+    file_name = os.path.join(output_folder, 'N_C_Csf' + str(config) + '.png')
+    #file_name = 'N_C_Csf' + str(config) + '.png'  # increment the filename by 1
     plt.savefig(file_name, dpi=300, bbox_inches='tight')
     plt.close()  # close the figure to release memory
 
