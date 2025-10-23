@@ -107,12 +107,9 @@ if graphical_user_interface == 1:
     submit_btn.pack(pady=20)
     root.mainloop()
 
-# ---------------- Choose active dataset ----------------
-DATA_NOCLASS   = ""
-DATA_WITHCLASS = ""
 
-# Pick which one you want active right now:
-dataset_name = DATA_WITHCLASS # ← switch to DATA_NOCLASS if you want the 5-col file
+# Give the path to the dataset here
+dataset_name = ""
 dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 
 # Central output folder for distance matrices, images and other generated files.
@@ -130,23 +127,13 @@ OUTPUT_FOLDER = os.path.expanduser('')
 INPUT_DISTANCE_MATRIX = ''
 
 # ---------------- Load & normalize data ----------------
-# Detect number of columns: 5 (no class) or 6 (with class)
-_probe = pd.read_csv(dataset_name, header=None, nrows=1)
-ncols = _probe.shape[1]
-
-if ncols == 5:
-    colnames = ['conID', 'tstID', 'poiID', 'x', 'y']
-    has_class = False
-elif ncols == 6:
-    colnames = ['conID', 'tstID', 'poiID', 'x', 'y', 'class']
-    has_class = True
-else:
-    raise ValueError(f"Unexpected number of columns ({ncols}) in {dataset_name}. Expected 5 or 6.")
+# Expect only 5 columns: conID, tstID, poiID, x, y
+colnames = ['conID', 'tstID', 'poiID', 'x', 'y']
 
 # Read full dataset with proper names
 Df_raw = pd.read_csv(dataset_name, header=None, names=colnames)
 
-# Force numeric on core columns; leave 'class' untouched
+# Force numeric on all columns
 for c in ['conID', 'tstID', 'poiID', 'x', 'y']:
     Df_raw[c] = pd.to_numeric(Df_raw[c], errors='ignore')
 
@@ -165,15 +152,9 @@ if not pd.api.types.is_integer_dtype(Df_raw['poiID']):
 
     Df_raw['poiID'] = Df_raw['poiID'].apply(map_poi).astype(int)
 
-
-# Split into numeric base and optional classes
+# Use only the 5-column dataset
 Df_dataset = Df_raw[['conID', 'tstID', 'poiID', 'x', 'y']].copy()
 Df_dataset.to_csv(f"{dataset_name_exclusive}__Df_dataset.csv", index=False)
-
-Df_classes = None
-if has_class:
-    Df_classes = Df_raw[['conID', 'tstID', 'poiID', 'class']].copy()
-    Df_classes.to_csv(f"{dataset_name_exclusive}__Df_classes.csv", index=False)
 
 # Legacy outputs you already rely on
 L_dataset = Df_dataset.values.tolist()

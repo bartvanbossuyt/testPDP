@@ -1,7 +1,7 @@
 # N_Moving_Objects.py
 # ------------------------------------------------------------
 # Unified runner for PDP variants (fundamental, buffer, rough, buffer+rough)
-# Works with datasets that have 5 cols (no class) or 6 cols (with class)
+# Works with datasets that have 5 cols: conID, tstID, poiID, x, y
 # ------------------------------------------------------------
 
 # Notes & TODOs from your original file preserved:
@@ -30,16 +30,13 @@ if av.N_VA_DynamicAbsolute == 1:
     import N_VA_DynamicAbsolute
 
 
-# ---------------- Helper: robust CSV loader (5 or 6 columns) ----------------
+# ---------------- Helper: robust CSV loader (5 columns) ----------------
 def read_config_csv(path):
     """
-    Load config CSV that may have either:
-      - 5 cols: conID, tstID, poiID, x, y
-      - 6 cols: conID, tstID, poiID, x, y, class
+    Load config CSV that has 5 cols: conID, tstID, poiID, x, y
 
     Returns:
       Df_dataset (5 numeric cols),
-      Df_classes (None or 4 cols: conID,tstID,poiID,class),
       L_dataset (list of rows),
       A_dataset (np.float32 array),
       con, tst, poi (counts inferred as max+1)
@@ -49,15 +46,10 @@ def read_config_csv(path):
 
     if ncols == 5:
         df.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
-        df_classes = None
-    elif ncols == 6:
-        df.columns = ['conID', 'tstID', 'poiID', 'x', 'y', 'class']
-        # keep classes separate for plotting/coloring
-        df_classes = df[['conID', 'tstID', 'poiID', 'class']].copy()
     else:
-        raise ValueError(f"Unexpected number of columns ({ncols}) in {path}. Expected 5 or 6.")
+        raise ValueError(f"Unexpected number of columns ({ncols}) in {path}. Expected 5.")
 
-    # Numeric-only frame for computations
+    # Numeric frame for computations
     df_num = df[['conID', 'tstID', 'poiID', 'x', 'y']].copy()
     for c in ['conID', 'tstID', 'poiID', 'x', 'y']:
         df_num[c] = pd.to_numeric(df_num[c], errors='raise')
@@ -69,7 +61,7 @@ def read_config_csv(path):
     tst = int(df_num['tstID'].max()) + 1 if len(df_num) else 0
     poi = int(df_num['poiID'].max()) + 1 if len(df_num) else 0
 
-    return df_num, df_classes, L_dataset, A_dataset, con, tst, poi
+    return df_num, L_dataset, A_dataset, con, tst, poi
 
 
 # ---------------- Optional: legacy wrapper kept minimal ----------------
@@ -77,7 +69,7 @@ def SetDataForPDPType(data_filename, D_point_mapping, curr_point_id, window_leng
     """
     Legacy function signature preserved (mapping args unused here).
     """
-    Df_dataset, Df_classes, L_dataset, A_dataset, con, tst, poi = read_config_csv(data_filename)
+    Df_dataset, L_dataset, A_dataset, con, tst, poi = read_config_csv(data_filename)
     Df_dataset.to_csv("Df_dataset.csv", index=False)
     if av.window_length_tst > tst:
         print("ERROR IN VALUE OF VARIABLE: window_length_tst > tst")
@@ -93,10 +85,9 @@ if av.PDPg_fundamental == 1:
     av.dataset_name = "N_C_PDPg_fundamental_Dataset.csv"
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
-    # Robust read (handles optional class)
+    # Robust read (handles 5 columns)
     (
         av.Df_dataset,
-        av.Df_classes,
         av.L_dataset,
         av.A_dataset,
         av.con,
@@ -143,7 +134,6 @@ if av.PDPg_buffer == 1:
 
     (
         av.Df_dataset,
-        av.Df_classes,
         av.L_dataset,
         av.A_dataset,
         av.con,
@@ -186,7 +176,6 @@ if av.PDPg_rough == 1:
 
     (
         av.Df_dataset,
-        av.Df_classes,
         av.L_dataset,
         av.A_dataset,
         av.con,
@@ -228,7 +217,6 @@ if av.PDPg_bufferrough == 1:
 
     (
         av.Df_dataset,
-        av.Df_classes,
         av.L_dataset,
         av.A_dataset,
         av.con,
