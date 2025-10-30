@@ -1,0 +1,25 @@
+{
+  "name": "pdp-analysis",
+  "version": "1.0.0",
+  "description": "PDP Analysis project with commit message linting",
+  "main": "index.js",
+  "scripts": {
+    "prepare": "husky install"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.ugent.be/Oliverme/PDP-Analysis.git"
+  },
+  "keywords": [
+    "pdp",
+    "analysis",
+    "python"
+  ],
+  "author": "Oliver",
+  "license": "ISC",
+  "devDependencies": {
+    "@commitlint/cli": "^20.1.0",
+    "@commitlint/config-conventional": "^20.0.0",
+    "husky": "^9.1.7"
+  }
+}
