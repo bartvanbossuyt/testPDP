@@ -5,3 +5,6 @@ seaborn
 scipy
 scikit-learn
 python-pptx
+tensorflow
+streamlit
+plotly
