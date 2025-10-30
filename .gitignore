@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 settings.json
 
+# Node.js dependencies
+node_modules/
+package-lock.json
+
 # C extensions
 *.so
 
