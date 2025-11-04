@@ -1,4 +1,4 @@
-# 🧭 PDP-Analysis
+# 🧭 PDP-Analysi
 
 **PDP-Analysis** is a Python framework for qualitative spatiotemporal analysis based on the **Point-Descriptor-Precedence (PDP)** representation.  
 It enables the identification, visualization, and comparison of micro-scale movement patterns — such as lane changes, overtakes, or interactions — in both simulated and real-world datasets.
