@@ -176,13 +176,16 @@ if av.N_VA_InequalityMatrices == 1:
         file_paths = []
         # Iterate over the range of av.con and av.DD
         for i in range(av.con):
-            #for w in range(av.window_length_tst + 1):
-            for w in range(av.tst-(av.window_length_tst-1)):
-                for d in range(av.DD):
-                    # Create the file path using the working directory
-                    file_path = os.path.join(os.getcwd(), 'N_C_PDPg_fundamental_InequalityMatrix' + '_c' + str(i) + '_t' + str(w) + '_d' + str(d)  +  '.png')        
-                    # Append the file path to the list
-                    file_paths.append(file_path)
+                #for w in range(av.window_length_tst + 1):
+                for w in range(av.tst-(av.window_length_tst-1)):
+                    for d in range(av.DD):
+                        # Create the file path using the results_dir/InequalityMatrices directory
+                        fname = f'N_C_PDPg_fundamental_InequalityMatrix_c{i}_t{w}_d{d}.png'
+                        file_path = os.path.join(results_dir, 'InequalityMatrices', fname)
+                        # Append the file path to the list
+                        if not os.path.exists(file_path):
+                            print(f'WARNING: expected inequality matrix not found at {file_path}')
+                        file_paths.append(file_path)
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
         # Split the images list into sublists of 3 images each
@@ -206,14 +209,14 @@ if av.N_VA_InequalityMatrices == 1:
         story.append(title)
         # Create a list of file paths for the images
         # file_paths = []
-        # for i in range(av.con):
-        #     for d in range(av.DD):
-        #         file_path = os.path.join(av.dir, 'N_C_Inequality_matrix' + '_c' + str(i) + '_d' + str(d+1) + '.png')
-        #         file_paths.append(file_path)
-        # Create an empty list to store the file paths
-        file_paths = []
-        # Iterate over the range of av.con and av.DD
         for i in range(av.con):
+            for d in range(av.DD):
+                # Create the file path using the results_dir/InequalityMatrices directory
+                fname = f'N_C_PDPg_buffer_InequalityMatrix_c{i}_t0_d{d}.png'
+                file_path = os.path.join(results_dir, 'InequalityMatrices', fname)
+                if not os.path.exists(file_path):
+                    print(f'WARNING: expected inequality matrix not found at {file_path}')
+                file_paths.append(file_path)
             for d in range(av.DD):
                 # Create the file path using the working directory
                 #file_path = os.path.join(os.getcwd(), 'N_C_Inequality_matrix' + '_c' + str(i) + '_d' + str(d+1) + "N_C_Dataset_g_buffer" + '.png')
@@ -247,9 +250,11 @@ if av.N_VA_InequalityMatrices == 1:
         # Iterate over the range of av.con and av.DD
         for i in range(av.con):
             for d in range(av.DD):
-                # Create the file path using the working directory
-                file_path = os.path.join(os.getcwd(), 'N_C_PDPg_rough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png')        
-                # Append the file path to the list
+                # Create the file path using the results_dir/InequalityMatrices directory
+                fname = f'N_C_PDPg_rough_InequalityMatrix_c{i}_t0_d{d}.png'
+                file_path = os.path.join(results_dir, 'InequalityMatrices', fname)
+                if not os.path.exists(file_path):
+                    print(f'WARNING: expected inequality matrix not found at {file_path}')
                 file_paths.append(file_path)
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
@@ -277,9 +282,11 @@ if av.N_VA_InequalityMatrices == 1:
         # Iterate over the range of av.con and av.DD
         for i in range(av.con):
             for d in range(av.DD):
-                # Create the file path using the working directory
-                file_path = os.path.join(os.getcwd(), 'N_C_PDPg_bufferrough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png')        
-                # Append the file path to the list
+                # Create the file path using the results_dir/InequalityMatrices directory
+                fname = f'N_C_PDPg_bufferrough_InequalityMatrix_c{i}_t0_d{d}.png'
+                file_path = os.path.join(results_dir, 'InequalityMatrices', fname)
+                if not os.path.exists(file_path):
+                    print(f'WARNING: expected inequality matrix not found at {file_path}')
                 file_paths.append(file_path)
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
@@ -303,13 +310,14 @@ if av.N_VA_HeatMap == 1:
         # Add the title
         title = Paragraph("Heat Map (fundamental)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_HeatMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
+        # Create the file path using the results_dir/HeatMap directory
+        heatmap_fn = 'N_C_PDPg_fundamental_HeatMap.png'
+        file_path = os.path.join(results_dir, 'HeatMap', heatmap_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HeatMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         # Add a page break to start a new page
         story.append(PageBreak())
     # PAGE WITH HEAT MAP PDPg_BUFFER
@@ -317,42 +325,39 @@ if av.N_VA_HeatMap == 1:
         # Add the title
         title = Paragraph("Heat Map (buffer)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_HeatMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        heatmap_fn = 'N_C_PDPg_buffer_HeatMap.png'
+        file_path = os.path.join(results_dir, 'HeatMap', heatmap_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HeatMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH HEAT MAP PDPg_ROUGH
     elif av.PDPg_rough_active == 1:
         # Add the title
         title = Paragraph("Heat Map (rough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_HeatMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        heatmap_fn = 'N_C_PDPg_rough_HeatMap.png'
+        file_path = os.path.join(results_dir, 'HeatMap', heatmap_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HeatMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH HEAT MAP PDPg_BUFFERROUGH
-    elif av.PDPg_rough_active == 1:
+    elif av.PDPg_bufferrough_active == 1:
         # Add the title
         title = Paragraph("Heat Map (bufferrough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_HeatMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        heatmap_fn = 'N_C_PDPg_bufferrough_HeatMap.png'
+        file_path = os.path.join(results_dir, 'HeatMap', heatmap_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HeatMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
 
 if av.N_VA_ClusterMap == 1: 
@@ -361,42 +366,39 @@ if av.N_VA_ClusterMap == 1:
         # Add the title
         title = Paragraph("Cluster Map (fundamental)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_ClusterMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        cluster_fn = 'N_C_PDPg_fundamental_ClusterMap.png'
+        file_path = os.path.join(results_dir, 'ClusterMap', cluster_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: ClusterMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH CLUSTER MAP PDPG_buffer
     elif av.PDPg_buffer_active == 1:
         # Add the title
         title = Paragraph("Cluster Map (buffer)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_ClusterMapN_C_Dataset_g_buffer.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        cluster_fn = 'N_C_ClusterMapN_C_Dataset_g_buffer.png'
+        file_path = os.path.join(results_dir, 'ClusterMap', cluster_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: ClusterMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH CLUSTER MAP PDPG_rough
     elif av.PDPg_rough_active == 1:
         # Add the title
-        title = Paragraph("Cluster Map (rough: " + str(av.rough) + "m)", title_style)
+        title = Paragraph("Cluster Map (rough: " + str(av.rough) + ")", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPPg_rough_ClusterMap.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        cluster_fn = 'N_C_PDPPg_rough_ClusterMap.png'
+        file_path = os.path.join(results_dir, 'ClusterMap', cluster_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: ClusterMap not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
 
 if av.N_VA_HClust == 1:  
@@ -405,56 +407,52 @@ if av.N_VA_HClust == 1:
         # Add the title
         title = Paragraph("Hierarchical Clustering (fundamental)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_HClust.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        hclust_fn = 'N_C_PDPg_fundamental_HClust.png'
+        file_path = os.path.join(results_dir, 'HClust', hclust_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HClust image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH HIERARCHICAL CLUSTER TREE PDPg_BUFFER
     elif av.PDPg_buffer_active == 1:
         # Add the title
         title = Paragraph("Hierarchical Clustering (buffer)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_HClust.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        hclust_fn = 'N_C_PDPg_buffer_HClust.png'
+        file_path = os.path.join(results_dir, 'HClust', hclust_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HClust image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH HIERARCHICAL CLUSTER TREE PDPg_ROUGH
     elif av.PDPg_rough_active == 1:
         # Add the title
         title = Paragraph("Hierarchical Clustering (rough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_HClust.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        hclust_fn = 'N_C_PDPg_rough_HClust.png'
+        file_path = os.path.join(results_dir, 'HClust', hclust_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HClust image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH HIERARCHICAL CLUSTER TREE PDPg_bufferrough
     elif av.PDPg_bufferrough_active == 1:
         # Add the title
         title = Paragraph("Hierarchical Clustering (bufferrough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_HClust.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        hclust_fn = 'N_C_PDPg_bufferrough_HClust.png'
+        file_path = os.path.join(results_dir, 'HClust', hclust_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: HClust image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
 
 if av.N_VA_Mds == 1: 
@@ -463,56 +461,52 @@ if av.N_VA_Mds == 1:
         # Add the title
         title = Paragraph("Dimensionality Reduction (MDS) (fundamental)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_Mds.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        mds_fn = 'N_C_PDPg_fundamental_Mds.png'
+        file_path = os.path.join(results_dir, 'MDS', mds_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: MDS image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH MDS PDPg_BUFFER
     elif av.PDPg_buffer_active == 1:
         # Add the title
         title = Paragraph("Dimensionality Reduction (MDS) (buffer)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_Mds.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        mds_fn = 'N_C_PDPg_buffer_Mds.png'
+        file_path = os.path.join(results_dir, 'MDS', mds_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: MDS image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH MDS PDPg_ROUGH
     elif av.PDPg_rough_active == 1:
         # Add the title
         title = Paragraph("Dimensionality Reduction (MDS) (rough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_Mds.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        mds_fn = 'N_C_PDPg_rough_Mds.png'
+        file_path = os.path.join(results_dir, 'MDS', mds_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: MDS image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
     # PAGE WITH MDS PDPg_BUFFERROUGH
     elif av.PDPg_bufferrough_active == 1:
         # Add the title
         title = Paragraph("Dimensionality Reduction (MDS) (bufferrough)", title_style)
         story.append(title)
-        # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_Mds.png")
-        # Open the image using PIL
-        pil_image = PILImage.open(file_path)
-        # Add the image
-        image = Image(file_path, width=400, height=400)
-        story.append(image)
-        # Add a page break to start a new page
+        mds_fn = 'N_C_PDPg_bufferrough_Mds.png'
+        file_path = os.path.join(results_dir, 'MDS', mds_fn)
+        if not os.path.exists(file_path):
+            print(f'ERROR: MDS image not found at {file_path}')
+        else:
+            image = Image(file_path, width=400, height=400)
+            story.append(image)
         story.append(PageBreak())
 
 if av.N_VA_TopK == 1: 
