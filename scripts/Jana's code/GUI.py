@@ -55,10 +55,24 @@ def run_moving_objects_in_background(params):
             try:
                 # Reload av so it processes the dataset with the provided AV_DATASET
                 importlib.reload(av)
-                
+
                 # Re-apply parameters AFTER reload (reload resets av to defaults!)
                 for k, v in params.items():
                     setattr(av, k, v)
+
+                # Debug prints to help diagnose flag propagation and results_dir
+                print('\n--- DEBUG: run parameters passed from GUI ---')
+                try:
+                    print('params:', {k: params[k] for k in params})
+                except Exception:
+                    print('params (could not stringify)')
+                print('AV_RESULTS_DIR env:', os.environ.get('AV_RESULTS_DIR'))
+                print('av.N_VA_InequalityMatrices =', getattr(av, 'N_VA_InequalityMatrices', None))
+                print('av.N_PDP =', getattr(av, 'N_PDP', None))
+                print('av.PDPg_buffer_active =', getattr(av, 'PDPg_buffer_active', None))
+                print('av.PDPg_rough_active =', getattr(av, 'PDPg_rough_active', None))
+                print('av.PDPg_fundamental_active =', getattr(av, 'PDPg_fundamental_active', None))
+                print('--- end DEBUG ---\n')
 
                 import N_Moving_Objects
                 importlib.reload(N_Moving_Objects)
@@ -231,8 +245,17 @@ app.layout = html.Div([
                            style={**BUTTON_STYLE, 'backgroundColor': '#e53e3e'}),
                 html.Button('📊 Get Status & Output', id='status-button', n_clicks=0, 
                            style={**BUTTON_STYLE, 'backgroundColor': '#48bb78'}),
-                html.Button('📈 View Results', id='view-results-button', n_clicks=0, disabled=True,
-                           style={**BUTTON_STYLE, 'backgroundColor': '#805ad5'})
+                html.Div([
+                    html.Label('🔗 Results viewer script (path to .py or Streamlit script):', style={'fontSize': '12px', 'fontWeight': '500', 'marginBottom': '6px'}),
+                    dcc.Input(
+                        id='viewer-script-path',
+                        type='text',
+                        value=os.path.abspath(os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'visualisations', 'app_PDP_results.py'))),
+                        style={'width': '100%', 'padding': '6px', 'borderRadius': '6px', 'border': '1px solid #ddd', 'fontSize': '13px', 'marginBottom': '8px'}
+                    ),
+                    html.Button('📈 View Results', id='view-results-button', n_clicks=0, disabled=True,
+                               style={**BUTTON_STYLE, 'backgroundColor': '#805ad5'})
+                ], style={'display': 'flex', 'flexDirection': 'column'})
             ]),
 
         ], style={**CARD_STYLE, 'width': '400px'}),
@@ -328,6 +351,8 @@ app.layout = html.Div([
         'fontSize': '13px',
         'boxShadow': '0 2px 8px rgba(0,0,0,0.08)'
     }, children='💡 Ready to start. Configure parameters and click "Run Analysis".'),
+    # Background interval to auto-check status and enable View Results when finished
+    dcc.Interval(id='auto-status-interval', interval=2000, n_intervals=0),
 
 ], style={
     'fontFamily': "'Segoe UI', Arial, sans-serif", 
@@ -361,39 +386,69 @@ def toggle_parameters(pdp_list):
 # Callback to enable "View Results" button after successful analysis
 @app.callback(
     Output('view-results-button', 'disabled'),
-    [Input('status-button', 'n_clicks')],
+    [Input('status-button', 'n_clicks'), Input('auto-status-interval', 'n_intervals')],
     [State('view-results-button', 'disabled')]
 )
-def enable_view_results_button(status_clicks, current_disabled):
-    """Enable the View Results button when analysis is finished."""
-    if status_clicks and status_clicks > 0:
-        # Check if analysis is finished
+def enable_view_results_button(status_clicks, n_intervals, current_disabled):
+    """Enable the View Results button when analysis is finished.
+
+    This callback listens both to the manual "Get Status & Output" button and to the
+    background Interval (`auto-status-interval`). The Interval allows automatic
+    enabling of the View Results button when `last_status` becomes 'finished' without
+    requiring the user to press "Get Status & Output".
+    """
+    # If the analysis finished, enable the button.
+    try:
         if last_status == 'finished':
-            return False  # Enable button
-    return current_disabled  # Keep current state
+            return False
+    except Exception:
+        # If something weird happens reading last_status, keep current state.
+        return current_disabled
+
+    # Otherwise return the current state (keep it disabled or enabled as it is).
+    return current_disabled
 
 
 # Callback to handle View Results button click
 @app.callback(
     Output('output-div', 'children', allow_duplicate=True),
     [Input('view-results-button', 'n_clicks')],
+    [State('viewer-script-path', 'value')],
     prevent_initial_call=True
 )
-def launch_results_viewer(n_clicks):
-    """Launch the app_PDP_results.py visualization application."""
+def launch_results_viewer(n_clicks, script_path):
+    """Launch the provided visualization application (preferably Streamlit) using the given script path.
+    The user can provide a path to a .py Streamlit script. We try to start it with `streamlit run <script>`.
+    If that fails, we fall back to launching with plain `python <script>`.
+    """
     if n_clicks and n_clicks > 0:
         try:
-            # Get the directory where GUI.py is located
-            gui_dir = os.path.dirname(os.path.abspath(__file__))
-            app_path = os.path.join(gui_dir, 'app_PDP_results.py')
-            
-            # Check if the file exists
-            if os.path.exists(app_path):
-                # Launch the app in a new process
-                subprocess.Popen(['python', app_path], cwd=gui_dir)
-                return '✅ Results viewer launched! Check for a new window or browser tab.'
-            else:
-                return f'❌ Error: app_PDP_results.py not found at {app_path}'
+            if not script_path:
+                return '❌ No script path provided. Please fill the "Results viewer script" field.'
+
+            app_path = os.path.abspath(os.path.expanduser(script_path))
+            if not os.path.exists(app_path):
+                return f'❌ Error: script not found at {app_path}'
+
+            # Use the script's directory as cwd so relative imports/resources resolve
+            script_dir = os.path.dirname(app_path) or os.getcwd()
+
+            # First try launching with streamlit if available
+            try:
+                subprocess.Popen(['streamlit', 'run', app_path], cwd=script_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return f'✅ Streamlit started for {app_path}. Open http://localhost:8501/ if it does not open automatically.'
+            except FileNotFoundError:
+                # streamlit executable not found; fall back to plain python
+                subprocess.Popen(['python', app_path], cwd=script_dir)
+                return f'⚠️ `streamlit` not found on PATH — launched with `python {app_path}` instead.'
+            except Exception as e:
+                # Generic fallback
+                try:
+                    subprocess.Popen(['python', app_path], cwd=script_dir)
+                    return f'⚠️ Failed to start via streamlit ({str(e)}). Launched with python instead.'
+                except Exception as e2:
+                    return f'❌ Error launching results viewer: {str(e2)}'
+
         except Exception as e:
             return f'❌ Error launching results viewer: {str(e)}'
     return ''
@@ -481,6 +536,13 @@ def control_runner(run_clicks, stop_clicks, status_clicks, pdp_list, nva_list, w
             'division_factor': int(division_factor) if division_factor is not None else getattr(av,'division_factor',5),
             'dataset_name': dataset_name or getattr(av, 'dataset_name', 'N_C_Dataset.csv')
         }
+
+        # Also set the *_active variants which some modules (e.g. N_PDP) check at runtime
+        # The codebase uses both PDPg_buffer and PDPg_buffer_active in different places.
+        params['PDPg_fundamental_active'] = int(params.get('PDPg_fundamental', 1))
+        params['PDPg_buffer_active'] = int(params.get('PDPg_buffer', 0))
+        params['PDPg_rough_active'] = int(params.get('PDPg_rough', 0))
+        params['PDPg_bufferrough_active'] = int(params.get('PDPg_bufferrough', 0))
 
         # include results_dir if supplied
         if results_dir:
