@@ -1,5 +1,6 @@
 # Improved Dash GUI that can set parameters from av.py and run N_Moving_Objects
 import importlib
+import sys
 import threading
 import io
 import contextlib
@@ -254,7 +255,10 @@ app.layout = html.Div([
                         style={'width': '100%', 'padding': '6px', 'borderRadius': '6px', 'border': '1px solid #ddd', 'fontSize': '13px', 'marginBottom': '8px'}
                     ),
                     html.Button('📈 View Results', id='view-results-button', n_clicks=0, disabled=True,
-                               style={**BUTTON_STYLE, 'backgroundColor': '#805ad5'})
+                               style={**BUTTON_STYLE, 'backgroundColor': '#805ad5'}),
+                    html.Button('📂 Open Existing Results', id='open-existing-button', n_clicks=0,
+                               title='Open viewer using existing results folder without rerunning the analysis',
+                               style={**BUTTON_STYLE, 'backgroundColor': '#4299e1'})
                 ], style={'display': 'flex', 'flexDirection': 'column'})
             ]),
 
@@ -413,10 +417,10 @@ def enable_view_results_button(status_clicks, n_intervals, current_disabled):
 @app.callback(
     Output('output-div', 'children', allow_duplicate=True),
     [Input('view-results-button', 'n_clicks')],
-    [State('viewer-script-path', 'value')],
+    [State('viewer-script-path', 'value'), State('dataset_name', 'value'), State('results_dir', 'value')],
     prevent_initial_call=True
 )
-def launch_results_viewer(n_clicks, script_path):
+def launch_results_viewer(n_clicks, script_path, dataset_name, results_dir):
     """Launch the provided visualization application (preferably Streamlit) using the given script path.
     The user can provide a path to a .py Streamlit script. We try to start it with `streamlit run <script>`.
     If that fails, we fall back to launching with plain `python <script>`.
@@ -433,18 +437,93 @@ def launch_results_viewer(n_clicks, script_path):
             # Use the script's directory as cwd so relative imports/resources resolve
             script_dir = os.path.dirname(app_path) or os.getcwd()
 
-            # First try launching with streamlit if available
+            # Prepare environment for subprocess: pass AV_RESULTS_DIR and AV_DATASET so the viewer auto-fills paths
+            env = os.environ.copy()
+            if results_dir:
+                env['AV_RESULTS_DIR'] = results_dir
+            # dataset_name state can override
+            if dataset_name:
+                env['AV_DATASET'] = dataset_name
+
+            # Prefer running Streamlit with the same Python interpreter (works inside venvs):
             try:
-                subprocess.Popen(['streamlit', 'run', app_path], cwd=script_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return f'✅ Streamlit started for {app_path}. Open http://localhost:8501/ if it does not open automatically.'
-            except FileNotFoundError:
-                # streamlit executable not found; fall back to plain python
-                subprocess.Popen(['python', app_path], cwd=script_dir)
-                return f'⚠️ `streamlit` not found on PATH — launched with `python {app_path}` instead.'
-            except Exception as e:
-                # Generic fallback
+                # Check if streamlit is importable in this Python environment
                 try:
-                    subprocess.Popen(['python', app_path], cwd=script_dir)
+                    import streamlit  # type: ignore
+                    has_streamlit = True
+                except Exception:
+                    has_streamlit = False
+
+                if has_streamlit:
+                    # Launch via `python -m streamlit run <script>` using the same interpreter
+                    subprocess.Popen([sys.executable, '-m', 'streamlit', 'run', app_path], cwd=script_dir, env=env)
+                    return (f'✅ Streamlit started using {sys.executable} -m streamlit run {app_path} (AV_RESULTS_DIR={env.get("AV_RESULTS_DIR")}, AV_DATASET={env.get("AV_DATASET")}). '
+                            "Open http://localhost:8501/ if it does not open automatically.")
+                else:
+                    # Fall back to launching the script as a plain Python program
+                    subprocess.Popen([sys.executable, app_path], cwd=script_dir, env=env)
+                    return (f'⚠️ `streamlit` is not installed in the Python environment ({sys.executable}). '
+                            f'Launched with `python {app_path}` instead (AV_RESULTS_DIR={env.get("AV_RESULTS_DIR")}, AV_DATASET={env.get("AV_DATASET")} ).\n\nInstall Streamlit in this environment to use the interactive viewer:\n'
+                            f'    {sys.executable} -m pip install streamlit')
+            except Exception as e:
+                # Final fallback: try plain python and report the error
+                try:
+                    subprocess.Popen([sys.executable, app_path], cwd=script_dir)
+                    return f'⚠️ Failed to start via streamlit ({str(e)}). Launched with python instead.'
+                except Exception as e2:
+                    return f'❌ Error launching results viewer: {str(e2)}'
+
+        except Exception as e:
+            return f'❌ Error launching results viewer: {str(e)}'
+    return ''
+
+
+@app.callback(
+    Output('output-div', 'children', allow_duplicate=True),
+    [Input('open-existing-button', 'n_clicks')],
+    [State('viewer-script-path', 'value'), State('results_dir', 'value'), State('dataset_name', 'value')],
+    prevent_initial_call=True
+)
+def open_existing_results(n_clicks, script_path, results_dir, dataset_name):
+    """Open the viewer using an existing results folder without rerunning the analysis."""
+    if n_clicks and n_clicks > 0:
+        try:
+            if not script_path:
+                return '❌ No script path provided. Please fill the "Results viewer script" field.'
+
+            app_path = os.path.abspath(os.path.expanduser(script_path))
+            if not os.path.exists(app_path):
+                return f'❌ Error: script not found at {app_path}'
+
+            script_dir = os.path.dirname(app_path) or os.getcwd()
+
+            # Prepare environment for subprocess: pass AV_RESULTS_DIR so the viewer reads the right folder
+            env = os.environ.copy()
+            if results_dir:
+                env['AV_RESULTS_DIR'] = results_dir
+            if dataset_name:
+                env['AV_DATASET'] = dataset_name
+
+            # Try starting streamlit with the same interpreter if available
+            try:
+                try:
+                    import streamlit  # type: ignore
+                    has_streamlit = True
+                except Exception:
+                    has_streamlit = False
+
+                if has_streamlit:
+                    subprocess.Popen([sys.executable, '-m', 'streamlit', 'run', app_path], cwd=script_dir, env=env)
+                    return (f'✅ Streamlit started using {sys.executable} -m streamlit run {app_path} (AV_RESULTS_DIR={env.get("AV_RESULTS_DIR")} ). '
+                            "Open http://localhost:8501/ if it does not open automatically.")
+                else:
+                    subprocess.Popen([sys.executable, app_path], cwd=script_dir, env=env)
+                    return (f'⚠️ `streamlit` is not installed in the Python environment ({sys.executable}). '
+                            f'Launched with `python {app_path}` instead (AV_RESULTS_DIR={env.get("AV_RESULTS_DIR")} ).\n\nInstall Streamlit in this environment to use the interactive viewer:\n'
+                            f'    {sys.executable} -m pip install streamlit')
+            except Exception as e:
+                try:
+                    subprocess.Popen([sys.executable, app_path], cwd=script_dir, env=env)
                     return f'⚠️ Failed to start via streamlit ({str(e)}). Launched with python instead.'
                 except Exception as e2:
                     return f'❌ Error launching results viewer: {str(e2)}'
