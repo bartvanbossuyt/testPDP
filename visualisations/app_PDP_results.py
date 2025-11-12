@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import MDS, TSNE
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, dendrogram
+import shutil
 
 # Page configuration
 st.set_page_config(layout="wide", page_title="N_C Visualization Dashboard")
@@ -17,27 +18,71 @@ st.title("🔍 N_C Visualization Dashboard")
 # --- Sidebar: path settings ---
 st.sidebar.header("Path settings")
 
+# Prefer environment-provided paths so the GUI can pre-fill when launched from the main app.
+env_results = os.environ.get('AV_RESULTS_DIR', '')
+env_dataset = os.environ.get('AV_DATASET', '')
+
+# Fallback defaults (kept for backwards compatibility)
+fallback_base = r"C:\Users\jmverdoo\OneDrive - UGent\2022-... Werk Ugent\01 Projecten\OPEN\Micro-analysis Traffic\PDP_outputfolder"
+
+default_base = env_results if env_results else fallback_base
+
+# If AV_DATASET is an absolute path, use it directly; if relative, join with base
+if env_dataset:
+    if os.path.isabs(env_dataset):
+        default_dataset = env_dataset
+    else:
+        default_dataset = os.path.join(default_base, env_dataset)
+else:
+    default_dataset = os.path.join(default_base, "N_C_Dataset.csv")
+
 base_folder = st.sidebar.text_input(
     "Base folder (contains all result files):",
-    value=r"C:\Users\jmverdoo\OneDrive - UGent\2022-... Werk Ugent\01 Projecten\OPEN\Micro-analysis Traffic\NEW_PDP_results\2POI_ROUGH"
+    value=default_base
 )
 
 dataset_path = st.sidebar.text_input(
     "Dataset file (CSV or Parquet):",
-    value=os.path.join(base_folder, "N_C_Dataset.csv")
+    value=default_dataset
 )
+
+# If the user provided a dataset path that is outside the results folder, copy it into the results folder
+try:
+    # Only attempt copy when both paths are non-empty
+    if dataset_path and base_folder:
+        # Resolve absolute paths
+        dataset_abs = os.path.abspath(os.path.expanduser(dataset_path))
+        base_abs = os.path.abspath(os.path.expanduser(base_folder))
+
+        # Destination path inside the results folder
+        dest_dataset = os.path.join(base_abs, os.path.basename(dataset_abs))
+
+        # If dataset source exists and is not already in the results folder, copy it
+        if os.path.exists(dataset_abs) and os.path.abspath(dataset_abs) != os.path.abspath(dest_dataset):
+            os.makedirs(base_abs, exist_ok=True)
+            try:
+                shutil.copy2(dataset_abs, dest_dataset)
+                st.info(f"Dataset copied to results folder: {dest_dataset}")
+                # Use the copied file from now on
+                dataset_path = dest_dataset
+            except Exception as e:
+                st.warning(f"Could not copy dataset to results folder: {e}")
+except Exception as e:
+    st.warning(f"Dataset copy check failed: {e}")
 
 
 # Sidebar: selection for distance matrix and navigation
 st.sidebar.header("Settings")
+# Default to Fundamental first for clarity
 matrix_option = st.sidebar.selectbox(
     "Choose which distance matrix to investigate:",
     [
+        "Fundamental",
         "Buffer + Rough",
         "Buffer only",
         "Rough only",
-        "Fundamental"
-    ]
+    ],
+    index=0
 )
 view = st.sidebar.radio("Choose a view:", [
     "Heatmap", "Clustering", "MDS & t-SNE", "Per Configuration", "Inequality Matrices", "TopK Results"
@@ -46,10 +91,19 @@ view = st.sidebar.radio("Choose a view:", [
 # Load files (now with parameter for the chosen distance matrix)
 @st.cache_data
 def load_data(chosen_matrix: str, dataset_path: str, base_folder: str):
+    # Ensure dataset_path exists; if not, user probably wants it from base_folder
+    if not os.path.exists(dataset_path):
+        # try dataset in base_folder
+        possible = os.path.join(base_folder, os.path.basename(dataset_path))
+        if os.path.exists(possible):
+            dataset_path = possible
+        else:
+            raise FileNotFoundError(f"Dataset not found at {dataset_path} or {possible}")
+
     df_data = pd.read_csv(dataset_path, header=None)
     df_data.columns = ["con", "tst", "poi", "poi_x", "poi_y"]
 
-    # Matrix kiezen
+    # Choose matrix filename based on selection
     if chosen_matrix == "Buffer + Rough":
         matrix_filename = "N_C_PDPg_bufferrough_DistanceMatrix.csv"
     elif chosen_matrix == "Buffer only":
@@ -59,7 +113,26 @@ def load_data(chosen_matrix: str, dataset_path: str, base_folder: str):
     else:
         matrix_filename = "N_C_PDPg_fundamental_DistanceMatrix.csv"
 
-    full_matrix_path = os.path.join(base_folder, matrix_filename)
+    # Distance matrices are normally written to a PDP subfolder within the results folder.
+    # Search for the matrix in a set of likely subfolders and fall back to base_folder.
+    candidate_subfolders = ['', 'PDP', 'PDP', 'PDP/']
+    full_matrix_path = None
+    for sub in candidate_subfolders:
+        candidate = os.path.join(base_folder, sub, matrix_filename) if sub else os.path.join(base_folder, matrix_filename)
+        if os.path.exists(candidate):
+            full_matrix_path = candidate
+            break
+
+    if full_matrix_path is None:
+        # As a last resort, search recursively for a file with the matrix filename under base_folder
+        for root, dirs, files in os.walk(base_folder):
+            if matrix_filename in files:
+                full_matrix_path = os.path.join(root, matrix_filename)
+                break
+
+    if full_matrix_path is None:
+        raise FileNotFoundError(f"Distance matrix '{matrix_filename}' not found under {base_folder}")
+
     df_dist_raw = pd.read_csv(full_matrix_path, header=None)
 
     df_dist = pd.DataFrame(
@@ -70,14 +143,14 @@ def load_data(chosen_matrix: str, dataset_path: str, base_folder: str):
     return df_data, df_dist
 
 def style_highway(fig):
-    # Achtergrond grijs maken
+    # Make background gray
     fig.update_layout(
         plot_bgcolor="lightgray",
         xaxis=dict(range=[0, 600]),
         yaxis=dict(range=[-5, 5])
     )
 
-    # Witte lijnen voor de rijstrookmarkeringen
+    # White lines for lane markings
     for y_lane in [-1.75, 1.75]:
         fig.add_shape(
             type="line",
@@ -96,16 +169,16 @@ if view == "Heatmap":
     st.header("🌡️ Distance Matrix Heatmap")
     st.write(f"**Selected distance matrix:** `{matrix_option}`")
 
-    show_values = st.checkbox("Toon celwaarden", value=False)
-    zmin = st.slider("Z-min (kleine afstanden)", 0, 100, 0)
-    zmax = st.slider("Z-max (grote afstanden)", 0, 100, 100)
+    show_values = st.checkbox("Show cell values", value=False)
+    zmin = st.slider("Z-min (small distances)", 0, 100, 0)
+    zmax = st.slider("Z-max (large distances)", 0, 100, 100)
 
-    # Optioneel: laat gebruiker hoogte en breedte aanpassen
+    # Optional: allow user to adjust figure width and height
     col1, col2 = st.columns(2)
     with col1:
-        width = st.slider("Breedte figuur (px)", 600, 1800, 1200, step=100)
+        width = st.slider("Figure width (px)", 600, 1800, 1200, step=100)
     with col2:
-        height = st.slider("Hoogte figuur (px)", 400, 1200, 800, step=100)
+        height = st.slider("Figure height (px)", 400, 1200, 800, step=100)
 
     # Bouw kwargs dynamisch
     hm_kwargs = dict(
@@ -146,7 +219,7 @@ elif view == "Clustering":
         "Linkage method:",
         ["ward", "average", "single", "complete"],
         index=0,
-        help="Ward werkt het best met (quasi-)Euclidische afstanden."
+        help="Ward works best with (quasi-)Euclidean distances."
     )
 
     # Cache de linkage per methode voor snelheid
@@ -171,7 +244,7 @@ elif view == "Clustering":
     from scipy.cluster.hierarchy import fcluster
 
     st.subheader("🔎 Cluster Inspection")
-    max_clusters = st.slider("Aantal clusters:", 2, 20, 2)
+    max_clusters = st.slider("Number of clusters:", 2, 20, 2)
     cluster_labels = fcluster(linkage_matrix, t=max_clusters, criterion='maxclust')
 
     cluster_dict = {}
@@ -179,11 +252,11 @@ elif view == "Clustering":
         cluster_dict.setdefault(label, []).append(config)
 
     selected_cluster = st.selectbox(
-        "Kies cluster:",
+        "Choose cluster:",
         sorted(cluster_dict.keys())
     )
     members = cluster_dict[selected_cluster]
-    st.write(f"Cluster {selected_cluster} bevat {len(members)} configuraties: {', '.join(members)}")
+    st.write(f"Cluster {selected_cluster} contains {len(members)} configurations: {', '.join(members)}")
 
     # Representatieve config = laagste som van afstanden binnen submatrix
     submatrix = df_dist.loc[members, members].astype(float)
@@ -209,7 +282,7 @@ elif view == "Clustering":
         color="poi",
         color_discrete_map={"0": "blue", "1": "red"},
         labels={"poi_x": "X", "poi_y": "Y", "poi": "POI"},
-        title=f"Representatieve beweging — config {rep_config}",
+        title=f"Representative movement — config {rep_config}",
         range_x=[x_min - 1, x_max + 1],
         range_y=[y_min - 1, y_max + 1]
     )
@@ -334,7 +407,7 @@ elif view == "MDS & t-SNE":
 
     # Toon de afstand tussen deze configuraties
     distance = df_dist.loc[str(config_1), str(config_2)]
-    st.info(f"Afstand tussen configuratie {config_1} en {config_2}: {distance:.2f}")
+    st.info(f"Distance between configuration {config_1} and {config_2}: {distance:.2f}")
 
 
 # --- View 3: Visualization per Configuration ---
@@ -377,7 +450,7 @@ elif view == "Per Configuration":
 
 # --- View 4: Inequality Matrices (INTERACTIEF + vergelijking) ---
 elif view == "Inequality Matrices":
-    st.header("⚖️ Inequality Matrices — window-based & interactief")
+    st.header("⚖️ Inequality Matrices — window-based & interactive")
     st.write(f"**Selected distance matrix:** `{matrix_option}`")
 
     # === 1) Selectie van configuratie en descriptor ===
@@ -388,7 +461,7 @@ elif view == "Inequality Matrices":
 
     df_con = df_data[df_data["con"] == selected_con].copy()
     if df_con.empty:
-        st.warning("Geen data voor deze configuratie.")
+        st.warning("No data for this configuration.")
         st.stop()
 
     # === 2) Window-instellingen ===
@@ -400,7 +473,7 @@ elif view == "Inequality Matrices":
     with colA:
         window_length = st.number_input(
             "Window length (#timestamps)", min_value=1, max_value=total_timestamps, value=total_timestamps-1, step=1,
-            help=f"Aantal opeenvolgende timestamps per window (max {total_timestamps}, want timestamps lopen van 0 t/m {max_tst_total})."
+            help=f"Number of consecutive timestamps per window (max {total_timestamps}, timestamps run from 0 to {max_tst_total})."
         )
     with colB:
         max_start = max(0, max_tst_total - (window_length - 1))
@@ -408,27 +481,27 @@ elif view == "Inequality Matrices":
     with colC:
         default_rough = 0.0
         rough = st.number_input("rough tolerance", value=default_rough, step=0.1,
-                                help="Waarden |Δ| ≤ rough → gelijk (1); Δ > rough → 0; Δ < -rough → 2.")
+                                help="Values |Δ| ≤ rough → equal (1); Δ > rough → 0; Δ < -rough → 2.")
     with colD:
-        show_numbers = st.checkbox("Annotaties (celwaarden)", value=True)
+        show_numbers = st.checkbox("Annotations (cell values)", value=True)
 
     # Optie: POIs sorteren op (eerste) waarde of gewoon op poi-id
     colE, colF = st.columns(2)
     with colE:
-        sort_by_value = st.checkbox("Sorteer POIs op waarde (eerste timestamp in window)", value=False)
+        sort_by_value = st.checkbox("Sort POIs by value (first timestamp in window)", value=False)
     with colF:
-        palette_mode = st.selectbox("Kleurschema", ["groen/geel/rood (1/==/2)", "blauw/grijs/rood (-1/0/+1)"], index=0)
+        palette_mode = st.selectbox("Color palette", ["green/yellow/red (1/==/2)", "blue/gray/red (-1/0/+1)"], index=0)
 
     # === 3) Subset & ordening binnen window ===
     window_ts = list(range(start_tst, start_tst + window_length))
     df_w = df_con[df_con["tst"].isin(window_ts)].copy()
     if df_w.empty or df_w["tst"].nunique() < window_length:
-        st.error("Window valt (gedeeltelijk) buiten bereik of data ontbreekt voor sommige timestamps.")
+        st.error("Window is out of range or data is missing for some timestamps.")
         st.stop()
 
     counts = df_w.groupby(["poi", "tst"]).size().reset_index(name="n")
     if (counts["n"] != 1).any() or counts.shape[0] != poi_count * window_length:
-        st.warning("Onvolledige window: niet elke (poi, tst) combinatie is aanwezig. Matrix kan gaten bevatten.")
+        st.warning("Incomplete window: not every (poi, tst) combination is present. Matrix may contain gaps.")
 
     # Volgorde = eerst poi oplopend, dan tst oplopend
     if sort_by_value:
@@ -460,7 +533,7 @@ elif view == "Inequality Matrices":
 
     import plotly.express as px
 
-    if palette_mode.startswith("groen"):
+    if palette_mode.startswith("green"):
         colorscale = [[0.0, "#16a34a"], [0.5, "#facc15"], [1.0, "#dc2626"]]
         zmin, zmax = 0, 2
         legend_caption = "0: > rough, 1: |Δ|≤rough, 2: < -rough"
@@ -470,7 +543,7 @@ elif view == "Inequality Matrices":
         legend_caption = "0: > rough, 1: |Δ|≤rough, 2: < -rough"
 
 
-    # --- FIGUUR: numerieke assen + eigen ticklabels (zodat middenlijnen werken) ---
+    # --- FIGURE: numeric axes + custom tick labels (so midlines work) ---
     idx = list(range(len(ticks)))
     fig = px.imshow(
         A,
@@ -479,7 +552,7 @@ elif view == "Inequality Matrices":
         aspect="equal",
         zmin=zmin, zmax=zmax,
         color_continuous_scale=colorscale,
-        labels={"x": "j", "y": "i", "color": "klasse"},
+        labels={"x": "j", "y": "i", "color": "class"},
         title=(f"Inequality matrix — con {selected_con}, window=({start_tst}..{start_tst+window_length-1}), "
             f"{'X' if dim==0 else 'Y'}; rough={rough}"),
     )
@@ -507,7 +580,7 @@ elif view == "Inequality Matrices":
     fig.update_layout(width=1300, height=950, margin=dict(l=50, r=50, t=70, b=70))
 
     # Hover
-    fig.update_traces(hovertemplate="i=%{y}<br>j=%{x}<br>waarde=%{z}<extra></extra>")
+    fig.update_traces(hovertemplate="i=%{y}<br>j=%{x}<br>value=%{z}<extra></extra>")
 
     # Optionele annotaties (let op: x=j, y=i zijn nu numeriek)
     if show_numbers and n <= 200:
@@ -516,8 +589,8 @@ elif view == "Inequality Matrices":
                 fig.add_annotation(x=j, y=i, text=str(int(A[i, j])),
                                 showarrow=False, font=dict(size=12))
 
-    # === Middenlijnen (snel, maar zichtbaar) ===
-    show_midlines = st.checkbox("Toon middenlijnen (kwadranten verdeling)", value=True)
+    # === Midlines (quick, but visible) ===
+    show_midlines = st.checkbox("Show midlines (quadrant division)", value=True)
     if show_midlines:
         mid = len(ticks) / 2 - 0.5               # midden tussen cellen
         fig.add_shape(
