@@ -175,83 +175,22 @@ if not _t_common:
     st.error(f"Geen overlappende t-waarden voor c={selected_c} tussen o=0 en o=1.")
     st.stop()
 
-n_timepoints = len(_t_common)  # n = aantal beschikbare timestamps voor deze config
+n_timepoints = len(_t_common)
 default_window = min(3, n_timepoints)
-
-# Track timestamp selection changes to reset animation
-prev_config = st.session_state.get("prev_config_c", selected_c_int)
-
-# Als configuratie verandert, reset tracking
-if selected_c_int != prev_config:
-    st.session_state["prev_config_c"] = selected_c_int
-    st.session_state["prev_start_t_idx"] = 0
-    st.session_state["prev_num_timestamps"] = default_window
-    st.session_state["anim_running"] = False
-    st.session_state["show_anim_circle"] = False
-
-# Eerst: kies aantal timestamps
-prev_num_ts = st.session_state.get("prev_num_timestamps", default_window)
-
 with sc2:
-    # Kies eerst hoeveel timestamps je wilt
-    num_timestamps = st.slider(
-        "number of timestamps",
-        min_value=1,
-        max_value=n_timepoints,
-        value=min(prev_num_ts, n_timepoints),
-        step=1,
-        key="cfg_k",
-        help=f"Select how many timestamps to use (1 to {n_timepoints})"
-    )
+    num_timestamps = st.slider("number of timestamps", min_value=1, max_value=n_timepoints, value=default_window, step=1, key="cfg_k")
 
-# Dan: bereken maximum start-positie op basis van gekozen aantal timestamps
-# max_start_idx = n - num_timestamps
-# Bijvoorbeeld: n=4, num_timestamps=3 → max_start_idx = 4-3 = 1
-max_start_idx = n_timepoints - num_timestamps
-prev_start_idx = st.session_state.get("prev_start_t_idx", 0)
-
-# Als num_timestamps verandert EN prev_start_idx > max_start_idx, pas start_idx aan
-if num_timestamps != prev_num_ts:
-    if prev_start_idx > max_start_idx:
-        # Automatisch verminderen naar maximum beschikbare
-        prev_start_idx = max_start_idx
-        st.session_state["prev_start_t_idx"] = prev_start_idx
-
+max_start_pos = max(1, n_timepoints + 1 - num_timestamps)
 with sc3:
-    # Start-positie mag niet zo hoog zijn dat we buiten bereik vallen
-    # min=0, max = n - num_timestamps
-    if max_start_idx > 0:
-        start_t_idx = st.slider(
-            "starting time index",
-            min_value=0,
-            max_value=max_start_idx,
-            value=min(prev_start_idx, max_start_idx),
-            step=1,
-            key="cfg_start_t_idx",
-            help=f"Starting position (0 to {max_start_idx}), will select {num_timestamps} timestamps"
-        )
-    else:
-        # Als num_timestamps == n_timepoints, kan alleen starten op 0
-        start_t_idx = 0
-        st.caption("Starting at index 0 (only option for this selection)")
-    
-    start_t = _t_common[start_t_idx]
-    end_t = _t_common[start_t_idx + num_timestamps - 1]
-    st.caption(f"Range: t = {start_t} to {end_t}")
-
-# Validatie: controleer dat we niet buiten bereik vallen
-end_t_idx = start_t_idx + num_timestamps
-if end_t_idx > n_timepoints:
-    st.error(f"Invalid selection: would request timestamps up to index {end_t_idx-1}, but only {n_timepoints} available!")
-    st.stop()
-
-# Als num_timestamps of start_t_idx verandert, reset animatie
-if num_timestamps != prev_num_ts or start_t_idx != prev_start_idx:
-    st.session_state["anim_running"] = False
-    st.session_state["show_anim_circle"] = False
-    st.session_state["prev_num_timestamps"] = num_timestamps
-    st.session_state["prev_start_t_idx"] = start_t_idx
-    st.session_state["prev_start_t"] = start_t
+    # Laat de gebruiker starten op een echte t-waarde i.p.v. een positie-index
+    valid_start_count = max(1, n_timepoints - num_timestamps + 1)
+    valid_starts = _t_common[:valid_start_count]
+    start_t = st.select_slider(
+        "starting time (t)",
+        options=valid_starts,
+        value=valid_starts[0],
+        key="cfg_start_t",
+    )
 
 # --- Sleek academic controls ---
 st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
@@ -298,9 +237,13 @@ st.markdown("</div>", unsafe_allow_html=True)
 k_points, k_vals = load_points("voorbeeld.csv", o_val=0, c_val=selected_c_int)  # k-punten (o=0)
 l_points, l_vals = load_points("voorbeeld.csv", o_val=1, c_val=selected_c_int)  # l-punten (o=1)
 
-# ============= Selecteer venster op basis van GUI (start_t_idx, num_timestamps) =============
-# We gebruiken nu direct de index i.p.v. opnieuw te zoeken
-start_idx = int(start_t_idx)
+# ============= Selecteer venster op basis van GUI (start_t, num_timestamps) =============
+# Vind index van gekozen start-t in de gemeenschappelijke t-lijst
+try:
+    start_idx = _t_common.index(start_t)  # type: ignore[arg-type]
+except ValueError:
+    # Fallback: als om een of andere reden start_t niet in de lijst zit, terug naar 0
+    start_idx = 0
 end_idx = start_idx + int(num_timestamps)
 selected_ts_window = _t_common[start_idx:end_idx]
 selected_ts_set = set(selected_ts_window)
@@ -362,73 +305,61 @@ XLIM, YLIM = square_limits_with_margin(
 
 # ============= Animate button handler =============
 if animate_btn or animate_5_btn:
-    # Determine how many configs to generate
-    num_configs_to_generate = 5 if animate_5_btn else 1
-    
-    # Kies random punt uit k of l
-    all_pts = np.vstack([k_points_plot, l_points_plot])
-    all_ts = np.concatenate([k_vals_plot, l_vals_plot])
-    n_total = all_pts.shape[0]
-
-    # Kies een random index
-    parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
-    parent_pt = all_pts[parent_idx]
-
-    # Kies random hoek alfa (in radialen)
-    alfa = float(np.random.uniform(0, 2 * np.pi))
-
-    # Startafstand: voor binaire strategie beginnen met halve maxdist
-    if strategy == "binary":
-        distance = maxdist / 2.0
+    # Only proceed if strategy is exponential
+    if strategy != "exponential":
+        st.warning("Binary strategy not yet implemented. Please select 'exponential'.")
     else:
+        # Determine how many configs to generate
+        num_configs_to_generate = 5 if animate_5_btn else 1
+        
+        # Kies random punt uit k of l
+        all_pts = np.vstack([k_points_plot, l_points_plot])
+        all_ts = np.concatenate([k_vals_plot, l_vals_plot])
+        n_total = all_pts.shape[0]
+
+        # Kies een random index
+        parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
+        parent_pt = all_pts[parent_idx]
+
+        # Kies random hoek alfa (in radialen)
+        alfa = float(np.random.uniform(0, 2 * np.pi))
+
+        # Startafstand
         distance = maxdist
 
-    # Beginpunt op afstand 'distance' en hoek 'alfa'
-    gen_x = parent_pt[0] + distance * np.cos(alfa)
-    gen_y = parent_pt[1] + distance * np.sin(alfa)
-    generated_point = np.array([gen_x, gen_y])
-
-    # Check if point is within graph bounds; if not, add 180° to angle
-    if not (XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]):
-        alfa = (alfa + np.pi) % (2 * np.pi)
+        # Beginpunt op afstand 'distance' en hoek 'alfa'
         gen_x = parent_pt[0] + distance * np.cos(alfa)
         gen_y = parent_pt[1] + distance * np.sin(alfa)
         generated_point = np.array([gen_x, gen_y])
 
-    # Initialiseer animatiestatus (gemeenschappelijk voor beide strategieën)
-    st.session_state["show_anim_circle"] = True
-    st.session_state["anim_running"] = True
-    st.session_state["anim_circle_idx"] = parent_idx
-    st.session_state["anim_distance"] = distance
-    st.session_state["anim_generated_point"] = generated_point
-    st.session_state["anim_parent_idx"] = parent_idx
-    st.session_state["anim_all_pts"] = all_pts
-    st.session_state["anim_all_ts"] = all_ts
-    st.session_state["anim_angle"] = alfa
-    st.session_state["anim_strategy"] = strategy  # Store chosen strategy
-    st.session_state["anim_iteration"] = 0  # Start bij 0, wordt verhoogd na succesvolle iteratie
-    # Stel aantal iteraties in op basis van GUI-keuze (radio)
-    gui_iters = int(st.session_state.get("cfg_iterations", 3))
-    st.session_state["anim_max_iterations"] = gui_iters
-    st.session_state["anim_iterations_per_run"] = gui_iters
-    st.session_state["anim_completed_iterations"] = 0  # Aantal voltooide iteraties
-    st.session_state["anim_last_update"] = time.time()  # voor 5s wachttijd
-    st.session_state["anim_successful_points"] = []  # Succesvol gegenereerde punten met labels
-    st.session_state["anim_in_search"] = True  # Bezig met zoeken naar juiste positie
-    st.session_state["anim_num_configs"] = num_configs_to_generate  # Number of configs to generate
-    st.session_state["anim_current_config"] = 1  # Current config being generated
-    st.session_state["anim_all_configs"] = []  # Store all completed configurations
-    st.session_state["anim_search_steps"] = 0  # Aantal zoekstappen binnen huidige iteratie
-    # CSV accumulator: append 6 rows (t=0,1,2 for k and l) per completed config
-    st.session_state["anim_csv_lines"] = []
-    
-    # Binary strategy specific variables
-    if strategy == "binary":
-        st.session_state["anim_binary_last_match_point"] = None  # (x, y) van laatste order match
-        st.session_state["anim_binary_base_distance"] = distance  # Startafstand (bijv. maxdist)
-        st.session_state["anim_binary_base_radius"] = distance    # Startstraal
-        st.session_state["anim_binary_step_size"] = distance / 2.0  # Eerste stap (helft van start)
-        st.session_state["anim_binary_last_step_match"] = False
+        # Check if point is within graph bounds; if not, add 180° to angle
+        if not (XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]):
+            alfa = (alfa + np.pi) % (2 * np.pi)
+            gen_x = parent_pt[0] + distance * np.cos(alfa)
+            gen_y = parent_pt[1] + distance * np.sin(alfa)
+            generated_point = np.array([gen_x, gen_y])
+
+        # Initialiseer animatiestatus
+        st.session_state["show_anim_circle"] = True
+        st.session_state["anim_running"] = True
+        st.session_state["anim_circle_idx"] = parent_idx
+        st.session_state["anim_distance"] = distance
+        st.session_state["anim_generated_point"] = generated_point
+        st.session_state["anim_parent_idx"] = parent_idx
+        st.session_state["anim_all_pts"] = all_pts
+        st.session_state["anim_all_ts"] = all_ts
+        st.session_state["anim_angle"] = alfa
+        st.session_state["anim_iteration"] = 0  # Start bij 0, wordt verhoogd na succesvolle iteratie
+        st.session_state["anim_max_iterations"] = 3  # 3 iteraties per configuratie
+        st.session_state["anim_iterations_per_run"] = 3  # Voer 3 iteraties uit per run
+        st.session_state["anim_completed_iterations"] = 0  # Aantal voltooide iteraties
+        st.session_state["anim_last_update"] = time.time()  # voor 5s wachttijd
+        st.session_state["anim_successful_points"] = []  # Succesvol gegenereerde punten met labels
+        st.session_state["anim_in_search"] = True  # Bezig met zoeken naar juiste positie
+        st.session_state["anim_num_configs"] = num_configs_to_generate  # Number of configs to generate
+        st.session_state["anim_current_config"] = 1  # Current config being generated
+        st.session_state["anim_all_configs"] = []  # Store all completed configurations
+        st.session_state["anim_search_steps"] = 0  # Aantal zoekstappen binnen huidige iteratie
 
 # ============= d1/d2-volgorde strings (latex) =============
 def _format_t_subscript(tval: float) -> str:
@@ -697,7 +628,7 @@ def _strip_primes(text: str) -> str:
 
 def _extract_order_string(latex_str: str) -> str:
     """Extract the ordering part and strip all primes (apostrophes and asterisks)."""
-    # Verwijder prefix "d_1:" / "d_2:" 
+    # Verwijder prefix "d_1:" / "d_2:"
     core = latex_str.replace("d_1:", "").replace("d_2:", "").strip()
     # Verwijder alle generatie-markers (primes en asterisken)
     core_no_primes = _strip_primes(core)
@@ -1167,12 +1098,9 @@ if st.session_state.get("anim_running", False):
         time.sleep(5.0)
         st.rerun()
     
-    # Bepaal strategie
-    strategy = st.session_state.get("anim_strategy", "exponential")
-
-    # Voor EXPONENTIËLE strategie: originele succesvoorwaarde.
-    # Voor BINAIRE strategie: GEEN vroege success bij match; pas succes na 7 stappen (of distance<=0)
-    if strategy != "binary" and ((same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None)):
+    # Normale animatie logica
+    # Als volgordes matchen OF distance is 0: beschouw als succesvolle generatie
+    if (same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None):
         # Registreer succesvolle punt
         # Determine correct parent_point and original_parent_idx
         n_k = k_points_plot.shape[0]
@@ -1202,14 +1130,6 @@ if st.session_state.get("anim_running", False):
         st.session_state["anim_completed_iterations"] = completed_iterations + 1
         st.session_state["anim_search_steps"] = 0  # Reset search steps
         st.session_state["anim_in_search"] = True  # volgende punt zoeken
-        
-        # Reset binary-specifieke variabelen na succesvolle iteratie (indien exponentieel triggerde succes is dat irrelevant voor binary)
-        if strategy == "binary":
-            st.session_state["anim_binary_last_match_point"] = None
-            st.session_state["anim_binary_base_distance"] = maxdist / 2.0
-            st.session_state["anim_binary_base_radius"] = maxdist / 2.0
-            st.session_state["anim_binary_step_size"] = maxdist / 4.0
-            st.session_state["anim_binary_last_step_match"] = False
 
         # Check of we klaar zijn met deze configuratie
         if completed_iterations + 1 >= max_iterations:
@@ -1218,8 +1138,7 @@ if st.session_state.get("anim_running", False):
             num_configs = int(st.session_state.get("anim_num_configs", 1))
             
             # Sla huidige configuratie op
-            # Bewaar configuraties (typeless list to satisfy runtime; ignore static typing complaints)
-            all_configs = st.session_state.get("anim_all_configs", [])  # type: ignore[assignment]
+            all_configs: list = st.session_state.get("anim_all_configs", [])
             all_configs.append({
                 "config_num": current_config,
                 "points": list(successful_points)
@@ -1229,48 +1148,6 @@ if st.session_state.get("anim_running", False):
             # Markeer alle huidige successful_points als "van vorige config"
             for sp in successful_points:
                 sp["config_num"] = current_config  # type: ignore[typeddict-item]
-            
-            # CSV: voeg 6 rijen toe voor deze voltooide configuratie (t=0,1,2 en o in {k=0, l=1})
-            try:
-                output_c = int(selected_c_int) + int(current_config)  # start bij c_start+1 -> 12,13,...
-            except Exception:
-                output_c = int(current_config)
-
-            # Bepaal voor alle originele indices de LAATSTE gegenereerde positie (anders origineel punt)
-            latest_generated: dict[int, np.ndarray] = {}
-            for sp2 in successful_points:
-                if "original_parent_idx" in sp2:
-                    oi2 = int(sp2["original_parent_idx"])  # type: ignore[index]
-                    latest_generated[oi2] = sp2["point"]
-
-            csv_append: list[str] = []
-            # k-punten (o=0)
-            n_k_loc = k_points_plot.shape[0]
-            for i, tval in enumerate(k_vals_plot.tolist()):
-                if i >= n_k_loc:
-                    break
-                if i in latest_generated:
-                    px, py = float(latest_generated[i][0]), float(latest_generated[i][1])
-                else:
-                    px, py = float(k_points_plot[i, 0]), float(k_points_plot[i, 1])
-                csv_append.append(f"{output_c},{tval},0,{px:.6f},{py:.6f}")
-
-            # l-punten (o=1)
-            n_l_loc = l_points_plot.shape[0]
-            for j, tval in enumerate(l_vals_plot.tolist()):
-                if j >= n_l_loc:
-                    break
-                glob_idx = n_k_loc + j
-                if glob_idx in latest_generated:
-                    px, py = float(latest_generated[glob_idx][0]), float(latest_generated[glob_idx][1])
-                else:
-                    px, py = float(l_points_plot[j, 0]), float(l_points_plot[j, 1])
-                csv_append.append(f"{output_c},{tval},1,{px:.6f},{py:.6f}")
-
-            # Sla op in session_state accumulator
-            acc: list[str] = st.session_state.get("anim_csv_lines", [])
-            acc.extend(csv_append)
-            st.session_state["anim_csv_lines"] = acc
             
             if current_config < num_configs:
                 # Start nieuwe configuratie - blijf anim_running op True
@@ -1331,14 +1208,6 @@ if st.session_state.get("anim_running", False):
                 st.session_state["anim_distance"] = distance
                 st.session_state["anim_all_pts"] = all_pts_reset
                 
-                # Reset binary-specifieke variabelen voor nieuwe config
-                if strategy == "binary":
-                    st.session_state["anim_binary_last_match_point"] = None
-                    st.session_state["anim_binary_base_distance"] = maxdist / 2.0
-                    st.session_state["anim_binary_base_radius"] = maxdist / 2.0
-                    st.session_state["anim_binary_step_size"] = maxdist / 4.0
-                    st.session_state["anim_binary_last_step_match"] = False
-                
                 # Zet flag voor extra wachttijd bij volgende rerun
                 st.session_state["anim_config_complete_wait"] = True
             else:
@@ -1384,62 +1253,19 @@ if st.session_state.get("anim_running", False):
             new_y = parent_pt_new[1] + distance * np.sin(angle)
             new_gen_pt = np.array([new_x, new_y])
 
-            # Als buiten limieten bij start van iteratie: spiegel hoek (R -> R+180°) en plaats opnieuw
-            if not (XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]):
-                angle = (angle + np.pi) % (2 * np.pi)
-                new_x = parent_pt_new[0] + distance * np.cos(angle)
-                new_y = parent_pt_new[1] + distance * np.sin(angle)
-                new_gen_pt = np.array([new_x, new_y])
-
             st.session_state["anim_parent_idx"] = parent_idx_new
             st.session_state["anim_angle"] = angle
             st.session_state["anim_generated_point"] = new_gen_pt
             st.session_state["anim_distance"] = distance
-            
-            # Reset binary-specifieke variabelen voor nieuwe iteratie
-            if strategy == "binary":
-                st.session_state["anim_binary_last_match_point"] = None
-                st.session_state["anim_binary_base_distance"] = maxdist / 2.0
-                st.session_state["anim_binary_base_radius"] = maxdist / 2.0
-                st.session_state["anim_binary_step_size"] = maxdist / 4.0
-                st.session_state["anim_binary_last_step_match"] = False
 
     else:
-        # Strategie-afhankelijke voortgang
-        strategy = st.session_state.get("anim_strategy", "exponential")
-
-        if strategy == "binary":
-            # Binaire zoek: exact 7 stappen met opslaan van laatste match-positie
-            step_size = float(st.session_state.get("anim_binary_step_size", maxdist / 2.0))
-            last_match_point = st.session_state.get("anim_binary_last_match_point", None)
-            
-            # STAP 1: Check huidige order match en sla positie op indien BEIDE matches True
-            current_match = bool(same_d1 and same_d2)
-            if current_match and gen_pt is not None:
-                # Sla huidige (x, y) op als laatste match-positie
-                st.session_state["anim_binary_last_match_point"] = np.array(gen_pt, dtype=float)
-                last_match_point = np.array(gen_pt, dtype=float)
-            
-            # STAP 2: Pas afstand aan op basis van match
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
-            
-            if current_match:
-                distance = distance + step_size
-            else:
-                distance = distance - step_size
-
-            # Clamp afstand
-            if distance < 0.0:
-                distance = 0.0
-
-            # Halveer stap voor volgende ronde
-            step_size = step_size / 2.0
-            st.session_state["anim_binary_step_size"] = step_size
-            st.session_state["anim_distance"] = distance
-
-            # STAP 3: Verplaats punt naar nieuwe positie langs zelfde hoek
-            if all_pts.size > 0:
+        # Geen match: verhoog search_steps
+        search_steps += 1
+        st.session_state["anim_search_steps"] = search_steps
+        
+        # Na 7 stappen: plaats punt exact op parent positie (straal = 0)
+        if search_steps >= max_search_steps:
+            if gen_pt is not None and all_pts.size > 0:
                 n_k = k_points_plot.shape[0]
                 n_l = l_points_plot.shape[0]
                 total_original = n_k + n_l
@@ -1452,246 +1278,13 @@ if st.session_state.get("anim_running", False):
                         parent_pt_cur = succ_list[sidx]["point"]
                     else:
                         parent_pt_cur = np.array([0.0, 0.0])
-                new_x = parent_pt_cur[0] + distance * np.cos(angle)
-                new_y = parent_pt_cur[1] + distance * np.sin(angle)
-                st.session_state["anim_generated_point"] = np.array([new_x, new_y])
-
-            # STAP 4: Na 7 stappen: gebruik opgeslagen match-positie of parent punt
-            if search_steps >= max_search_steps:
-                # Bepaal finale positie: gebruik last_match_point als beschikbaar, anders parent punt
-                if last_match_point is not None:
-                    # Er was minstens 1 keer een volledige match: gebruik die positie
-                    final_point = last_match_point.copy()
-                else:
-                    # Geen enkele volledige match: plaats op parent punt
-                    if all_pts.size > 0:
-                        n_k_final = k_points_plot.shape[0]
-                        n_l_final = l_points_plot.shape[0]
-                        total_original_final = n_k_final + n_l_final
-                        if parent_idx < total_original_final:
-                            final_point = all_pts[parent_idx].copy()
-                        else:
-                            succ_list_final: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                            sidx_final = int(parent_idx - total_original_final)
-                            if 0 <= sidx_final < len(succ_list_final):
-                                final_point = succ_list_final[sidx_final]["point"].copy()
-                            else:
-                                final_point = np.array([0.0, 0.0])
-                    else:
-                        final_point = np.array([0.0, 0.0])
                 
-                # Update generated point naar finale positie
-                st.session_state["anim_generated_point"] = final_point
-                
-                # Registreer succesvol punt
-                n_k_loc = k_points_plot.shape[0]
-                n_l_loc = l_points_plot.shape[0]
-                total_original_loc = n_k_loc + n_l_loc
-                if all_pts.size > 0 and parent_idx < total_original_loc:
-                    parent_point_val = all_pts[parent_idx]
-                    original_parent_idx_val = parent_idx
-                else:
-                    succ_list2: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                    sidx2 = int(parent_idx - total_original_loc)
-                    if 0 <= sidx2 < len(succ_list2):
-                        parent_point_val = succ_list2[sidx2]["point"]
-                        original_parent_idx_val = succ_list2[sidx2]["original_parent_idx"]
-                    else:
-                        parent_point_val = np.array([0.0, 0.0])
-                        original_parent_idx_val = 0
-                
-                sp_bin: SuccessfulPoint = {
-                    "point": final_point,
-                    "parent_idx": parent_idx,
-                    "parent_point": parent_point_val,
-                    "original_parent_idx": original_parent_idx_val,
-                    "iteration": completed_iterations,
-                }
-                successful_points.append(sp_bin)
-                st.session_state["anim_successful_points"] = successful_points
-                st.session_state["anim_completed_iterations"] = completed_iterations + 1
-                st.session_state["anim_search_steps"] = 0
+                # Plaats punt exact op parent positie
+                st.session_state["anim_generated_point"] = parent_pt_cur.copy()
+                st.session_state["anim_distance"] = 0.0
                 st.session_state["anim_in_search"] = True
-                # Reset binary vars
-                st.session_state["anim_binary_last_match_point"] = None
-                st.session_state["anim_binary_base_distance"] = maxdist / 2.0
-                st.session_state["anim_binary_base_radius"] = maxdist / 2.0
-                st.session_state["anim_binary_step_size"] = maxdist / 4.0
-                st.session_state["anim_binary_last_step_match"] = False
-
-                # Check config completion (reuse existing logic triggers by copying essential subset)
-                if completed_iterations + 1 >= max_iterations:
-                        current_config = int(st.session_state.get("anim_current_config", 1))
-                        num_configs = int(st.session_state.get("anim_num_configs", 1))
-                        all_configs_local = st.session_state.get("anim_all_configs", [])  # type: ignore[assignment]
-                        all_configs_local.append({"config_num": current_config, "points": list(successful_points)})
-                        st.session_state["anim_all_configs"] = all_configs_local
-                        for spx in successful_points:
-                            spx["config_num"] = current_config  # type: ignore[typeddict-item]
-                        try:
-                            output_c = int(selected_c_int) + int(current_config)
-                        except Exception:
-                            output_c = int(current_config)
-                        latest_generated: dict[int, np.ndarray] = {}
-                        for sp2 in successful_points:
-                            if "original_parent_idx" in sp2:
-                                oi2 = int(sp2["original_parent_idx"])  # type: ignore[index]
-                                latest_generated[oi2] = sp2["point"]
-                        csv_append: list[str] = []
-                        n_k_loc2 = k_points_plot.shape[0]
-                        for i, tval in enumerate(k_vals_plot.tolist()):
-                            if i >= n_k_loc2:
-                                break
-                            if i in latest_generated:
-                                px, py = float(latest_generated[i][0]), float(latest_generated[i][1])
-                            else:
-                                px, py = float(k_points_plot[i, 0]), float(k_points_plot[i, 1])
-                            csv_append.append(f"{output_c},{tval},0,{px:.6f},{py:.6f}")
-                        n_l_loc2 = l_points_plot.shape[0]
-                        for j, tval in enumerate(l_vals_plot.tolist()):
-                            if j >= n_l_loc2:
-                                break
-                            glob_idx = n_k_loc2 + j
-                            if glob_idx in latest_generated:
-                                px, py = float(latest_generated[glob_idx][0]), float(latest_generated[glob_idx][1])
-                            else:
-                                px, py = float(l_points_plot[j, 0]), float(l_points_plot[j, 1])
-                            csv_append.append(f"{output_c},{tval},1,{px:.6f},{py:.6f}")
-                        acc_local: list[str] = st.session_state.get("anim_csv_lines", [])
-                        acc_local.extend(csv_append)
-                        st.session_state["anim_csv_lines"] = acc_local
-                        if current_config < num_configs:
-                            st.session_state["anim_current_config"] = current_config + 1
-                            st.session_state["anim_completed_iterations"] = 0
-                            st.session_state["anim_search_steps"] = 0
-                            st.session_state["anim_running"] = True
-                            st.session_state["show_anim_circle"] = True
-                            # Kies nieuwe parent voor start volgende config
-                            n_k_reset = k_points_plot.shape[0]
-                            n_l_reset = l_points_plot.shape[0]
-                            total_original_reset = n_k_reset + n_l_reset
-                            all_pts_reset = np.vstack([k_points_plot, l_points_plot])
-                            all_indices_reset = list(range(total_original_reset))
-                            if all_indices_reset:
-                                chosen_idx_reset = int(np.random.choice(all_indices_reset))
-                            else:
-                                chosen_idx_reset = 0
-                            youngest_point_reset = None
-                            youngest_success_idx_reset = None
-                            for idx_r, s_r in reversed(list(enumerate(successful_points))):
-                                oi_r = s_r.get("original_parent_idx", None)
-                                if oi_r is not None and int(oi_r) == chosen_idx_reset:
-                                    youngest_point_reset = s_r["point"]
-                                    youngest_success_idx_reset = idx_r
-                                    break
-                            if youngest_point_reset is not None and youngest_success_idx_reset is not None:
-                                parent_pt_reset = youngest_point_reset
-                                parent_idx_reset = total_original_reset + youngest_success_idx_reset
-                            else:
-                                parent_idx_reset = chosen_idx_reset
-                                parent_pt_reset = all_pts_reset[parent_idx_reset]
-                            distance_reset = maxdist / 2.0  # Binaire strategie: start met halve maxdist
-                            angle_reset = float(np.random.uniform(0, 2 * np.pi))
-                            new_x_reset = parent_pt_reset[0] + distance_reset * np.cos(angle_reset)
-                            new_y_reset = parent_pt_reset[1] + distance_reset * np.sin(angle_reset)
-                            new_gen_pt_reset = np.array([new_x_reset, new_y_reset])
-                            if not (XLIM[0] <= new_x_reset <= XLIM[1] and YLIM[0] <= new_y_reset <= YLIM[1]):
-                                angle_reset = (angle_reset + np.pi) % (2 * np.pi)
-                                new_x_reset = parent_pt_reset[0] + distance_reset * np.cos(angle_reset)
-                                new_y_reset = parent_pt_reset[1] + distance_reset * np.sin(angle_reset)
-                                new_gen_pt_reset = np.array([new_x_reset, new_y_reset])
-                            st.session_state["anim_parent_idx"] = parent_idx_reset
-                            st.session_state["anim_angle"] = angle_reset
-                            st.session_state["anim_generated_point"] = new_gen_pt_reset
-                            st.session_state["anim_distance"] = distance_reset
-                            st.session_state["anim_all_pts"] = all_pts_reset
-                            st.session_state["anim_config_complete_wait"] = True
-                        else:
-                            st.session_state["anim_running"] = False
-                            st.session_state["show_anim_circle"] = False
-                else:
-                    # Iteratie succesvol, maar configuratie nog niet rond: kies een nieuwe parent
-                    n_k2 = k_points_plot.shape[0]
-                    n_l2 = l_points_plot.shape[0]
-                    total_original2 = n_k2 + n_l2
-                    all_indices2 = list(range(total_original2))
-                    if all_indices2:
-                        chosen_idx2 = int(np.random.choice(all_indices2))
-                    else:
-                        chosen_idx2 = 0
-                    youngest_point2 = None
-                    youngest_success_idx2 = None
-                    for idx2, s2 in reversed(list(enumerate(successful_points))):
-                        oi2_chk = s2.get("original_parent_idx", None)
-                        if oi2_chk is not None and int(oi2_chk) == chosen_idx2:
-                            youngest_point2 = s2["point"]
-                            youngest_success_idx2 = idx2
-                            break
-                    if youngest_point2 is not None and youngest_success_idx2 is not None:
-                        parent_pt_new2 = youngest_point2
-                        parent_idx_new2 = total_original2 + youngest_success_idx2
-                    else:
-                        if chosen_idx2 < n_k2:
-                            parent_pt_new2 = k_points_plot[chosen_idx2]
-                        else:
-                            parent_pt_new2 = l_points_plot[chosen_idx2 - n_k2]
-                        parent_idx_new2 = chosen_idx2
-
-                    distance2 = maxdist / 2.0  # Binaire strategie: start met halve maxdist
-                    angle2 = float(np.random.uniform(0, 2 * np.pi))
-                    new_x2 = parent_pt_new2[0] + distance2 * np.cos(angle2)
-                    new_y2 = parent_pt_new2[1] + distance2 * np.sin(angle2)
-                    new_gen_pt2 = np.array([new_x2, new_y2])
-                    if not (XLIM[0] <= new_x2 <= XLIM[1] and YLIM[0] <= new_y2 <= YLIM[1]):
-                        angle2 = (angle2 + np.pi) % (2 * np.pi)
-                        new_x2 = parent_pt_new2[0] + distance2 * np.cos(angle2)
-                        new_y2 = parent_pt_new2[1] + distance2 * np.sin(angle2)
-                        new_gen_pt2 = np.array([new_x2, new_y2])
-
-                    st.session_state["anim_parent_idx"] = parent_idx_new2
-                    st.session_state["anim_angle"] = angle2
-                    st.session_state["anim_generated_point"] = new_gen_pt2
-                    st.session_state["anim_distance"] = distance2
-                    # Reset binary vars voor nieuwe iteratie
-                    st.session_state["anim_binary_last_match_point"] = None
-                    st.session_state["anim_binary_base_distance"] = maxdist / 2.0
-                    st.session_state["anim_binary_base_radius"] = maxdist / 2.0
-                    st.session_state["anim_binary_step_size"] = maxdist / 4.0
-                    st.session_state["anim_binary_last_step_match"] = False
-                    
-                    # Extra pauze voor binaire strategie na lijnen hertekenen
-                    time.sleep(5.0)
-                    st.rerun()
-            # Klaar met deze turn voor binary; skip exponentiële else
         else:
-            # EXPONENTIËLE STRATEGIE: handhaaf 7-stappen fallback en halveerafstand
-            # Verhoog search_steps en forceer na 7 stappen plaatsing op parent
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
-
-            if search_steps >= max_search_steps:
-                if gen_pt is not None and all_pts.size > 0:
-                    n_k = k_points_plot.shape[0]
-                    n_l = l_points_plot.shape[0]
-                    total_original = n_k + n_l
-                    if parent_idx < total_original:
-                        parent_pt_cur = all_pts[parent_idx]
-                    else:
-                        succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                        sidx = int(parent_idx - total_original)
-                        if 0 <= sidx < len(succ_list):
-                            parent_pt_cur = succ_list[sidx]["point"]
-                        else:
-                            parent_pt_cur = np.array([0.0, 0.0])
-                    st.session_state["anim_generated_point"] = parent_pt_cur.copy()
-                    st.session_state["anim_distance"] = 0.0
-                    st.session_state["anim_in_search"] = True
-                # Stop verdere halvering deze beurt
-                time.sleep(5.0)
-                st.rerun()
-
-            # Ga door met halveren zolang we nog niet geforceerd hebben
-            # EXPONENTIËLE STRATEGIE: halveer afstand en verplaats punt langs dezelfde hoek
+            # Halveer afstand en verplaats punt langs dezelfde hoek
             if gen_pt is not None and all_pts.size > 0:
                 n_k = k_points_plot.shape[0]
                 n_l = l_points_plot.shape[0]
@@ -1738,24 +1331,81 @@ if st.session_state.get("anim_running", False):
 
 # ============= CSV Export Section =============
 st.markdown("<hr />", unsafe_allow_html=True)
-st.markdown("<h3 style='margin-top:1.5rem;'>Generated Configurations (CSV)</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='margin-top:1.5rem;'>Generated Configuration (CSV)</h3>", unsafe_allow_html=True)
 
-# Build CSV from accumulator that updates on each completed config
-csv_acc: list[str] = st.session_state.get("anim_csv_lines", [])
-if csv_acc:
-    csv_content = "\n".join(["c,t,o,x,y", *csv_acc])
+# Build CSV from successful points
+if st.session_state.get("anim_successful_points"):
+    successful_points_export: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+    
+    # Build mapping: (config_num, original_idx) -> generated point
+    # Only keep the LATEST point for each (config, original_idx) combination
+    latest_generated: dict[tuple[int, int], np.ndarray] = {}
+    for sp in successful_points_export:
+        orig_idx = sp.get("original_parent_idx", 0)
+        config_num = sp.get("config_num", 1)
+        latest_generated[(config_num, orig_idx)] = sp["point"]
+    
+    # Get all unique config_nums from successful points
+    all_config_nums = sorted(set(sp.get("config_num", 1) for sp in successful_points_export))
+    
+    # Create CSV rows for ALL points (k and l) at ALL timestamps for EACH config
+    csv_rows: list[tuple[int, float, int, float, float]] = []
+    
+    n_k = k_points_plot.shape[0]
+    n_l = l_points_plot.shape[0]
+    
+    for config_num in all_config_nums:
+        # Calculate c value: selected_c + config_num
+        c_value = selected_c_int + config_num
+        
+        # Add k-points (o=0) for all timestamps
+        for i in range(n_k):
+            t_val = float(k_vals_plot[i])
+            if (config_num, i) in latest_generated:
+                # Use generated point for this config
+                point = latest_generated[(config_num, i)]
+            else:
+                # Use original point
+                point = k_points_plot[i]
+            csv_rows.append((c_value, t_val, 0, float(point[0]), float(point[1])))
+        
+        # Add l-points (o=1) for all timestamps
+        for j in range(n_l):
+            t_val = float(l_vals_plot[j])
+            orig_idx = n_k + j
+            if (config_num, orig_idx) in latest_generated:
+                # Use generated point for this config
+                point = latest_generated[(config_num, orig_idx)]
+            else:
+                # Use original point
+                point = l_points_plot[j]
+            csv_rows.append((c_value, t_val, 1, float(point[0]), float(point[1])))
+    
+    # Sort by c, then t, then o
+    csv_rows.sort(key=lambda row: (row[0], row[1], row[2]))
+    
+    # Build CSV string
+    csv_lines = ["c,t,o,x,y"]
+    for c, t, o, x, y in csv_rows:
+        csv_lines.append(f"{c},{t},{o},{x:.6f},{y:.6f}")
+    
+    csv_content = "\n".join(csv_lines)
+    
+    # Display in text area
     st.text_area(
-        "Copy the generated configurations below:",
+        "Copy the generated configuration below:",
         value=csv_content,
-        height=220,
+        height=200,
         key="csv_export"
     )
+    
+    # Download button
     st.download_button(
-        label="Download CSV",
+        label="Download as CSV",
         data=csv_content,
-        file_name="generated_configs.csv",
+        file_name=f"generated_config_c{selected_c_int}.csv",
         mime="text/csv",
         key="dl_csv"
     )
 else:
-    st.info("The CSV will update automatically after each completed configuration.")
+    st.info("Run an animation to generate configuration data.")
