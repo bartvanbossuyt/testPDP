@@ -321,23 +321,29 @@ if animate_btn or animate_5_btn:
         parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
         parent_pt = all_pts[parent_idx]
 
-        # Kies random hoek alfa (in radialen)
-        alfa = float(np.random.uniform(0, 2 * np.pi))
-
         # Startafstand
         distance = maxdist
 
-        # Beginpunt op afstand 'distance' en hoek 'alfa'
-        gen_x = parent_pt[0] + distance * np.cos(alfa)
-        gen_y = parent_pt[1] + distance * np.sin(alfa)
-        generated_point = np.array([gen_x, gen_y])
-
-        # Check if point is within graph bounds; if not, add 180° to angle
-        if not (XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]):
-            alfa = (alfa + np.pi) % (2 * np.pi)
+        # Probeer een punt binnen het grafiekveld te vinden
+        alfa = 0.0  # Initialiseer alfa
+        gen_x = 0.0  # Initialiseer gen_x
+        gen_y = 0.0  # Initialiseer gen_y
+        max_attempts = 20  # Voorkom oneindige loop
+        for _ in range(max_attempts):
+            alfa = float(np.random.uniform(0, 2 * np.pi))
             gen_x = parent_pt[0] + distance * np.cos(alfa)
             gen_y = parent_pt[1] + distance * np.sin(alfa)
-            generated_point = np.array([gen_x, gen_y])
+            
+            # Check if point is within graph bounds
+            if XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]:
+                break
+            # Als niet binnen veld, probeer opnieuw met nieuwe random hoek
+        else:
+            # Na max_attempts nog steeds niet binnen veld: clip naar bounds
+            gen_x = np.clip(gen_x, XLIM[0], XLIM[1])
+            gen_y = np.clip(gen_y, YLIM[0], YLIM[1])
+        
+        generated_point = np.array([gen_x, gen_y])
 
         # Initialiseer animatiestatus
         st.session_state["show_anim_circle"] = True
@@ -728,12 +734,31 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
     # Check if animation is active
     # Toon altijd de laatste generatiepunten als animatie klaar is
     has_animation = st.session_state.get("show_anim_circle", False)
-    # Gebruik de meest recente succesvolle punten, ook als animatie niet meer loopt
-    successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-    gen_pt = st.session_state.get("anim_generated_point", None) if has_animation else None
-    parent_idx = st.session_state.get("anim_parent_idx", 0) if has_animation else 0
-    in_search = st.session_state.get("anim_in_search", False) if has_animation else False
     anim_running = st.session_state.get("anim_running", False)
+    
+    # Determine which configuration to display
+    viewed_config_num = int(st.session_state.get("viewed_config_num", st.session_state.get("anim_current_config", 1)))
+    current_config_num = int(st.session_state.get("anim_current_config", 1))
+    
+    # Get points for the viewed configuration
+    if viewed_config_num == current_config_num:
+        # Viewing current/latest configuration - use anim_successful_points
+        successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+        gen_pt = st.session_state.get("anim_generated_point", None) if has_animation else None
+        parent_idx = st.session_state.get("anim_parent_idx", 0) if has_animation else 0
+        in_search = st.session_state.get("anim_in_search", False) if has_animation else False
+    else:
+        # Viewing a previous configuration - load from anim_all_configs
+        all_configs_list: list = st.session_state.get("anim_all_configs", [])
+        successful_points = []
+        for config_data in all_configs_list:
+            if config_data["config_num"] == viewed_config_num:
+                successful_points = config_data["points"]
+                break
+        # No animation elements when viewing previous configs
+        gen_pt = None
+        parent_idx = 0
+        in_search = False
     
     offsets = [(3, 3), (3, -8), (-8, 3)]
     
@@ -1017,10 +1042,21 @@ with col1:
 with col2:
     st.markdown("<div class='figure-title'>generated configuration</div>", unsafe_allow_html=True)
     
-    # d1-volgorde boven de grafiek (inclusief gegenereerde punt indien animatie actief)
-    st.latex(make_d1_order_latex_generated())
-    # d2-volgorde boven de grafiek (inclusief gegenereerde punt indien animatie actief)
-    st.latex(make_d2_order_latex_generated())
+    # Determine if we're viewing the current configuration
+    viewed_config_num = int(st.session_state.get("viewed_config_num", st.session_state.get("anim_current_config", 1)))
+    current_config_num = int(st.session_state.get("anim_current_config", 1))
+    viewing_current = (viewed_config_num == current_config_num)
+    
+    # Only show order strings when viewing current configuration
+    if viewing_current:
+        # d1-volgorde boven de grafiek (inclusief gegenereerde punt indien animatie actief)
+        st.latex(make_d1_order_latex_generated())
+        # d2-volgorde boven de grafiek (inclusief gegenereerde punt indien animatie actief)
+        st.latex(make_d2_order_latex_generated())
+    else:
+        # Show placeholder or empty space when viewing previous configs
+        st.latex(r"d_1:")
+        st.latex(r"d_2:")
     
     # Render right graph
     fig_right = render_square_matplotlib_figure(draw_generated_empty, XLIM, YLIM)
@@ -1028,8 +1064,8 @@ with col2:
     # Display the figure
     st.pyplot(fig_right, clear_figure=True)
     
-    # Vergelijk x-volgorde (d1) wanneer animatie actief is
-    if st.session_state.get("show_anim_circle", False):
+    # Vergelijk x-volgorde (d1) wanneer animatie actief is AND viewing current config
+    if st.session_state.get("show_anim_circle", False) and viewing_current:
         left_d1 = make_d1_order_latex()
         right_d1 = make_d1_order_latex_generated()
         left_order = _extract_order_string(left_d1)
@@ -1062,6 +1098,61 @@ with col2:
         mime="image/png",
         key="dl_right_png",
     )
+    
+    # ============= Navigation buttons for browsing configurations =============
+    all_configs_list: list = st.session_state.get("anim_all_configs", [])
+    current_config_num = int(st.session_state.get("anim_current_config", 1))
+    
+    # Determine all available configuration numbers
+    available_configs: list[int] = []
+    for config_data in all_configs_list:
+        available_configs.append(config_data["config_num"])
+    
+    # Add current config if it has points
+    if st.session_state.get("anim_successful_points"):
+        if current_config_num not in available_configs:
+            available_configs.append(current_config_num)
+    
+    available_configs = sorted(available_configs)
+    
+    # Only show navigation if there are multiple configurations
+    if len(available_configs) > 1:
+        # Initialize viewed config if not set (default to latest)
+        if "viewed_config_num" not in st.session_state:
+            st.session_state["viewed_config_num"] = available_configs[-1]
+        
+        viewed_config = int(st.session_state.get("viewed_config_num", available_configs[-1]))
+        
+        # Ensure viewed_config is valid
+        if viewed_config not in available_configs:
+            viewed_config = available_configs[-1]
+            st.session_state["viewed_config_num"] = viewed_config
+        
+        # Find current position in list
+        try:
+            current_idx = available_configs.index(viewed_config)
+        except ValueError:
+            current_idx = len(available_configs) - 1
+            st.session_state["viewed_config_num"] = available_configs[-1]
+        
+        # Create three columns for navigation
+        col_left, col_center, col_right = st.columns([1, 3, 1])
+        
+        with col_left:
+            # Previous button - disabled if at first config
+            if st.button("<", key="prev_config", disabled=(current_idx == 0)):
+                st.session_state["viewed_config_num"] = available_configs[current_idx - 1]
+                st.rerun()
+        
+        with col_center:
+            st.markdown(f"<div style='text-align: center;'>Configuration c = {selected_c_int + viewed_config}</div>", unsafe_allow_html=True)
+        
+        with col_right:
+            # Next button - disabled if at last config
+            if st.button(">", key="next_config", disabled=(current_idx == len(available_configs) - 1)):
+                st.session_state["viewed_config_num"] = available_configs[current_idx + 1]
+                st.rerun()
+
 
 # ============= Animatie-voortgang: NA het tekenen, halveren om de 5 s tot volgordes gelijk zijn (primes genegeerd) =============
 if st.session_state.get("anim_running", False):
@@ -1191,22 +1282,31 @@ if st.session_state.get("anim_running", False):
                 
                 # Reset voor nieuwe config
                 distance = maxdist
-                angle = float(np.random.uniform(0, 2 * np.pi))
-                new_x = parent_pt_reset[0] + distance * np.cos(angle)
-                new_y = parent_pt_reset[1] + distance * np.sin(angle)
-                new_gen_pt = np.array([new_x, new_y])
                 
-                if not (XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]):
-                    angle = (angle + np.pi) % (2 * np.pi)
+                # Probeer een punt binnen het grafiekveld te vinden
+                max_attempts = 20  # Voorkom oneindige loop
+                for _ in range(max_attempts):
+                    angle = float(np.random.uniform(0, 2 * np.pi))
                     new_x = parent_pt_reset[0] + distance * np.cos(angle)
                     new_y = parent_pt_reset[1] + distance * np.sin(angle)
-                    new_gen_pt = np.array([new_x, new_y])
+                    
+                    # Check if point is within graph bounds
+                    if XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]:
+                        break
+                    # Als niet binnen veld, probeer opnieuw met nieuwe random hoek
+                else:
+                    # Na max_attempts nog steeds niet binnen veld: clip naar bounds
+                    new_x = np.clip(new_x, XLIM[0], XLIM[1])
+                    new_y = np.clip(new_y, YLIM[0], YLIM[1])
+                
+                new_gen_pt = np.array([new_x, new_y])
                 
                 st.session_state["anim_parent_idx"] = parent_idx_reset
                 st.session_state["anim_angle"] = angle
                 st.session_state["anim_generated_point"] = new_gen_pt
                 st.session_state["anim_distance"] = distance
                 st.session_state["anim_all_pts"] = all_pts_reset
+                st.session_state["anim_in_search"] = True  # Zorg dat cirkel/punt worden getekend
                 
                 # Zet flag voor extra wachttijd bij volgende rerun
                 st.session_state["anim_config_complete_wait"] = True
@@ -1246,17 +1346,35 @@ if st.session_state.get("anim_running", False):
                 else:
                     parent_pt_new = l_points_plot[chosen_idx - n_k]
                 parent_idx_new = chosen_idx
+            
             # Reset afstand naar maxdist voor nieuwe zoekfase
             distance = maxdist
-            angle = float(np.random.uniform(0, 2 * np.pi))
-            new_x = parent_pt_new[0] + distance * np.cos(angle)
-            new_y = parent_pt_new[1] + distance * np.sin(angle)
+            
+            # Probeer een punt binnen het grafiekveld te vinden
+            angle = 0.0
+            new_x = 0.0
+            new_y = 0.0
+            max_attempts = 20
+            for _ in range(max_attempts):
+                angle = float(np.random.uniform(0, 2 * np.pi))
+                new_x = parent_pt_new[0] + distance * np.cos(angle)
+                new_y = parent_pt_new[1] + distance * np.sin(angle)
+                
+                # Check if point is within graph bounds
+                if XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]:
+                    break
+            else:
+                # Na max_attempts: clip naar bounds
+                new_x = np.clip(new_x, XLIM[0], XLIM[1])
+                new_y = np.clip(new_y, YLIM[0], YLIM[1])
+            
             new_gen_pt = np.array([new_x, new_y])
 
             st.session_state["anim_parent_idx"] = parent_idx_new
             st.session_state["anim_angle"] = angle
             st.session_state["anim_generated_point"] = new_gen_pt
             st.session_state["anim_distance"] = distance
+            st.session_state["anim_in_search"] = True
 
     else:
         # Geen match: verhoog search_steps
@@ -1311,14 +1429,13 @@ if st.session_state.get("anim_running", False):
                 angle = angle % (2 * np.pi)
                 new_x = parent_pt_cur[0] + new_distance * np.cos(angle)
                 new_y = parent_pt_cur[1] + new_distance * np.sin(angle)
-                new_gen_pt = np.array([new_x, new_y])
 
-                # Als buiten limieten: spiegel hoek
+                # Als buiten limieten: clip naar bounds
                 if not (XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]):
-                    angle = (angle + np.pi) % (2 * np.pi)
-                    new_x = parent_pt_cur[0] + new_distance * np.cos(angle)
-                    new_y = parent_pt_cur[1] + new_distance * np.sin(angle)
-                    new_gen_pt = np.array([new_x, new_y])
+                    new_x = np.clip(new_x, XLIM[0], XLIM[1])
+                    new_y = np.clip(new_y, YLIM[0], YLIM[1])
+                
+                new_gen_pt = np.array([new_x, new_y])
 
                 st.session_state["anim_generated_point"] = new_gen_pt
                 st.session_state["anim_distance"] = new_distance
@@ -1333,20 +1450,35 @@ if st.session_state.get("anim_running", False):
 st.markdown("<hr />", unsafe_allow_html=True)
 st.markdown("<h3 style='margin-top:1.5rem;'>Generated Configuration (CSV)</h3>", unsafe_allow_html=True)
 
-# Build CSV from successful points
-if st.session_state.get("anim_successful_points"):
-    successful_points_export: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+# Build CSV from ALL configurations (completed + current)
+all_configs_list: list = st.session_state.get("anim_all_configs", [])
+current_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+current_config_num = int(st.session_state.get("anim_current_config", 1))
+
+if all_configs_list or current_successful_points:
+    # Collect all points from all configurations
+    all_points_by_config: dict[int, list[SuccessfulPoint]] = {}
+    
+    # Add completed configurations
+    for config_data in all_configs_list:
+        config_num = config_data["config_num"]
+        points = config_data["points"]
+        all_points_by_config[config_num] = points
+    
+    # Add current configuration if it has points
+    if current_successful_points:
+        all_points_by_config[current_config_num] = current_successful_points
     
     # Build mapping: (config_num, original_idx) -> generated point
     # Only keep the LATEST point for each (config, original_idx) combination
     latest_generated: dict[tuple[int, int], np.ndarray] = {}
-    for sp in successful_points_export:
-        orig_idx = sp.get("original_parent_idx", 0)
-        config_num = sp.get("config_num", 1)
-        latest_generated[(config_num, orig_idx)] = sp["point"]
+    for config_num, points in all_points_by_config.items():
+        for sp in points:
+            orig_idx = sp.get("original_parent_idx", 0)
+            latest_generated[(config_num, orig_idx)] = sp["point"]
     
-    # Get all unique config_nums from successful points
-    all_config_nums = sorted(set(sp.get("config_num", 1) for sp in successful_points_export))
+    # Get all unique config_nums
+    all_config_nums = sorted(all_points_by_config.keys())
     
     # Create CSV rows for ALL points (k and l) at ALL timestamps for EACH config
     csv_rows: list[tuple[int, float, int, float, float]] = []
