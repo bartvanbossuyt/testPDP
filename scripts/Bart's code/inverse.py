@@ -305,10 +305,55 @@ XLIM, YLIM = square_limits_with_margin(
 
 # ============= Animate button handler =============
 if animate_btn or animate_5_btn:
-    # Only proceed if strategy is exponential
-    if strategy != "exponential":
-        st.warning("Binary strategy not yet implemented. Please select 'exponential'.")
-    else:
+    if strategy == "binary":
+        # Binary strategy:7 iterations, store matches
+        if "bin_running" not in st.session_state or not st.session_state["bin_running"]:
+            # Initialize binary animation
+            all_pts = np.vstack([k_points_plot, l_points_plot])
+            all_ts = np.concatenate([k_vals_plot, l_vals_plot])
+            n_total = all_pts.shape[0]
+            parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
+            parent_pt = all_pts[parent_idx]
+            distance = maxdist
+            
+            # Random angle with bounds checking
+            max_attempts = 20
+            for _ in range(max_attempts):
+                alfa = float(np.random.uniform(0, 2 * np.pi))
+                gen_x = parent_pt[0] + distance * np.cos(alfa)
+                gen_y = parent_pt[1] + distance * np.sin(alfa)
+                if XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]:
+                    break
+            else:
+                gen_x = np.clip(gen_x, XLIM[0], XLIM[1])
+                gen_y = np.clip(gen_y, YLIM[0], YLIM[1])
+            
+            # Direct halveren: R = maxdist/2
+            distance = distance / 2.0
+            gen_x = parent_pt[0] + distance * np.cos(alfa)
+            gen_y = parent_pt[1] + distance * np.sin(alfa)
+            generated_point = np.array([gen_x, gen_y])
+            
+            # Initialize state
+            st.session_state["bin_running"] = True
+            st.session_state["bin_parent_idx"] = parent_idx
+            st.session_state["bin_parent_pt"] = parent_pt
+            st.session_state["bin_angle"] = alfa
+            st.session_state["bin_distance"] = distance  # Start op maxdist
+            st.session_state["bin_gen_pt"] = generated_point
+            st.session_state["bin_iteration"] = 0  # Stap 0 (n=0)
+            st.session_state["bin_matches"] = []
+            st.session_state["show_anim_circle"] = True
+            st.session_state["anim_in_search"] = True
+            st.session_state["anim_generated_point"] = generated_point
+            st.session_state["anim_parent_idx"] = parent_idx
+            st.session_state["anim_all_pts"] = all_pts
+            st.session_state["anim_all_ts"] = all_ts
+            st.session_state["anim_distance"] = distance
+            st.session_state["anim_successful_points"] = []  # Empty for binary
+            st.session_state["anim_angle"] = alfa
+            st.rerun()
+    elif strategy == "exponential":
         # Determine how many configs to generate
         num_configs_to_generate = 5 if animate_5_btn else 1
         
@@ -469,9 +514,9 @@ def make_d1_order_latex_generated() -> str:
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
     if parent_is_k:
-        entries.append((float(gen_pt[0]), rf"k{parent_primes}_{{{lbl_parent}}}"))
+        entries.append((float(gen_pt[0]), rf"k_{{{lbl_parent}}}{parent_primes}"))
     else:
-        entries.append((float(gen_pt[0]), rf"l{parent_primes}_{{{lbl_parent}}}"))
+        entries.append((float(gen_pt[0]), rf"l_{{{lbl_parent}}}{parent_primes}"))
 
     # Bouw een mapping van originele index naar het LAATSTE gegenereerde punt
     latest_generated: dict[int, np.ndarray] = {}
@@ -493,9 +538,9 @@ def make_d1_order_latex_generated() -> str:
         primes_i = _prime_str(gen_cnt)
         if i in latest_generated:
             # Gebruik laatste gegenereerde coördinaat
-            entries.append((float(latest_generated[i][0]), rf"k{primes_i}_{{{lbl}}}"))
+            entries.append((float(latest_generated[i][0]), rf"k_{{{lbl}}}{primes_i}"))
         else:
-            entries.append((float(x), rf"k{primes_i}_{{{lbl}}}"))
+            entries.append((float(x), rf"k_{{{lbl}}}{primes_i}"))
     
     # l-punten
     for j, (x, t) in enumerate(zip(l_points_plot[:, 0].tolist(), l_vals_plot.tolist())):
@@ -506,9 +551,9 @@ def make_d1_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(glob_idx, 0)
         primes_j = _prime_str(gen_cnt)
         if glob_idx in latest_generated:
-            entries.append((float(latest_generated[glob_idx][0]), rf"l{primes_j}_{{{lbl}}}"))
+            entries.append((float(latest_generated[glob_idx][0]), rf"l_{{{lbl}}}{primes_j}"))
         else:
-            entries.append((float(x), rf"l{primes_j}_{{{lbl}}}"))
+            entries.append((float(x), rf"l_{{{lbl}}}{primes_j}"))
     
     entries.sort(key=lambda it: it[0])
     tol = 1e-9
@@ -571,9 +616,9 @@ def make_d2_order_latex_generated() -> str:
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
     if parent_is_k:
-        entries.append((float(gen_pt[1]), rf"k{parent_primes}_{{{lbl_parent}}}"))
+        entries.append((float(gen_pt[1]), rf"k_{{{lbl_parent}}}{parent_primes}"))
     else:
-        entries.append((float(gen_pt[1]), rf"l{parent_primes}_{{{lbl_parent}}}"))
+        entries.append((float(gen_pt[1]), rf"l_{{{lbl_parent}}}{parent_primes}"))
 
     # Bouw een mapping van originele index naar het LAATSTE gegenereerde punt
     latest_generated: dict[int, np.ndarray] = {}
@@ -594,9 +639,9 @@ def make_d2_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(i, 0)
         primes_i = _prime_str(gen_cnt)
         if i in latest_generated:
-            entries.append((float(latest_generated[i][1]), rf"k{primes_i}_{{{lbl}}}"))
+            entries.append((float(latest_generated[i][1]), rf"k_{{{lbl}}}{primes_i}"))
         else:
-            entries.append((float(y), rf"k{primes_i}_{{{lbl}}}"))
+            entries.append((float(y), rf"k_{{{lbl}}}{primes_i}"))
     
     # l-punten
     for j, (y, t) in enumerate(zip(l_points_plot[:, 1].tolist(), l_vals_plot.tolist())):
@@ -607,9 +652,9 @@ def make_d2_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(glob_idx, 0)
         primes_j = _prime_str(gen_cnt)
         if glob_idx in latest_generated:
-            entries.append((float(latest_generated[glob_idx][1]), rf"l{primes_j}_{{{lbl}}}"))
+            entries.append((float(latest_generated[glob_idx][1]), rf"l_{{{lbl}}}{primes_j}"))
         else:
-            entries.append((float(y), rf"l{primes_j}_{{{lbl}}}"))
+            entries.append((float(y), rf"l_{{{lbl}}}{primes_j}"))
     
     entries.sort(key=lambda it: it[0])
     tol = 1e-9
@@ -694,7 +739,7 @@ def annotate_points(
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
         ax.annotate(  # type: ignore
-            rf"${label_prefix}_{lbl}$",
+            rf"${label_prefix}_{{{lbl}}}$",
             xy=(x, y),
             xytext=off,
             textcoords="offset points",
@@ -729,6 +774,13 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
         ax.text(0.02, 0.98, status_text, transform=ax.transAxes, fontsize=9,  # type: ignore
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
+    # Binary strategy: show status info on graph
+    if st.session_state.get("bin_running", False):
+        iteration = int(st.session_state.get("bin_iteration", 0))
+        status_text = f"Config 1 | Iteration 1 | Step {iteration + 1}"
+        ax.text(0.02, 0.98, status_text, transform=ax.transAxes, fontsize=9,  # type: ignore
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
     # Check if animation is active
     # Toon altijd de laatste generatiepunten als animatie klaar is
     has_animation = st.session_state.get("show_anim_circle", False)
@@ -749,11 +801,9 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
         if gen_marker:
-            if len(gen_marker) <= 2:  # ' or ''
-                return rf"${prefix}{gen_marker}_{{{lbl}}}$"
-            else:  # ^{*}
-                return rf"${prefix}{gen_marker}_{{{lbl}}}$"
-        return rf"${prefix}_{{{lbl}}}$"
+            # LaTeX syntax: subscript VOOR superscript: k_{0}' of k_{0}^{*}
+            return rf"{prefix}_{{{lbl}}}{gen_marker}"
+        return rf"{prefix}_{{{lbl}}}"
     
     # Helper: haal originele index veilig uit een SuccessfulPoint (compatibel met oude sessies)
     def _get_original_index(sp: SuccessfulPoint) -> int | None:
@@ -937,8 +987,10 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                 va="bottom" if off[1] >= 0 else "top",
             )
     
-    # Als we bezig zijn met zoeken (rood punt + cirkel zonder label) - alleen als animatie nog loopt
-    if has_animation and in_search and gen_pt is not None and anim_running:
+    # Als we bezig zijn met zoeken (rood punt + cirkel zonder label)
+    # Voor binary: check bin_running, voor exponential: check anim_running
+    bin_running = st.session_state.get("bin_running", False)
+    if has_animation and in_search and gen_pt is not None and (anim_running or bin_running):
         all_pts = st.session_state.get("anim_all_pts", np.array([]))
         distance = st.session_state.get("anim_distance", 0.0)
         
@@ -1066,6 +1118,84 @@ with col2:
         mime="image/png",
         key="dl_right_png",
     )
+
+# ============= Binary strategy animation logic =============
+if st.session_state.get("bin_running", False):
+    iteration = int(st.session_state.get("bin_iteration", 0))
+    parent_pt = st.session_state.get("bin_parent_pt", np.array([0.0, 0.0]))
+    parent_idx = int(st.session_state.get("bin_parent_idx", 0))
+    angle = float(st.session_state.get("bin_angle", 0.0))
+    distance = float(st.session_state.get("bin_distance", maxdist))
+    matches: list = st.session_state.get("bin_matches", [])
+    
+    # Check order
+    left_d1 = make_d1_order_latex()
+    left_d2 = make_d2_order_latex()
+    right_d1 = make_d1_order_latex_generated()
+    right_d2 = make_d2_order_latex_generated()
+    same_d1 = _extract_order_string(left_d1) == _extract_order_string(right_d1)
+    same_d2 = _extract_order_string(left_d2) == _extract_order_string(right_d2)
+    
+    # Scenario 1: BEIDE order matches - sla ALLE punten op
+    gen_pt = st.session_state.get("bin_gen_pt")
+    if same_d1 and same_d2 and gen_pt is not None:
+        # Sla alle punten op: k_points, l_points, en het gegenereerde punt
+        all_points_snapshot = {
+            "k_points": k_points_plot.copy(),
+            "l_points": l_points_plot.copy(), 
+            "generated_point": np.array(gen_pt, dtype=float),
+            "parent_idx": parent_idx,
+            "iteration": iteration
+        }
+        matches.append(all_points_snapshot)
+        st.session_state["bin_matches"] = matches
+    
+    # Check of we klaar zijn (NA het uitvoeren van de huidige stap)
+    if iteration >= 6:  # iteration 0-6 = 7 stappen
+        # Done - verhoog iteration voor correcte telling
+        iteration += 1
+        st.session_state["bin_iteration"] = iteration
+        st.session_state["bin_running"] = False
+        st.session_state["show_anim_circle"] = False
+        if len(matches) > 0:
+            final_snapshot = matches[-1]
+            final_pt = final_snapshot["generated_point"]
+        else:
+            final_pt = parent_pt
+        st.success(f"Binary strategie klaar! {len(matches)} matches in {iteration} stappen. Finaal: [{final_pt[0]:.2f}, {final_pt[1]:.2f}]")
+    else:
+        # Ga door naar volgende stap
+        n = iteration  # Huidige stap nummer (0-6)
+        iteration += 1
+        st.session_state["bin_iteration"] = iteration
+        
+        # Bereken delta: (maxdist/2) * (0.5^n)
+        # Stap 0: delta = (maxdist/2) * 1 = maxdist/2 ... WACHT NEE
+        # Stap 0: delta = maxdist * (0.5^2) = maxdist/4 = 0.25 (bij maxdist=1.0)
+        # Stap 1: delta = maxdist * (0.5^3) = maxdist/8 = 0.125
+        delta = maxdist * (0.5 ** (n + 2))
+        
+        # Bij BEIDE matches: TEL OP
+        # Bij GEEN of PARTIËLE match: TREK AF
+        if same_d1 and same_d2:
+            # BEIDE matches: R = R + delta
+            new_distance = distance + delta
+        else:
+            # GEEN of PARTIËLE match: R = R - delta
+            new_distance = distance - delta
+        
+        # Herbereken punt met nieuwe afstand
+        gen_x = parent_pt[0] + new_distance * np.cos(angle)
+        gen_y = parent_pt[1] + new_distance * np.sin(angle)
+        new_gen_pt = np.array([gen_x, gen_y])
+        
+        st.session_state["bin_distance"] = new_distance
+        st.session_state["bin_gen_pt"] = new_gen_pt
+        st.session_state["anim_generated_point"] = new_gen_pt
+        st.session_state["anim_distance"] = new_distance
+        
+        time.sleep(2.0)
+        st.rerun()
 
 # ============= Animatie-voortgang: NA het tekenen, halveren om de 5 s tot volgordes gelijk zijn (primes genegeerd) =============
 if st.session_state.get("anim_running", False):
