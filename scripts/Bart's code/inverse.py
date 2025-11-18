@@ -265,12 +265,17 @@ def max_consecutive_dist(pts: np.ndarray) -> float:
     n = pts.shape[0]
     if n < 2:
         return 0.0
-    diffs = np.diff(pts, axis=0)
-    dists = np.hypot(diffs[:, 0], diffs[:, 1])
-    return float(np.max(dists))
+    return max(pairwise_dist(pts[i], pts[i+1]) for i in range(n-1))
 
 maxdist: float = max(max_consecutive_dist(k_points_plot), max_consecutive_dist(l_points_plot))
 
+# ============= maxdist berekenen (needed before animation init) =============
+def pairwise_dist(a: np.ndarray, b: np.ndarray) -> float:
+    d = a - b
+    return float(np.hypot(d[0], d[1]))
+
+def max_consecutive_dist(pts: np.ndarray) -> float:
+    n = pts.shape[0]
 # ============= Assenlimieten met marge ≥ maxdist en vierkante schaal =============
 def square_limits_with_margin(
     pts: np.ndarray, margin: float
@@ -305,19 +310,65 @@ XLIM, YLIM = square_limits_with_margin(
 
 # ============= Animate button handler =============
 if animate_btn or animate_5_btn:
-    # Only proceed if strategy is exponential
-    if strategy != "exponential":
-        st.warning("Binary strategy not yet implemented. Please select 'exponential'.")
-    else:
-        # Determine how many configs to generate
-        num_configs_to_generate = 5 if animate_5_btn else 1
-        
-        # Kies random punt uit k of l
+    # Start animatie voor de gekozen strategie
+    num_configs_to_generate = 5 if animate_5_btn else 1
+    if strategy == "exponential":
+        # ...existing code voor exponentiële strategie...
+        all_pts = np.vstack([k_points_plot, l_points_plot])
+        all_ts = np.concatenate([k_vals_plot, l_vals_plot])
+        n_total = all_pts.shape[0]
+        # ...existing code...
+    elif strategy == "binary":
+        # Plaats alleen een rode cirkel en rood punt, vergelijkbaar met exponentiële strategie
         all_pts = np.vstack([k_points_plot, l_points_plot])
         all_ts = np.concatenate([k_vals_plot, l_vals_plot])
         n_total = all_pts.shape[0]
 
-        # Kies een random index
+        parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
+        parent_pt = all_pts[parent_idx]
+        distance = maxdist
+
+        # Kies random hoek
+        max_attempts = 20
+        alfa = 0.0
+        gen_x = parent_pt[0]
+        gen_y = parent_pt[1]
+        for _ in range(max_attempts):
+            alfa = float(np.random.uniform(0, 2 * np.pi))
+            gen_x = parent_pt[0] + distance * np.cos(alfa)
+            gen_y = parent_pt[1] + distance * np.sin(alfa)
+            if XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]:
+                break
+        else:
+            gen_x = np.clip(gen_x, XLIM[0], XLIM[1])
+            gen_y = np.clip(gen_y, YLIM[0], YLIM[1])
+
+        generated_point = np.array([gen_x, gen_y])
+
+        # Update animatie-status: alleen rode cirkel en punt
+        st.session_state["show_anim_circle"] = True
+        st.session_state["anim_running"] = True
+        st.session_state["anim_circle_idx"] = parent_idx
+        st.session_state["anim_distance"] = abs(distance)
+        st.session_state["anim_generated_point"] = generated_point
+        st.session_state["anim_parent_idx"] = parent_idx
+        st.session_state["anim_all_pts"] = all_pts
+        st.session_state["anim_all_ts"] = all_ts
+        st.session_state["anim_angle"] = alfa
+        st.session_state["anim_iteration"] = 0
+        st.session_state["anim_max_iterations"] = 1
+        st.session_state["anim_iterations_per_run"] = 1
+        st.session_state["anim_completed_iterations"] = 1
+        st.session_state["anim_last_update"] = time.time()
+        st.session_state["anim_successful_points"] = []
+        st.session_state["anim_in_search"] = True
+        st.session_state["anim_num_configs"] = num_configs_to_generate
+        st.session_state["anim_current_config"] = 1
+        st.session_state["anim_all_configs"] = []
+        st.session_state["anim_search_steps"] = 1
+        st.session_state["anim_strategy"] = strategy
+    else:
+        st.warning(f"Strategy '{strategy}' is not recognized.")
         parent_idx = int(np.random.randint(0, n_total))  # type: ignore[arg-type]
         parent_pt = all_pts[parent_idx]
 
@@ -327,15 +378,15 @@ if animate_btn or animate_5_btn:
 
         # Probeer een punt binnen het grafiekveld te vinden
         max_attempts = 20  # Voorkom oneindige loop
+        gen_x = parent_pt[0]
+        gen_y = parent_pt[1]
         for _ in range(max_attempts):
             alfa = float(np.random.uniform(0, 2 * np.pi))
             gen_x = parent_pt[0] + distance * np.cos(alfa)
             gen_y = parent_pt[1] + distance * np.sin(alfa)
-            
             # Check if point is within graph bounds
             if XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]:
                 break
-            # Als niet binnen veld, probeer opnieuw met nieuwe random hoek
         else:
             # Na max_attempts nog steeds niet binnen veld: clip naar bounds
             gen_x = np.clip(gen_x, XLIM[0], XLIM[1])
@@ -1198,15 +1249,15 @@ if st.session_state.get("anim_running", False):
                 
                 # Probeer een punt binnen het grafiekveld te vinden
                 max_attempts = 20  # Voorkom oneindige loop
+                new_x = parent_pt_reset[0]
+                new_y = parent_pt_reset[1]
                 for _ in range(max_attempts):
                     angle = float(np.random.uniform(0, 2 * np.pi))
                     new_x = parent_pt_reset[0] + distance * np.cos(angle)
                     new_y = parent_pt_reset[1] + distance * np.sin(angle)
-                    
                     # Check if point is within graph bounds
                     if XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]:
                         break
-                    # Als niet binnen veld, probeer opnieuw met nieuwe random hoek
                 else:
                     # Na max_attempts nog steeds niet binnen veld: clip naar bounds
                     new_x = np.clip(new_x, XLIM[0], XLIM[1])
@@ -1264,15 +1315,15 @@ if st.session_state.get("anim_running", False):
             
             # Probeer een punt binnen het grafiekveld te vinden
             max_attempts = 20  # Voorkom oneindige loop
+            new_x = parent_pt_new[0]
+            new_y = parent_pt_new[1]
             for _ in range(max_attempts):
                 angle = float(np.random.uniform(0, 2 * np.pi))
                 new_x = parent_pt_new[0] + distance * np.cos(angle)
                 new_y = parent_pt_new[1] + distance * np.sin(angle)
-                
                 # Check if point is within graph bounds
                 if XLIM[0] <= new_x <= XLIM[1] and YLIM[0] <= new_y <= YLIM[1]:
                     break
-                # Als niet binnen veld, probeer opnieuw met nieuwe random hoek
             else:
                 # Na max_attempts nog steeds niet binnen veld: clip naar bounds
                 new_x = np.clip(new_x, XLIM[0], XLIM[1])
@@ -1352,9 +1403,7 @@ if st.session_state.get("anim_running", False):
                 st.session_state["anim_angle"] = angle
                 st.session_state["anim_in_search"] = True
 
-    # Auto-advance - ALTIJD rerun (ook bij config complete wait)
-    time.sleep(2.0)  # 2000 ms = 2 seconden
-    st.rerun()
+    # (Oorspronkelijke toestand: geen animatie-stap control code aanwezig)
 
 # ============= CSV Export Section =============
 st.markdown("<hr />", unsafe_allow_html=True)
