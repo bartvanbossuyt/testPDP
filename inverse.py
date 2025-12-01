@@ -650,6 +650,103 @@ if coord_min_x >= coord_max_x:
 if coord_min_y >= coord_max_y:
     st.warning("Min Y must be less than Max Y")
 
+# ============= Auto Detect Coordinate Bounds Button =============
+# This button recalculates the coordinate bounds based on the currently selected
+# configuration (c) and timestamp window. Useful when switching between configurations
+# or changing the number of timestamps, as parent points may fall outside the current bounds.
+if data_source != "Create random configuration":
+    # Only show Auto Detect button when using preset or uploaded data
+    st.markdown('<div class="auto-detect-bounds-wrapper" style="margin-top:0.5rem;">', unsafe_allow_html=True)
+    if st.button("🔍 Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
+                 help="Recalculate axis bounds based on currently selected configuration (c) and timestamp window. Use this when parent points fall outside the visible area after changing settings."):
+        # Get currently selected configuration and timestamps from session state
+        _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
+        _detect_k = int(st.session_state.get("cfg_k", 3))  # Number of timestamps
+        _detect_start_t = st.session_state.get("cfg_start_t", None)
+        
+        # Get time values for the selected configuration
+        _detect_t_k = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 0)]["t"].unique().tolist())
+        _detect_t_l = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 1)]["t"].unique().tolist())
+        _detect_t_common = [t for t in _detect_t_k if t in _detect_t_l]
+        
+        # Determine the timestamp window
+        if _detect_start_t is not None and _detect_start_t in _detect_t_common:
+            _detect_start_idx = _detect_t_common.index(_detect_start_t)
+        else:
+            _detect_start_idx = 0
+        _detect_end_idx = min(_detect_start_idx + _detect_k, len(_detect_t_common))
+        _detect_ts_window = _detect_t_common[_detect_start_idx:_detect_end_idx]
+        
+        # Filter dataframe to selected configuration and timestamp window
+        _df_filtered = _df_all[
+            (_df_all["c"] == _detect_c) & 
+            (_df_all["t"].isin(_detect_ts_window))
+        ]
+        
+        if len(_df_filtered) > 0:
+            # Calculate bounds from filtered data
+            _new_min_x = float(_df_filtered["x"].min())
+            _new_max_x = float(_df_filtered["x"].max())
+            _new_min_y = float(_df_filtered["y"].min())
+            _new_max_y = float(_df_filtered["y"].max())
+            
+            # Add 10% margin (or minimum margin for very small ranges)
+            _new_range_x = _new_max_x - _new_min_x
+            _new_range_y = _new_max_y - _new_min_y
+            
+            # Use 10% margin, but ensure at least some minimum margin for very tight data
+            _margin_x = max(0.1 * _new_range_x, 0.5) if _new_range_x > 0 else 1.0
+            _margin_y = max(0.1 * _new_range_y, 0.5) if _new_range_y > 0 else 1.0
+            
+            _new_min_x = _new_min_x - _margin_x
+            _new_max_x = _new_max_x + _margin_x
+            _new_min_y = _new_min_y - _margin_y
+            _new_max_y = _new_max_y + _margin_y
+            
+            # Smart rounding: choose rounding unit based on data range
+            # For small ranges (< 10), round to nearest 1
+            # For medium ranges (10-100), round to nearest 5
+            # For large ranges (> 100), round to nearest 10
+            def smart_round_min(val: float, data_range: float) -> float:
+                """Round down to a nice value based on data range."""
+                if data_range < 10:
+                    return float(np.floor(val))  # Round to nearest 1
+                elif data_range < 100:
+                    return float(np.floor(val / 5) * 5)  # Round to nearest 5
+                else:
+                    return float(np.floor(val / 10) * 10)  # Round to nearest 10
+            
+            def smart_round_max(val: float, data_range: float) -> float:
+                """Round up to a nice value based on data range."""
+                if data_range < 10:
+                    return float(np.ceil(val))  # Round to nearest 1
+                elif data_range < 100:
+                    return float(np.ceil(val / 5) * 5)  # Round to nearest 5
+                else:
+                    return float(np.ceil(val / 10) * 10)  # Round to nearest 10
+            
+            _new_min_x = smart_round_min(_new_min_x, _new_range_x)
+            _new_max_x = smart_round_max(_new_max_x, _new_range_x)
+            _new_min_y = smart_round_min(_new_min_y, _new_range_y)
+            _new_max_y = smart_round_max(_new_max_y, _new_range_y)
+            
+            # Update session state with new bounds
+            st.session_state["coord_min_x"] = _new_min_x
+            st.session_state["coord_max_x"] = _new_max_x
+            st.session_state["coord_min_y"] = _new_min_y
+            st.session_state["coord_max_y"] = _new_max_y
+            
+            # Set a special hash to prevent auto-recalculation from overwriting user-triggered detection
+            # This hash uses the detected config so it won't match the default config hash
+            st.session_state["_bounds_data_hash"] = f"auto_detect_{_detect_c}_{_new_min_x:.2f}_{_new_max_x:.2f}_{_new_min_y:.2f}_{_new_max_y:.2f}"
+            
+            st.success(f"Bounds updated for config {_detect_c}: X=[{_new_min_x:.0f}, {_new_max_x:.0f}], Y=[{_new_min_y:.0f}, {_new_max_y:.0f}]")
+            # Note: st.rerun() removed - the page will naturally refresh and use the updated session state
+            # This preserves the user's configuration selection (cfg_c) across the refresh
+        else:
+            st.warning("No data found for the selected configuration and timestamps.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ============= Settings Card (UI) ============
@@ -685,15 +782,16 @@ if not _t_common:
 n_timepoints = len(_t_common)
 default_window = min(3, n_timepoints)
 with sc2:
-    # Number of timestamps in the sliding time window
+    # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
-        num_timestamps = st.slider(
+        timestamp_options = list(range(1, n_timepoints + 1))
+        default_idx = timestamp_options.index(default_window) if default_window in timestamp_options else 0
+        num_timestamps = st.selectbox(
             "Number of timestamps",
-            min_value=1,
-            max_value=n_timepoints,
-            value=default_window,
-            step=1,
+            options=timestamp_options,
+            index=default_idx,
             key="cfg_k",
+            help="Select the number of timestamps to include in the analysis window."
         )
     else:
         st.markdown("**Number of timestamps**")
@@ -701,16 +799,17 @@ with sc2:
         num_timestamps = n_timepoints
 
 with sc3:
-    # Starting t value of the window
+    # Starting t value of the window (dropdown instead of slider)
     valid_start_count = max(1, n_timepoints - num_timestamps + 1)
     valid_starts = _t_common[:valid_start_count]
     
     if len(valid_starts) > 1:
-        start_t = st.select_slider(
+        start_t = st.selectbox(
             "Starting time (t)",
             options=valid_starts,
-            value=valid_starts[0],
+            index=0,
             key="cfg_start_t",
+            help="Select the starting timestamp for the analysis window."
         )
     else:
         st.markdown("**Starting time (t)**")
@@ -983,6 +1082,7 @@ else:
 # Custom CSS for Reset button styling: white text on black background
 # This provides a visually distinct button that stands out as a "stop/reset" action
 # Uses a class-based approach with a wrapper div for reliable targeting
+# Also includes CSS for red Auto Detect Coordinate Bounds button
 st.markdown("""
 <style>
     /* Style Reset buttons using wrapper div class */
@@ -1009,6 +1109,21 @@ st.markdown("""
     .reset-button-wrapper button:disabled p {
         color: #cccccc !important;
     }
+    /* Style Auto Detect Coordinate Bounds button: red background with white text */
+    /* This button recalculates axis bounds based on currently selected configuration and timestamps */
+    .auto-detect-bounds-wrapper button {
+        background-color: #dc3545 !important;
+        color: #ffffff !important;
+        border: 1px solid #dc3545 !important;
+    }
+    .auto-detect-bounds-wrapper button:hover:not(:disabled) {
+        background-color: #c82333 !important;
+        color: #ffffff !important;
+        border: 1px solid #c82333 !important;
+    }
+    .auto-detect-bounds-wrapper button p {
+        color: #ffffff !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1026,21 +1141,19 @@ has_generated_point = st.session_state.get("anim_generated_point") is not None
 reset_btn_should_be_enabled = anim_is_running or has_generated_configs or has_successful_points or has_generated_point
 
 if is_manual_mode:
-    # Manual mode: show all 5 buttons (Generate without animation, Generate with animation, Previous step, Next step, Reset)
-    col_btn1, col_btn2, col_btn3, col_btn4, col_btn5 = st.columns([1, 1, 1, 1, 0.6], gap="small")
+    # Manual mode: show 4 buttons (Generate, Previous step, Next step, Reset)
+    # In manual mode, we only show one Generate button (with animation) since the user
+    # explicitly chose step-by-step mode. The "Generate without animation" is hidden.
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1, 1, 0.6], gap="small")
+    # No "Generate without animation" button in manual mode
+    generate_btn = False  # Set to False so the generate_btn handler doesn't trigger
     with col_btn1:
-        generate_btn = st.button(
-            "Generate without animation", 
-            key="btn_generate",
-            help="Instantly generate all configurations without showing the step-by-step process. Uses the 'Number of configurations' setting above. Results appear when complete - this is the fastest option."
+        animate_btn = st.button(
+            "Generate", 
+            key="btn_animate",
+            help="Start generating configurations step-by-step. Click 'Next step' to advance each step manually, or 'Previous step' to go back."
         )
     with col_btn2:
-        animate_btn = st.button(
-            "Generate with animation", 
-            key="btn_animate",
-            help="Generate configurations while showing each step visually. Uses the 'Number of configurations' setting above. You will see each point being placed one-by-one. Click 'Next step' to advance each step manually."
-        )
-    with col_btn3:
         # Show "Previous step" button - enabled only when animation is running and there is history
         anim_history = st.session_state.get("anim_state_history", [])
         prev_step_clicked = st.button(
@@ -1057,7 +1170,7 @@ if is_manual_mode:
             for key, value in previous_state.items():
                 st.session_state[key] = value
             st.rerun()
-    with col_btn4:
+    with col_btn3:
         # Show "Next step" button - enabled only when animation is running
         next_step_clicked = st.button(
             "▶ Next step", 
@@ -1070,7 +1183,7 @@ if is_manual_mode:
             # Set a flag to indicate that a manual step was requested
             # The animation progress code will check this flag and advance one step
             st.session_state["anim_manual_step_requested"] = True
-    with col_btn5:
+    with col_btn4:
         # Reset button - halts animation and resets all graphs to initial state
         # Enabled when animation is running OR when there are generated configurations to clear
         # Styled with white text on black background via custom CSS wrapper class
@@ -2159,6 +2272,10 @@ def generate_exp_multipoint() -> None:
     st.session_state["anim_all_configs"] = all_configs
     st.session_state["anim_running"] = False
     st.session_state["anim_completed_iterations"] = num_iterations
+    
+    # Rerun to update the UI (especially the Reset button state)
+    # This ensures the Reset button becomes enabled after generation completes
+    st.rerun()
 
 
 # ============= Helper: generate_exp (non-animated exponential) ============
