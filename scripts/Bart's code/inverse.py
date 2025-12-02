@@ -478,7 +478,7 @@ elif data_source == "Create random configuration":
                 p_df,
                 key=f"edit_point_{p}_coords",
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "t": st.column_config.NumberColumn("t", width="small"),
                     "x": st.column_config.NumberColumn("x", format="%.2f", width="small"),
@@ -588,13 +588,28 @@ else:
     _default_min_x, _default_max_x = _auto_min_x, _auto_max_x
     _default_min_y, _default_max_y = _auto_min_y, _auto_max_y
 
-    # Initialize session state with auto-calculated values
+    # Initialize session state with auto-calculated values ONLY if:
+    # 1. The bounds have never been set (coord_min_x not in session_state), OR
+    # 2. The underlying data has changed (different data file/config)
+    # Do NOT overwrite if user has used Auto Detect or manually adjusted bounds
     _current_data_hash = f"{_data_min_x:.2f}_{_data_max_x:.2f}_{_data_min_y:.2f}_{_data_max_y:.2f}"
-    if st.session_state.get("_bounds_data_hash") != _current_data_hash:
+    _existing_hash = st.session_state.get("_bounds_data_hash", "")
+    
+    # Only auto-initialize if no bounds exist OR if we're loading completely new data
+    # (i.e., the existing hash doesn't start with "auto_detect_" and doesn't match current data)
+    _bounds_never_set = "cfg_coord_min_x" not in st.session_state
+    _data_changed = _existing_hash != _current_data_hash and not _existing_hash.startswith("auto_detect_")
+    
+    if _bounds_never_set or _data_changed:
+        # Update BOTH coord_ keys AND cfg_coord_ widget keys
         st.session_state["coord_min_x"] = _auto_min_x
         st.session_state["coord_max_x"] = _auto_max_x
         st.session_state["coord_min_y"] = _auto_min_y
         st.session_state["coord_max_y"] = _auto_max_y
+        st.session_state["cfg_coord_min_x"] = _auto_min_x
+        st.session_state["cfg_coord_max_x"] = _auto_max_x
+        st.session_state["cfg_coord_min_y"] = _auto_min_y
+        st.session_state["cfg_coord_max_y"] = _auto_max_y
         st.session_state["_bounds_data_hash"] = _current_data_hash
 
 st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
@@ -604,11 +619,43 @@ if data_source == "Create random configuration":
 else:
     st.caption("Define the valid coordinate range for generated points. Auto-calculated from loaded data with 10% margin. Visualizations will show an additional 10% margin for display.")
 
+# Check if Auto Detect was triggered - if so, apply the pending bounds BEFORE widgets are created
+# CRITICAL: We must update BOTH the coord_ keys AND the cfg_coord_ widget keys
+# because Streamlit widgets use the key value, not the value parameter, after first render
+if st.session_state.get("_pending_bounds_update", False):
+    _pending = st.session_state.get("_pending_bounds", {})
+    if _pending:
+        _new_min_x = _pending.get("min_x", 0)
+        _new_max_x = _pending.get("max_x", 100)
+        _new_min_y = _pending.get("min_y", 0)
+        _new_max_y = _pending.get("max_y", 100)
+        # Update both the source-of-truth keys AND the widget keys
+        st.session_state["coord_min_x"] = _new_min_x
+        st.session_state["coord_max_x"] = _new_max_x
+        st.session_state["coord_min_y"] = _new_min_y
+        st.session_state["coord_max_y"] = _new_max_y
+        # Update widget keys directly - this is what the widgets actually read
+        st.session_state["cfg_coord_min_x"] = _new_min_x
+        st.session_state["cfg_coord_max_x"] = _new_max_x
+        st.session_state["cfg_coord_min_y"] = _new_min_y
+        st.session_state["cfg_coord_max_y"] = _new_max_y
+        # Clear pending state
+        st.session_state["_pending_bounds_update"] = False
+        st.session_state["_pending_bounds"] = {}
+
 bounds_col1, bounds_col2, bounds_col3, bounds_col4 = st.columns([1, 1, 1, 1], gap="small")
+
+# Use cfg_coord_ widget keys as the source of truth (these are what widgets actually use)
+# Fall back to coord_ keys, then to auto-calculated values
+_coord_min_x_val = st.session_state.get("cfg_coord_min_x", st.session_state.get("coord_min_x", _auto_min_x))
+_coord_max_x_val = st.session_state.get("cfg_coord_max_x", st.session_state.get("coord_max_x", _auto_max_x))
+_coord_min_y_val = st.session_state.get("cfg_coord_min_y", st.session_state.get("coord_min_y", _auto_min_y))
+_coord_max_y_val = st.session_state.get("cfg_coord_max_y", st.session_state.get("coord_max_y", _auto_max_y))
+
 with bounds_col1:
     coord_min_x = st.number_input(
         "Min X",
-        value=st.session_state.get("coord_min_x", _auto_min_x),
+        value=_coord_min_x_val,
         step=10.0,
         key="cfg_coord_min_x",
         help="Minimum X coordinate. Generated points cannot have x < this value."
@@ -616,7 +663,7 @@ with bounds_col1:
 with bounds_col2:
     coord_max_x = st.number_input(
         "Max X",
-        value=st.session_state.get("coord_max_x", _auto_max_x),
+        value=_coord_max_x_val,
         step=10.0,
         key="cfg_coord_max_x",
         help="Maximum X coordinate. Generated points cannot have x > this value."
@@ -624,7 +671,7 @@ with bounds_col2:
 with bounds_col3:
     coord_min_y = st.number_input(
         "Min Y",
-        value=st.session_state.get("coord_min_y", _auto_min_y),
+        value=_coord_min_y_val,
         step=10.0,
         key="cfg_coord_min_y",
         help="Minimum Y coordinate. Generated points cannot have y < this value."
@@ -632,7 +679,7 @@ with bounds_col3:
 with bounds_col4:
     coord_max_y = st.number_input(
         "Max Y",
-        value=st.session_state.get("coord_max_y", _auto_max_y),
+        value=_coord_max_y_val,
         step=10.0,
         key="cfg_coord_max_y",
         help="Maximum Y coordinate. Generated points cannot have y > this value."
@@ -730,19 +777,21 @@ if data_source != "Create random configuration":
             _new_min_y = smart_round_min(_new_min_y, _new_range_y)
             _new_max_y = smart_round_max(_new_max_y, _new_range_y)
             
-            # Update session state with new bounds
-            st.session_state["coord_min_x"] = _new_min_x
-            st.session_state["coord_max_x"] = _new_max_x
-            st.session_state["coord_min_y"] = _new_min_y
-            st.session_state["coord_max_y"] = _new_max_y
+            # Store pending bounds - these will be applied on next rerun BEFORE widgets are created
+            st.session_state["_pending_bounds_update"] = True
+            st.session_state["_pending_bounds"] = {
+                "min_x": _new_min_x,
+                "max_x": _new_max_x,
+                "min_y": _new_min_y,
+                "max_y": _new_max_y
+            }
             
             # Set a special hash to prevent auto-recalculation from overwriting user-triggered detection
-            # This hash uses the detected config so it won't match the default config hash
             st.session_state["_bounds_data_hash"] = f"auto_detect_{_detect_c}_{_new_min_x:.2f}_{_new_max_x:.2f}_{_new_min_y:.2f}_{_new_max_y:.2f}"
             
             st.success(f"Bounds updated for config {_detect_c}: X=[{_new_min_x:.0f}, {_new_max_x:.0f}], Y=[{_new_min_y:.0f}, {_new_max_y:.0f}]")
-            # Note: st.rerun() removed - the page will naturally refresh and use the updated session state
-            # This preserves the user's configuration selection (cfg_c) across the refresh
+            # Rerun to apply the new bounds
+            st.rerun()
         else:
             st.warning("No data found for the selected configuration and timestamps.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1037,7 +1086,7 @@ if use_external_points:
         ext_df,
         key="edit_external_points",
         num_rows="dynamic",
-        use_container_width=False,
+        width="content",
         column_config={
             "x": st.column_config.NumberColumn("x", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
             "y": st.column_config.NumberColumn("y", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
@@ -1059,11 +1108,15 @@ st.markdown("**Animation Settings**")
 
 anim_mode = st.radio(
     "Animation mode",
-    options=["Auto-advance", "Manual step-by-step"],
+    options=["Auto-advance", "Manual step-by-step", "Manual iteration-by-iteration", "Manual config-by-config"],
     index=0,
     horizontal=True,
     key="cfg_anim_mode",
-    help="Choose how the animation advances: 'Auto-advance' automatically moves to the next step after a set time interval. 'Manual step-by-step' waits for you to click a button to advance each step."
+    help=("Choose how the animation advances:\n"
+          "• **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
+          "• **Manual step-by-step**: Click to advance each search step manually.\n"
+          "• **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
+          "• **Manual config-by-config**: Click to complete one full configuration (all iterations).")
 )
 
 if anim_mode == "Auto-advance":
@@ -1130,8 +1183,12 @@ st.markdown("""
 # Action buttons
 st.markdown("<div style='display:flex;gap:1.2rem;margin-top:0.7rem;'>", unsafe_allow_html=True)
 
-# Determine if we're in manual mode
-is_manual_mode = (anim_mode == "Manual step-by-step")
+# Determine if we're in any manual mode
+is_manual_step_mode = (anim_mode == "Manual step-by-step")
+is_manual_iteration_mode = (anim_mode == "Manual iteration-by-iteration")
+is_manual_config_mode = (anim_mode == "Manual config-by-config")
+is_any_manual_mode = is_manual_step_mode or is_manual_iteration_mode or is_manual_config_mode
+
 anim_is_running = st.session_state.get("anim_running", False)
 # Check if there are generated configurations or successful points that can be cleared
 has_generated_configs = len(st.session_state.get("anim_all_configs", [])) > 0
@@ -1140,10 +1197,30 @@ has_generated_point = st.session_state.get("anim_generated_point") is not None
 # Reset button should be enabled if animation is running OR if there are any generated points/configs to clear
 reset_btn_should_be_enabled = anim_is_running or has_generated_configs or has_successful_points or has_generated_point
 
-if is_manual_mode:
-    # Manual mode: show 4 buttons (Generate, Previous step, Next step, Reset)
-    # In manual mode, we only show one Generate button (with animation) since the user
-    # explicitly chose step-by-step mode. The "Generate without animation" is hidden.
+if is_any_manual_mode:
+    # Manual mode: show 4 buttons (Generate, Previous, Next, Reset)
+    # Button labels change based on the manual mode type
+    
+    # Determine button labels based on mode
+    if is_manual_step_mode:
+        prev_label = "◀ Previous step"
+        next_label = "▶ Next step"
+        prev_help = "Click to go back to the previous animation step."
+        next_help = "Click to advance the animation by one step."
+        generate_help = "Start generating configurations step-by-step. Click 'Next step' to advance each step manually."
+    elif is_manual_iteration_mode:
+        prev_label = "◀ Previous iteration"
+        next_label = "▶ Next iteration"
+        prev_help = "Click to go back to the previous iteration."
+        next_help = "Click to complete one full iteration (all search steps until a point is placed)."
+        generate_help = "Start generating configurations. Click 'Next iteration' to complete one iteration at a time."
+    else:  # is_manual_config_mode
+        prev_label = "◀ Previous config"
+        next_label = "▶ Next config"
+        prev_help = "Click to go back to the previous configuration."
+        next_help = "Click to complete one full configuration (all iterations)."
+        generate_help = "Start generating configurations. Click 'Next config' to complete one configuration at a time."
+    
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1, 1, 0.6], gap="small")
     # No "Generate without animation" button in manual mode
     generate_btn = False  # Set to False so the generate_btn handler doesn't trigger
@@ -1151,16 +1228,16 @@ if is_manual_mode:
         animate_btn = st.button(
             "Generate", 
             key="btn_animate",
-            help="Start generating configurations step-by-step. Click 'Next step' to advance each step manually, or 'Previous step' to go back."
+            help=generate_help
         )
     with col_btn2:
-        # Show "Previous step" button - enabled only when animation is running and there is history
+        # Show "Previous" button - enabled only when animation is running and there is history
         anim_history = st.session_state.get("anim_state_history", [])
         prev_step_clicked = st.button(
-            "◀ Previous step", 
+            prev_label, 
             key="btn_prev_step", 
             disabled=not anim_is_running or len(anim_history) == 0,
-            help="Click to go back to the previous animation step. Only active when animation is running and there is history to go back to."
+            help=prev_help + " Only active when animation is running and there is history to go back to."
         )
         if prev_step_clicked and anim_is_running and len(anim_history) > 0:
             # Pop the last state from history and restore it
@@ -1171,18 +1248,23 @@ if is_manual_mode:
                 st.session_state[key] = value
             st.rerun()
     with col_btn3:
-        # Show "Next step" button - enabled only when animation is running
+        # Show "Next" button - enabled only when animation is running
         next_step_clicked = st.button(
-            "▶ Next step", 
+            next_label, 
             key="btn_next_step", 
             type="primary", 
             disabled=not anim_is_running,
-            help="Click to advance the animation by one step. Only active when animation is running."
+            help=next_help + " Only active when animation is running."
         )
         if next_step_clicked and anim_is_running:
-            # Set a flag to indicate that a manual step was requested
-            # The animation progress code will check this flag and advance one step
-            st.session_state["anim_manual_step_requested"] = True
+            # Set flags to indicate what type of manual advance was requested
+            # The animation progress code will check these flags
+            if is_manual_step_mode:
+                st.session_state["anim_manual_step_requested"] = True
+            elif is_manual_iteration_mode:
+                st.session_state["anim_manual_iteration_requested"] = True
+            else:  # is_manual_config_mode
+                st.session_state["anim_manual_config_requested"] = True
     with col_btn4:
         # Reset button - halts animation and resets all graphs to initial state
         # Enabled when animation is running OR when there are generated configurations to clear
@@ -1226,7 +1308,7 @@ else:
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
 # We need to check which button variable exists based on the current mode
-if is_manual_mode:
+if is_any_manual_mode:
     reset_btn_clicked = reset_btn_manual
 else:
     reset_btn_clicked = reset_btn_auto
@@ -1243,7 +1325,16 @@ if reset_btn_clicked and reset_btn_should_be_enabled:
         # Animation control flags
         "anim_running",
         "anim_manual_step_requested",
+        "anim_manual_iteration_requested",
+        "anim_manual_config_requested",
         "anim_manual_mode",
+        "anim_manual_step_mode",
+        "anim_manual_iteration_mode",
+        "anim_manual_config_mode",
+        "_iteration_in_progress",
+        "_config_in_progress",
+        "_iteration_just_completed",
+        "_config_just_completed",
         "anim_in_search",
         # Point generation state - clearing these removes all daughter points
         "anim_generated_point",
@@ -2061,6 +2152,235 @@ def update_order_match_flags() -> None:
     st.session_state["order_match_d1"] = d1_match
     st.session_state["order_match_d2"] = d2_match
 
+# ============= Helper: Binary search iteration ============
+def run_binary_iteration(
+    current_points: np.ndarray,
+    successful_points: list[SuccessfulPoint],
+    pdp_variant: str,
+    buffer_x: float,
+    buffer_y: float,
+    rough_x: float,
+    rough_y: float,
+    max_binary_steps: int = 7
+) -> tuple[list[SuccessfulPoint], bool]:
+    """
+    Run one iteration of multi-point generation using the 7-step binary search strategy.
+    
+    Binary search strategy:
+    1. Start with a point at distance maxdist from the parent point
+    2. If PDP matches → save as ok_point, try to go further by adding delta
+    3. If PDP doesn't match → compute midpoint between ok_point and current point
+    4. Repeat for 7 steps, halving delta each time
+    5. Final placement is at the last ok_point
+    
+    Returns:
+        (new_successful_points, success): Updated list and whether iteration succeeded
+    """
+    # Select which points to move this iteration
+    selected_indices = select_points_for_iteration()
+    if not selected_indices:
+        return successful_points, False
+    
+    # Generate initial movement vectors for all selected points
+    base_distance = maxdist
+    initial_vectors = generate_movement_vectors(selected_indices, base_distance)
+    
+    # Get parent positions for each selected index
+    def get_parent_position(idx: int) -> np.ndarray:
+        """Get the most recent position for a point (either from successful_points or original)."""
+        for sp in reversed(successful_points):
+            if int(sp["original_parent_idx"]) == idx:
+                return sp["point"]
+        if 0 <= idx < len(current_points):
+            return current_points[idx]
+        return np.array([0.0, 0.0])
+    
+    # Build configuration with additional candidate positions for PDP checking
+    def build_config_with_candidates(candidate_positions: dict[int, np.ndarray]) -> np.ndarray:
+        """Build configuration from original + successful + candidate positions."""
+        config = current_points.copy()
+        # Apply successful points
+        latest_by_idx: dict[int, np.ndarray] = {}
+        for sp in successful_points:
+            orig_idx = int(sp["original_parent_idx"])
+            latest_by_idx[orig_idx] = sp["point"]
+        # Apply candidate positions
+        for idx, pt in candidate_positions.items():
+            latest_by_idx[idx] = pt
+        # Update config
+        for idx, pt in latest_by_idx.items():
+            if 0 <= idx < len(config):
+                config[idx] = pt
+        return config
+    
+    # Initialize binary search state for each selected point
+    # ok_points: last known good positions (start at parent)
+    # deltas: current movement vectors
+    ok_points: dict[int, np.ndarray] = {}
+    deltas: dict[int, np.ndarray] = {}
+    
+    for idx in selected_indices:
+        parent_pt = get_parent_position(idx)
+        ok_points[idx] = parent_pt.copy()
+        dx, dy = initial_vectors[idx]
+        deltas[idx] = np.array([dx, dy])
+    
+    # Track if we've ever found a full match (for diagnostics)
+    had_full_match = False
+    diag_rows: list = st.session_state.get("diag_rows", [])
+    
+    # Binary search: 7 steps
+    for binary_step in range(max_binary_steps):
+        # Compute candidate positions: ok_point + delta for each point
+        candidate_positions: dict[int, np.ndarray] = {}
+        for idx in selected_indices:
+            ok_pt = ok_points[idx]
+            delta = deltas[idx]
+            new_x = np.clip(ok_pt[0] + delta[0], COORD_MIN_X, COORD_MAX_X)
+            new_y = np.clip(ok_pt[1] + delta[1], COORD_MIN_Y, COORD_MAX_Y)
+            candidate_positions[idx] = np.array([new_x, new_y])
+        
+        # Build config with candidates and check PDP
+        test_config = build_config_with_candidates(candidate_positions)
+        
+        same_d1, same_d2 = check_pdp_match(
+            all_pts_flat,
+            test_config,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y
+        )
+        
+        # Record diagnostic row
+        delta_magnitude = np.linalg.norm(list(deltas.values())[0]) if deltas else 0
+        diag_rows.append({
+            "n": binary_step + 1,
+            "order_match_d1": same_d1,
+            "order_match_d2": same_d2,
+            "D_before_update": delta_magnitude,
+            "delta": delta_magnitude / 2 if not (same_d1 and same_d2) else delta_magnitude,
+        })
+        
+        if same_d1 and same_d2:
+            # Match! Update ok_points to current candidates, keep delta for next step
+            had_full_match = True
+            for idx in selected_indices:
+                ok_points[idx] = candidate_positions[idx].copy()
+        else:
+            # No match: halve delta (binary search narrowing)
+            for idx in selected_indices:
+                deltas[idx] = deltas[idx] / 2.0
+    
+    # Store diagnostics
+    st.session_state["diag_rows"] = diag_rows
+    st.session_state["anim_had_full_match"] = had_full_match
+    
+    # Final placement: use the last ok_points
+    iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
+    for idx in selected_indices:
+        final_pt = ok_points[idx]
+        parent_pt = get_parent_position(idx)
+        sp: SuccessfulPoint = {
+            "point": final_pt,
+            "parent_idx": idx,
+            "parent_point": parent_pt,
+            "original_parent_idx": idx,
+            "iteration": iteration_num,
+        }
+        successful_points.append(sp)
+    
+    # Record iteration summary
+    iter_log: list = st.session_state.get("binary_iteration_summary", [])
+    current_config = int(st.session_state.get("anim_current_config", 1))
+    iter_log.append({
+        "config": current_config,
+        "iteration": iteration_num,
+        "match_d1": had_full_match,
+        "match_d2": had_full_match,
+    })
+    st.session_state["binary_iteration_summary"] = iter_log
+    
+    return successful_points, True
+
+
+# ============= Helper: Binary generation (non-animated) ============
+def generate_binary_multipoint() -> None:
+    """
+    Multi-point aware version of non-animated binary generation.
+    
+    Uses the 7-step binary search strategy for each iteration.
+    Supports multi-point selection and multi-variant generation.
+    """
+    # Get parameters
+    default_iterations = int(st.session_state.get("cfg_iterations", 3))
+    default_num_configs = int(st.session_state.get("cfg_num_configs", 1))
+    num_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
+    num_configs = int(st.session_state.get("anim_num_configs", default_num_configs))
+    
+    pdp_variants_list = st.session_state.get("anim_pdp_variants_list", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    
+    all_configs: list = []
+    current_points = all_pts_flat.copy()
+    
+    # Reset diagnostics
+    st.session_state["diag_rows"] = []
+    st.session_state["binary_iteration_summary"] = []
+    
+    # Process each variant
+    for variant_idx, pdp_variant in enumerate(pdp_variants_list):
+        st.session_state["anim_current_variant_idx"] = variant_idx
+        st.session_state["anim_current_variant"] = pdp_variant
+        
+        # Generate configurations for this variant
+        for config_num in range(1, num_configs + 1):
+            st.session_state["anim_current_config"] = config_num
+            successful_points: list[SuccessfulPoint] = []
+            
+            # Reset diagnostics for each configuration
+            st.session_state["diag_rows"] = []
+            
+            # Run iterations for this configuration using binary search
+            for iteration in range(num_iterations):
+                st.session_state["anim_completed_iterations"] = iteration
+                
+                successful_points, success = run_binary_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y
+                )
+            
+            # Store this configuration
+            for sp in successful_points:
+                sp["config_num"] = config_num  # type: ignore
+            
+            all_configs.append({
+                "config_num": config_num,
+                "points": list(successful_points),
+                "pdp_variant": pdp_variant
+            })
+            
+            st.session_state["anim_successful_points"] = successful_points
+    
+    # Store all configurations
+    st.session_state["anim_all_configs"] = all_configs
+    st.session_state["anim_running"] = False
+    st.session_state["anim_completed_iterations"] = num_iterations
+    st.session_state["anim_binary_mode"] = True
+    
+    # Rerun to update the UI
+    st.rerun()
+
+
 # ============= Helper: Multi-point generation iteration ============
 def run_multipoint_iteration(
     current_points: np.ndarray,
@@ -2676,9 +2996,12 @@ if animate_btn:
     # Use the same "Number of configurations" setting as batch generation
     num_anim_configs_val = int(num_configs)
     
-    # Store animation mode (auto or manual)
+    # Store animation mode (auto or manual modes)
     anim_mode_val = st.session_state.get("cfg_anim_mode", "Auto-advance")
-    st.session_state["anim_manual_mode"] = (anim_mode_val == "Manual step-by-step")
+    st.session_state["anim_manual_mode"] = anim_mode_val in ["Manual step-by-step", "Manual iteration-by-iteration", "Manual config-by-config"]
+    st.session_state["anim_manual_step_mode"] = (anim_mode_val == "Manual step-by-step")
+    st.session_state["anim_manual_iteration_mode"] = (anim_mode_val == "Manual iteration-by-iteration")
+    st.session_state["anim_manual_config_mode"] = (anim_mode_val == "Manual config-by-config")
 
     if strategy == "exponential":
         num_configs_to_generate = num_anim_configs_val
@@ -2893,6 +3216,8 @@ if generate_btn:
     print(f"[DEBUG GENERATE] buffer_y: {st.session_state.get('cfg_buffer_y', 'NOT SET')}")
     print(f"[DEBUG GENERATE] rough_x: {st.session_state.get('cfg_rough_x', 'NOT SET')}")
     print(f"[DEBUG GENERATE] rough_y: {st.session_state.get('cfg_rough_y', 'NOT SET')}")
+    print(f"[DEBUG GENERATE] Strategy selected: '{strategy}'")
+    print(f"[DEBUG GENERATE] cfg_strategy from session_state: '{st.session_state.get('cfg_strategy', 'NOT SET')}'")
 
     if strategy == "exponential":
         # Set up parameters for multi-point generation
@@ -2910,7 +3235,20 @@ if generate_btn:
         # Run the new multi-point aware generator
         generate_exp_multipoint()
     else:
-        st.warning("Generation for binary strategy is not implemented yet.")
+        # Binary strategy
+        st.session_state["anim_max_iterations"] = int(num_iterations)
+        st.session_state["anim_num_configs"] = int(num_configs)
+        st.session_state["anim_running"] = True
+        st.session_state["show_anim_circle"] = False  # no circle for generate
+        
+        # Debug: print point selection mode
+        point_selection_mode = st.session_state.get("cfg_point_selection_mode", "Single point")
+        movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
+        print(f"[DEBUG GENERATE BINARY] Point selection mode: {point_selection_mode}")
+        print(f"[DEBUG GENERATE BINARY] Movement direction: {movement_direction}")
+
+        # Run the binary search generator
+        generate_binary_multipoint()
 
 # ============= Drawing (without gridlines) ============
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
@@ -3595,12 +3933,33 @@ with col2:
             st.rerun()
 
 # ============= Animation progress (both strategies) ============
-# In manual mode, only process animation when user clicked "Next step"
+# In manual mode, only process animation when user clicked the appropriate "Next" button
 # In auto mode, always process
 _manual_mode = st.session_state.get("anim_manual_mode", False)
+_manual_step_mode = st.session_state.get("anim_manual_step_mode", False)
+_manual_iteration_mode = st.session_state.get("anim_manual_iteration_mode", False)
+_manual_config_mode = st.session_state.get("anim_manual_config_mode", False)
+
+# Determine if we should process animation based on mode
+_manual_step_requested = st.session_state.get("anim_manual_step_requested", False)
+_manual_iteration_requested = st.session_state.get("anim_manual_iteration_requested", False)
+_manual_config_requested = st.session_state.get("anim_manual_config_requested", False)
+
+# For iteration/config modes, we also continue if we're in the middle of completing one
+_iteration_in_progress = st.session_state.get("_iteration_in_progress", False)
+_config_in_progress = st.session_state.get("_config_in_progress", False)
+
+# Start tracking progress when a request is made
+if _manual_iteration_requested:
+    st.session_state["_iteration_in_progress"] = True
+    _iteration_in_progress = True
+if _manual_config_requested:
+    st.session_state["_config_in_progress"] = True
+    _config_in_progress = True
+
 _should_process_animation = (
     st.session_state.get("anim_running", False) and 
-    (not _manual_mode or st.session_state.get("anim_manual_step_requested", False))
+    (not _manual_mode or _manual_step_requested or _manual_iteration_requested or _iteration_in_progress or _manual_config_requested or _config_in_progress)
 )
 
 if _should_process_animation:
@@ -3812,6 +4171,9 @@ if _should_process_animation:
         st.session_state["anim_search_steps"] = 0
         st.session_state["anim_in_search"] = True
         st.session_state["anim_delta"] = None
+        
+        # Flag that an iteration was just completed (for manual iteration mode)
+        st.session_state["_iteration_just_completed"] = True
 
         # <<< hier opnieuw: match evalueren na plaatsing >>>
         update_order_match_flags()
@@ -3829,6 +4191,9 @@ if _should_process_animation:
 
             for sp in successful_points:
                 sp["config_num"] = current_config  # type: ignore
+            
+            # Flag that a configuration was just completed (for manual config mode)
+            st.session_state["_config_just_completed"] = True
 
             if current_config < num_configs:
                 st.session_state["anim_current_config"] = current_config + 1
@@ -3994,10 +4359,43 @@ if _should_process_animation:
                 st.session_state["anim_angle"] = angle_local
                 st.session_state["anim_in_search"] = True
 
-    # Check if manual mode or auto mode for rerun behavior
-    if _manual_mode:
-        # Manual mode: rerun to show the updated state after this step
+    # Determine rerun behavior based on animation mode
+    # _manual_step_mode: pause after each step (one search iteration)
+    # _manual_iteration_mode: pause only when a point is placed (iteration complete)
+    # _manual_config_mode: pause only when a configuration is complete
+    
+    # Check if we just completed an iteration (point was placed)
+    _iteration_just_completed = st.session_state.get("_iteration_just_completed", False)
+    # Check if we just completed a configuration
+    _config_just_completed = st.session_state.get("_config_just_completed", False)
+    
+    # Clear the completion flags
+    st.session_state["_iteration_just_completed"] = False
+    st.session_state["_config_just_completed"] = False
+    
+    if _manual_step_mode:
+        # Manual step-by-step: always pause after each step
+        # Clear the step request flag
+        st.session_state["anim_manual_step_requested"] = False
         st.rerun()
+    elif _manual_iteration_mode:
+        if _iteration_just_completed:
+            # Iteration complete - pause and wait for user
+            st.session_state["anim_manual_iteration_requested"] = False
+            st.session_state["_iteration_in_progress"] = False
+            st.rerun()
+        else:
+            # Still in the middle of an iteration - continue automatically
+            st.rerun()
+    elif _manual_config_mode:
+        if _config_just_completed:
+            # Configuration complete - pause and wait for user
+            st.session_state["anim_manual_config_requested"] = False
+            st.session_state["_config_in_progress"] = False
+            st.rerun()
+        else:
+            # Still in the middle of a configuration - continue automatically
+            st.rerun()
     else:
         # Auto mode: sleep and auto-advance
         time.sleep(wait_s)
@@ -4246,7 +4644,7 @@ if all_configs_list or current_successful_points:
         title="Comparison of Selected Configurations"
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 else:
     st.info("Run an animation or use 'Generate configurations' to generate configuration data.")
