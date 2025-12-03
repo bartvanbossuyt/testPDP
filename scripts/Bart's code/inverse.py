@@ -3449,9 +3449,6 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
         status_text = f"Variant {current_variant_idx+1}/{total_variants} ({current_variant}) | Config {current_config} | Iteration {completed_iters + 1} | Step {step_display}"
         st.session_state["anim_last_step"] = step_display
 
-    if current_strategy == "binary" and delta_val is not None and maxdist != 0:
-        status_text += f" | Δ={delta_val / maxdist:.4f}·maxdist"
-
     ax.text(0.02, 0.98, status_text, transform=ax.transAxes, fontsize=9,  # type: ignore
             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
