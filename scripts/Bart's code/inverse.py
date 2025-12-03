@@ -30,7 +30,7 @@ import plotly.express as px
 # ============= Coordinate Precision Settings =============
 # Change these values to adjust coordinate display precision throughout the app
 COORD_DISPLAY_PRECISION = 2   # Decimal places for UI display (hover text, status messages)
-COORD_CSV_PRECISION = 6       # Decimal places for CSV export (keep high for data accuracy)
+COORD_CSV_PRECISION = 3       # Decimal places for CSV export (3 digits after decimal point)
 
 # Type definition for successful point data in the search process
 class SuccessfulPoint(TypedDict):
@@ -184,6 +184,24 @@ hr { border:none; border-top:1px solid #ddd; margin:.4rem 0 1rem 0; }
     margin: 0.3rem 0 0.8rem 0;
 }
 .settings-card h3 { font-size: 1.0rem; margin: 0 0 0.3rem 0; font-weight: 600; }
+/* Force both plot columns to have identical width */
+[data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    width: calc(50% - 0.5rem) !important;
+    flex: 0 0 calc(50% - 0.5rem) !important;
+}
+/* Force matplotlib figures to have same size in both columns */
+[data-testid="column"] [data-testid="stImage"],
+[data-testid="column"] .stPlotlyChart,
+[data-testid="column"] > div > div > img {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+/* LaTeX formulas should not overflow and have fixed height */
+.stLatex {
+    overflow-x: auto !important;
+    max-width: 100% !important;
+    min-height: 2em !important;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -1362,6 +1380,7 @@ if reset_btn_clicked and reset_btn_should_be_enabled:
         "anim_binary_step",
         "anim_ok_point",
         "anim_delta",
+        "anim_delta_vector",  # Binary search delta vector
         "anim_had_full_match",
         # Circle visualization
         "anim_circle_idx",
@@ -3095,6 +3114,7 @@ if animate_btn:
         st.rerun()
 
     elif strategy == "binary":
+        print(f"[DEBUG INIT BINARY] strategy={strategy}, setting anim_binary_mode=True")
         num_configs_to_generate = num_anim_configs_val
 
         all_pts = all_pts_flat.copy()
@@ -3109,47 +3129,63 @@ if animate_btn:
         parent_idx = selected_indices[0]
         parent_pt = all_pts[parent_idx]
 
-        distance = 0.5 * maxdist
+        # =============================================================
+        # BINARY STRATEGY (according to specification):
+        # =============================================================
+        # Init:
+        #   a-f: Choose parent, randomize angle alfa, place point at maxdist
+        #        Test if point is on graph (within bounds), retry up to 10x
+        #   g: correct_order = parent coordinates
+        #   h: WAIT, then halve to 0.5×maxdist BEFORE first test
+        #
+        # Steps n=1 to 7:
+        #   - Test current position for order match
+        #   - WAIT
+        #   - If match: correct_order = current position
+        #               new_distance = current_distance + 0.5^(n+1) × maxdist
+        #   - If no match: new_distance = current_distance - 0.5^(n+1) × maxdist
+        #   - Move point and circle to new_distance
+        #
+        # End:
+        #   - WAIT
+        #   - Place point at correct_order
+        #   - Circle radius = distance(correct_order, parent)
+        # =============================================================
         
-        # Generate movement vectors for all selected points
-        movement_vectors = generate_movement_vectors(selected_indices, distance)
-        
-        # Calculate generated points and check if any is outside bounds
-        # If outside bounds, halve distance until all points are within bounds (no step counted)
-        max_halving_attempts = 20
-        for _ in range(max_halving_attempts):
-            generated_points = {}
-            all_within_bounds = True
-            # Iterate directly over movement_vectors to ensure we use the correct keys
-            for idx_int, (dx, dy) in movement_vectors.items():
-                gen_x = all_pts[idx_int, 0] + dx
-                gen_y = all_pts[idx_int, 1] + dy
-                # Check if within bounds BEFORE clipping
-                if not (XLIM[0] <= gen_x <= XLIM[1] and YLIM[0] <= gen_y <= YLIM[1]):
-                    all_within_bounds = False
-                # Clip to bounds for storage
-                gen_x = np.clip(gen_x, XLIM[0], XLIM[1])
-                gen_y = np.clip(gen_y, YLIM[0], YLIM[1])
-                generated_points[idx_int] = np.array([gen_x, gen_y])
+        # Step a-f: Find a valid direction that keeps the point within bounds
+        max_direction_attempts = 10
+        found_valid = False
+        for _ in range(max_direction_attempts):
+            alfa = float(np.random.uniform(0, 2 * np.pi))
+            direction = np.array([np.cos(alfa), np.sin(alfa)])
             
-            if all_within_bounds or distance < 1e-6:
+            # Point at maxdist from parent
+            candidate_x = parent_pt[0] + direction[0] * maxdist
+            candidate_y = parent_pt[1] + direction[1] * maxdist
+            
+            # Check if within bounds
+            if COORD_MIN_X <= candidate_x <= COORD_MAX_X and COORD_MIN_Y <= candidate_y <= COORD_MAX_Y:
+                found_valid = True
                 break
-            # Halve the distance and regenerate vectors with same angles
-            distance *= 0.5
-            movement_vectors = scale_movement_vectors(movement_vectors, 0.5)
         
-        # For backwards compatibility
-        parent_idx_int = int(parent_idx)
-        generated_point = generated_points.get(parent_idx_int, all_pts[parent_idx_int].copy())
-        ok_point = generated_point.copy()
-        alfa = np.arctan2(generated_point[1] - parent_pt[1], generated_point[0] - parent_pt[0])
+        if not found_valid:
+            # Step f fail: use parent coordinates
+            print(f"[DEBUG BINARY] Failed to find valid direction after {max_direction_attempts} attempts, using parent")
+            generated_point = parent_pt.copy()
+            current_distance = 0.0
+        else:
+            generated_point = np.array([candidate_x, candidate_y])
+            current_distance = maxdist
+        
+        # Step g: Initialize correct_order with parent coordinates
+        correct_order = parent_pt.copy()
 
         st.session_state["show_anim_circle"] = True
         st.session_state["anim_running"] = True
-        st.session_state["anim_circle_idx"] = parent_idx_int
-        st.session_state["anim_distance"] = distance
+        st.session_state["anim_circle_idx"] = int(parent_idx)
+        st.session_state["anim_distance"] = current_distance  # Circle radius = current distance
         st.session_state["anim_generated_point"] = generated_point
-        st.session_state["anim_parent_idx"] = parent_idx_int
+        st.session_state["anim_parent_idx"] = int(parent_idx)
         st.session_state["anim_all_pts"] = all_pts
         st.session_state["anim_all_ts"] = all_ts
         st.session_state["anim_angle"] = alfa
@@ -3160,27 +3196,32 @@ if animate_btn:
         st.session_state["anim_last_update"] = time.time()
         st.session_state["anim_successful_points"] = []
         st.session_state["anim_in_search"] = True
-        # Number of configurations comes directly from the radio button
         st.session_state["anim_num_configs"] = int(num_configs)
         st.session_state["anim_current_config"] = 1
         st.session_state["anim_all_configs"] = []
         st.session_state["anim_search_steps"] = 0
 
-        st.session_state["anim_ok_point"] = ok_point
+        # Binary search state (new specification):
         st.session_state["anim_binary_mode"] = True
-        st.session_state["anim_binary_step"] = 0
-        st.session_state["anim_delta"] = None
+        st.session_state["anim_binary_step"] = 0  # 0 = showing maxdist, will halve first
+        st.session_state["anim_binary_direction"] = direction.copy()  # Unit vector (constant)
+        st.session_state["anim_binary_current_distance"] = current_distance  # Current distance from parent
+        st.session_state["anim_binary_correct_order"] = correct_order.copy()  # Last good position
+        st.session_state["anim_binary_initialized"] = False  # Will halve to 0.5×maxdist first
         st.session_state["diag_rows"] = []
         st.session_state["binary_iteration_summary"] = []
         st.session_state["anim_had_full_match"] = False
         
-        # Multi-point animation support - store all selected indices and their generated points
-        # Ensure all keys are Python ints for consistent lookup
-        st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-        st.session_state["anim_generated_points"] = {int(k): v for k, v in generated_points.items()}
-        st.session_state["anim_movement_vectors"] = {int(k): v for k, v in movement_vectors.items()}
+        # Legacy state (for compatibility with circle drawing)
+        st.session_state["anim_delta"] = current_distance
+        st.session_state["anim_ok_point"] = correct_order.copy()
         
-        # Multi-variant support - initialize variant tracking
+        # Multi-point animation support
+        st.session_state["anim_selected_indices"] = [int(parent_idx)]
+        st.session_state["anim_generated_points"] = {int(parent_idx): generated_point}
+        st.session_state["anim_movement_vectors"] = {int(parent_idx): (direction[0] * current_distance, direction[1] * current_distance)}
+        
+        # Multi-variant support
         pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
         st.session_state["anim_pdp_variants_list"] = pdp_variants_list
         st.session_state["anim_current_variant_idx"] = 0
@@ -3188,6 +3229,7 @@ if animate_btn:
         
         # Rerun to update button states immediately
         st.rerun()
+
 
 # ============= Generate button handler (non-animated exponential) ============
 if generate_btn:
@@ -3271,12 +3313,20 @@ def render_square_matplotlib_figure(
     dpi: int = 160
 ) -> Figure:
     """Create a square Matplotlib figure and call draw_fn(ax) inside it."""
+    # DEBUG: Print figure parameters
+    print(f"[DEBUG RENDER] xlim={xlim}, ylim={ylim}, size_inches={size_inches}, dpi={dpi}")
     fig = Figure(figsize=(size_inches, size_inches), dpi=dpi)
     _ = FigureCanvas(fig)
     ax = fig.add_subplot(111)
     setup_square_axes(ax, xlim, ylim)
     draw_fn(ax)
-    fig.tight_layout(pad=0.9)
+    # Use constrained_layout or fixed padding instead of tight_layout
+    # to prevent layout changes based on content
+    fig.subplots_adjust(left=0.12, right=0.95, top=0.92, bottom=0.12)
+    # DEBUG: Print actual axes limits after drawing
+    actual_xlim = ax.get_xlim()
+    actual_ylim = ax.get_ylim()
+    print(f"[DEBUG RENDER] After draw: actual_xlim={actual_xlim}, actual_ylim={actual_ylim}")
     return fig
 
 BLUE = "C0"
@@ -3703,10 +3753,21 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             # Get generated point for this index
             sel_gen_pt = generated_points.get(sel_idx_int, None)
             
-            # Draw circle around parent point
+            # Calculate the actual distance from generated point to parent point
+            # The circle radius should ALWAYS equal this distance (red dot on circle edge)
+            if sel_gen_pt is not None:
+                actual_dist = float(np.linalg.norm(np.array(sel_gen_pt) - sel_parent_pt))
+            else:
+                actual_dist = float(distance)  # Fallback to stored distance if no gen_pt
+            
+            # DEBUG: Print circle info
+            print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, gen_pt={sel_gen_pt}, actual_dist={actual_dist:.4f}")
+            
+            # Draw circle around parent point with radius = actual distance to red dot
+            # This ensures the red dot is ALWAYS on the circle edge
             circle = matplotlib.patches.Circle(
                 (sel_parent_pt[0], sel_parent_pt[1]),
-                radius=distance,
+                radius=actual_dist,
                 edgecolor='red',
                 facecolor='none',
                 linewidth=2.0,
@@ -3812,12 +3873,25 @@ def _set_display_config(config_num: int) -> None:
 # ============= Layout (two columns) ============
 col1, col2 = st.columns(2, gap="small")
 
+# Pre-render both figures to ensure identical sizing
+fig_left = render_square_matplotlib_figure(draw_original, XLIM, YLIM)
+fig_right = render_square_matplotlib_figure(draw_generated_empty, XLIM, YLIM)
+
+# Convert to PNG bytes for consistent display
+_buf_left: IO[bytes] = io.BytesIO()
+fig_left.savefig(_buf_left, format="png", dpi=160)
+_buf_left.seek(0)
+
+_buf_right: IO[bytes] = io.BytesIO()
+fig_right.savefig(_buf_right, format="png", dpi=160)
+_buf_right.seek(0)
+
 with col1:
     st.markdown("<div class='figure-title'>Original configuration</div>", unsafe_allow_html=True)
     st.latex(make_d1_order_latex())
     st.latex(make_d2_order_latex())
-    fig_left = render_square_matplotlib_figure(draw_original, XLIM, YLIM)
-    st.pyplot(fig_left, clear_figure=True)
+    # Use st.image instead of st.pyplot for consistent sizing
+    st.image(_buf_left, width="stretch")
 
     # Show textual comparison of orderings when animation / generation is active
     if "anim_generated_point" in st.session_state:
@@ -3839,9 +3913,8 @@ with col1:
         st.caption(f"Right d₂: {right_order_d2}")
         st.markdown(f"**d₂ order match: {same_d2}**")
 
-    # Download original plot as PNG
-    _buf_left: IO[bytes] = io.BytesIO()
-    fig_left.savefig(_buf_left, format="png", dpi=160, bbox_inches="tight")  # type: ignore
+    # Download original plot as PNG - reuse the buffer
+    _buf_left.seek(0)
     st.download_button(
         label="Save as PNG",
         data=_buf_left.getvalue(),
@@ -3852,10 +3925,19 @@ with col1:
 
 with col2:
     st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
-    st.latex(make_d1_order_latex_generated())
-    st.latex(make_d2_order_latex_generated())
-    fig_right = render_square_matplotlib_figure(draw_generated_empty, XLIM, YLIM)
-    st.pyplot(fig_right, clear_figure=True)
+    _latex_d1 = make_d1_order_latex_generated()
+    _latex_d2 = make_d2_order_latex_generated()
+    # DEBUG: Print LaTeX lengths
+    print(f"[DEBUG LATEX] d1_len={len(_latex_d1)}, d2_len={len(_latex_d2)}")
+    print(f"[DEBUG LATEX] d1={_latex_d1[:100]}...")
+    st.latex(_latex_d1)
+    st.latex(_latex_d2)
+    # DEBUG: Print XLIM, YLIM, and anim_distance to check if they change
+    _debug_distance = st.session_state.get("anim_distance", "NOT SET")
+    _debug_binary = st.session_state.get("anim_binary_mode", False)
+    print(f"[DEBUG DRAW] XLIM={XLIM}, YLIM={YLIM}, anim_distance={_debug_distance}, binary_mode={_debug_binary}")
+    # Use st.image instead of st.pyplot for consistent sizing
+    st.image(_buf_right, width="stretch")
 
     if "anim_generated_point" in st.session_state:
         left_d1 = make_d1_order_latex()
@@ -3877,8 +3959,8 @@ with col2:
         st.markdown(f"**d₂ order match: {same_d2}**")
 
     # Download generated plot as PNG + navigation buttons on ONE row
-    _buf_right: IO[bytes] = io.BytesIO()
-    fig_right.savefig(_buf_right, format="png", dpi=160, bbox_inches="tight")  # type: ignore
+    # Reuse the buffer that was already created above
+    _buf_right.seek(0)
 
     # Determine navigation state
     all_configs_list: list = st.session_state.get("anim_all_configs", [])
@@ -4145,7 +4227,12 @@ if _should_process_animation:
         return np.array([0.0, 0.0])
 
     # === Case 1: success (orders match) or distance collapsed to 0 ===
-    if (same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None):
+    # For BINARY mode: ONLY complete after 7 steps (distance will be set to 0 after step 7)
+    # For EXPONENTIAL mode: complete when orders match or distance <= 0
+    binary_complete = binary_mode and distance <= 0.0 and gen_pt is not None
+    exponential_complete = not binary_mode and ((same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None))
+    
+    if binary_complete or exponential_complete:
         if all_pts.size > 0 and parent_idx < n_total_points:
             parent_point_val = all_pts[parent_idx]
             original_parent_idx_val = parent_idx
@@ -4225,30 +4312,42 @@ if _should_process_animation:
                     parent_idx_reset = chosen_idx_reset
                     parent_pt_reset = all_pts_reset[parent_idx_reset]
 
-                distance_new = maxdist
-                max_attempts = 20
-                for _ in range(max_attempts):
+                # ORIGINAL Binary: ok_point starts at parent, delta = direction × maxdist
+                max_direction_attempts = 50
+                for _ in range(max_direction_attempts):
                     angle_local = float(np.random.uniform(0, 2 * np.pi))
-                    new_x = parent_pt_reset[0] + distance_new * np.cos(angle_local)
-                    new_y = parent_pt_reset[1] + distance_new * np.sin(angle_local)
+                    direction = np.array([np.cos(angle_local), np.sin(angle_local)])
+                    delta_vector = direction * maxdist
+                    
+                    new_x = parent_pt_reset[0] + delta_vector[0]
+                    new_y = parent_pt_reset[1] + delta_vector[1]
+                    
                     if COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y:
                         break
                 else:
                     new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
                     new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+                
                 new_gen_pt = np.array([new_x, new_y])
 
                 st.session_state["anim_parent_idx"] = parent_idx_reset
                 st.session_state["anim_angle"] = angle_local
                 st.session_state["anim_generated_point"] = new_gen_pt
-                st.session_state["anim_distance"] = distance_new
+                st.session_state["anim_distance"] = maxdist
                 st.session_state["anim_all_pts"] = all_pts_reset
-                st.session_state["anim_in_search"] = True  # Ensure circle is shown for new config
+                st.session_state["anim_in_search"] = True
                 st.session_state["anim_config_complete_wait"] = True
-                # Sync multi-point data for single-point mode consistency
+                # CORRECTED Binary search state - PRESERVE binary mode!
+                st.session_state["anim_binary_mode"] = binary_mode  # Keep the same mode
+                st.session_state["anim_binary_step"] = 0  # Init step (will be incremented to 1 on first progress)
+                st.session_state["anim_binary_correct_order"] = parent_pt_reset.copy()  # correct_order = parent
+                st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
+                st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector
+                st.session_state["anim_had_full_match"] = False
+                # Sync multi-point data
                 st.session_state["anim_selected_indices"] = [int(parent_idx_reset)]
                 st.session_state["anim_generated_points"] = {int(parent_idx_reset): new_gen_pt}
-                st.session_state["anim_movement_vectors"] = {}
+                st.session_state["anim_movement_vectors"] = {int(parent_idx_reset): (delta_vector[0], delta_vector[1])}
             else:
                 st.session_state["anim_running"] = False
                 st.session_state["show_anim_circle"] = False
@@ -4275,89 +4374,242 @@ if _should_process_animation:
                 parent_pt_new = get_point_for_flat_idx(chosen_idx)
                 parent_idx_new = chosen_idx
 
-            distance_new = maxdist
-            max_attempts = 20
-            for _ in range(max_attempts):
+            # ORIGINAL Binary: ok_point starts at parent, delta = direction × maxdist
+            max_direction_attempts = 50
+            for _ in range(max_direction_attempts):
                 angle_local = float(np.random.uniform(0, 2 * np.pi))
-                new_x = parent_pt_new[0] + distance_new * np.cos(angle_local)
-                new_y = parent_pt_new[1] + distance_new * np.sin(angle_local)
+                direction = np.array([np.cos(angle_local), np.sin(angle_local)])
+                delta_vector = direction * maxdist
+                
+                new_x = parent_pt_new[0] + delta_vector[0]
+                new_y = parent_pt_new[1] + delta_vector[1]
+                
                 if COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y:
                     break
             else:
                 new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
                 new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+            
             new_gen_pt = np.array([new_x, new_y])
 
             st.session_state["anim_parent_idx"] = parent_idx_new
             st.session_state["anim_angle"] = angle_local
             st.session_state["anim_generated_point"] = new_gen_pt
-            st.session_state["anim_distance"] = distance_new
-            st.session_state["anim_in_search"] = True  # Ensure circle is shown for new search
-            # Sync multi-point data for single-point mode consistency
+            st.session_state["anim_distance"] = maxdist
+            st.session_state["anim_in_search"] = True
+            # CORRECTED Binary search state - PRESERVE binary mode!
+            st.session_state["anim_binary_mode"] = binary_mode  # Keep the same mode
+            st.session_state["anim_binary_step"] = 0  # Init step (will be incremented to 1 on first progress)
+            st.session_state["anim_binary_correct_order"] = parent_pt_new.copy()  # correct_order = parent
+            st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
+            st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector
+            st.session_state["anim_had_full_match"] = False
+            # Sync multi-point data
             st.session_state["anim_selected_indices"] = [int(parent_idx_new)]
             st.session_state["anim_generated_points"] = {int(parent_idx_new): new_gen_pt}
-            st.session_state["anim_movement_vectors"] = {}
+            st.session_state["anim_movement_vectors"] = {int(parent_idx_new): (delta_vector[0], delta_vector[1])}
     else:
-        # === Case 2: keep searching (halve radius etc.) ===
-        search_steps += 1
-        st.session_state["anim_search_steps"] = search_steps
-
-        if search_steps >= max_search_steps:
-            # If search did not converge, snap back to parent
-            if gen_pt is not None and all_pts.size > 0:
-                if parent_idx < n_total_points:
-                    parent_pt_cur = all_pts[parent_idx]
+        # === Case 2: keep searching ===
+        # Different behavior for binary vs exponential strategy
+        
+        # DEBUG: Print which strategy branch we're taking
+        print(f"[DEBUG ANIM] binary_mode={binary_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
+        
+        if binary_mode:
+            # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps) =============
+            # Algorithm:
+            # - Init: punt op afstand maxdist, correct_order = parent, current_distance = maxdist
+            # - Step 0: halveer naar 0.5×maxdist VOORDAT je test
+            # - Steps 1-7: 
+            #   - Bij match: distance += 0.5^(n+1) × maxdist, correct_order = punt positie
+            #   - Bij geen match: distance -= 0.5^(n+1) × maxdist
+            # - Einde: plaats op correct_order positie
+            
+            binary_step = int(st.session_state.get("anim_binary_step", 0))
+            binary_step += 1
+            st.session_state["anim_binary_step"] = binary_step
+            search_steps += 1
+            st.session_state["anim_search_steps"] = search_steps
+            
+            # Get parent point
+            if parent_idx < n_total_points:
+                parent_pt_cur = all_pts[parent_idx]
+            else:
+                succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+                sidx = int(parent_idx - n_total_points)
+                if 0 <= sidx < len(succ_list):
+                    parent_pt_cur = succ_list[sidx]["point"]
                 else:
-                    succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                    sidx = int(parent_idx - n_total_points)
-                    if 0 <= sidx < len(succ_list):
-                        parent_pt_cur = succ_list[sidx]["point"]
+                    parent_pt_cur = np.array([0.0, 0.0])
+            
+            # Get direction (unit vector from parent to current point)
+            direction = st.session_state.get("anim_binary_direction", None)
+            if direction is None:
+                if gen_pt is not None:
+                    dir_vec = np.array(gen_pt) - parent_pt_cur
+                    dir_norm = np.linalg.norm(dir_vec)
+                    if dir_norm > 1e-9:
+                        direction = dir_vec / dir_norm
                     else:
-                        parent_pt_cur = np.array([0.0, 0.0])
-
-                st.session_state["anim_generated_point"] = parent_pt_cur.copy()
-                st.session_state["anim_distance"] = 0.0
+                        direction = np.array([np.cos(angle), np.sin(angle)])
+                else:
+                    direction = np.array([np.cos(angle), np.sin(angle)])
+                st.session_state["anim_binary_direction"] = direction
+            
+            # Get current binary search state
+            current_distance = float(st.session_state.get("anim_binary_current_distance", maxdist))
+            correct_order = np.array(st.session_state.get("anim_binary_correct_order", parent_pt_cur.copy()))
+            
+            # Check if current candidate matches PDP
+            current_matches = same_d1 and same_d2
+            
+            print(f"[DEBUG BINARY STEP {binary_step}] current_distance={current_distance:.4f}, correct_order={correct_order}, candidate={gen_pt}, matched={current_matches}")
+            
+            # Add diagnostic row
+            diag_rows = st.session_state.get("diag_rows", [])
+            diag_rows.append({
+                "n": binary_step,
+                "order_match_d1": same_d1,
+                "order_match_d2": same_d2,
+                "current_distance": current_distance,
+                "correct_order": correct_order.tolist() if hasattr(correct_order, 'tolist') else list(correct_order),
+                "candidate": gen_pt.tolist() if gen_pt is not None and hasattr(gen_pt, 'tolist') else (list(gen_pt) if gen_pt is not None else None),
+            })
+            st.session_state["diag_rows"] = diag_rows
+            
+            if binary_step >= 7:
+                # After 7 steps: finalize at correct_order
+                # If current step matches, update correct_order first
+                if current_matches and gen_pt is not None:
+                    correct_order = np.array(gen_pt)
+                    st.session_state["anim_binary_correct_order"] = correct_order.copy()
+                    st.session_state["anim_had_full_match"] = True
+                
+                # Place final point at correct_order position
+                st.session_state["anim_generated_point"] = correct_order.copy()
+                st.session_state["anim_distance"] = 0.0  # Trigger success
                 st.session_state["anim_in_search"] = True
-                # Sync multi-point data
                 st.session_state["anim_selected_indices"] = [int(parent_idx)]
-                st.session_state["anim_generated_points"] = {int(parent_idx): parent_pt_cur.copy()}
-                st.session_state["anim_movement_vectors"] = {}
+                st.session_state["anim_generated_points"] = {int(parent_idx): correct_order.copy()}
+                print(f"[DEBUG BINARY] FINALIZE at correct_order={correct_order}")
+            elif binary_step == 1:
+                # Step 1: Special case - halve distance FIRST before testing
+                # Current point is at maxdist, halve to 0.5×maxdist
+                new_distance = 0.5 * maxdist
+                st.session_state["anim_binary_current_distance"] = new_distance
+                
+                # Note: We don't test yet at this step, we just halve
+                # The next frame will show the point at 0.5×maxdist and test it
+                
+                # Compute next candidate: parent + direction × new_distance
+                new_gen_pt = parent_pt_cur + direction * new_distance
+                new_gen_pt[0] = np.clip(new_gen_pt[0], COORD_MIN_X, COORD_MAX_X)
+                new_gen_pt[1] = np.clip(new_gen_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                
+                st.session_state["anim_generated_point"] = new_gen_pt
+                st.session_state["anim_distance"] = new_distance
+                st.session_state["anim_in_search"] = True
+                st.session_state["anim_selected_indices"] = [int(parent_idx)]
+                st.session_state["anim_generated_points"] = {int(parent_idx): new_gen_pt}
+                print(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f}")
+            else:
+                # Steps 2-7: Test current position, then apply +/- formula
+                # delta_term = 0.5^(binary_step) × maxdist
+                # (step 2: 0.5², step 3: 0.5³, etc.)
+                delta_term = (0.5 ** binary_step) * maxdist
+                
+                if current_matches:
+                    # Match! 
+                    # 1. Update correct_order to current point position
+                    if gen_pt is not None:
+                        correct_order = np.array(gen_pt)
+                        st.session_state["anim_binary_correct_order"] = correct_order.copy()
+                    st.session_state["anim_had_full_match"] = True
+                    # 2. Add delta_term to distance
+                    new_distance = current_distance + delta_term
+                    print(f"[DEBUG BINARY STEP {binary_step}] MATCH! distance {current_distance:.4f} + {delta_term:.4f} = {new_distance:.4f}")
+                else:
+                    # No match: subtract delta_term from distance
+                    new_distance = current_distance - delta_term
+                    print(f"[DEBUG BINARY STEP {binary_step}] NO MATCH! distance {current_distance:.4f} - {delta_term:.4f} = {new_distance:.4f}")
+                
+                # Ensure distance stays positive
+                new_distance = max(new_distance, 0.0)
+                st.session_state["anim_binary_current_distance"] = new_distance
+                
+                # Compute next candidate: parent + direction × new_distance
+                new_gen_pt = parent_pt_cur + direction * new_distance
+                new_gen_pt[0] = np.clip(new_gen_pt[0], COORD_MIN_X, COORD_MAX_X)
+                new_gen_pt[1] = np.clip(new_gen_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                
+                st.session_state["anim_generated_point"] = new_gen_pt
+                st.session_state["anim_distance"] = new_distance
+                st.session_state["anim_in_search"] = True
+                st.session_state["anim_selected_indices"] = [int(parent_idx)]
+                st.session_state["anim_generated_points"] = {int(parent_idx): new_gen_pt}
+                print(f"[DEBUG BINARY STEP {binary_step}] Next candidate at distance {new_distance:.4f}: {new_gen_pt}")
+        
         else:
-            # Standard exponential search step: halve distance, tweak angle
-            if gen_pt is not None and all_pts.size > 0:
-                if parent_idx < n_total_points:
-                    parent_pt_cur = all_pts[parent_idx]
-                else:
-                    succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                    sidx = int(parent_idx - n_total_points)
-                    if 0 <= sidx < len(succ_list):
-                        parent_pt_cur = succ_list[sidx]["point"]
+            # ============= EXPONENTIAL SEARCH STRATEGY =============
+            search_steps += 1
+            st.session_state["anim_search_steps"] = search_steps
+
+            if search_steps >= max_search_steps:
+                # If search did not converge, snap back to parent
+                if gen_pt is not None and all_pts.size > 0:
+                    if parent_idx < n_total_points:
+                        parent_pt_cur = all_pts[parent_idx]
                     else:
-                        parent_pt_cur = np.array([0.0, 0.0])
+                        succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+                        sidx = int(parent_idx - n_total_points)
+                        if 0 <= sidx < len(succ_list):
+                            parent_pt_cur = succ_list[sidx]["point"]
+                        else:
+                            parent_pt_cur = np.array([0.0, 0.0])
 
-                new_distance = distance / 2.0
-                min_distance = 1e-5
-                if new_distance < min_distance:
-                    new_distance = min_distance * 2.0
-                    angle_local = float(np.random.uniform(0, 2 * np.pi))
-                else:
-                    angle_local = angle
-                angle_local += float(np.random.uniform(-0.25, 0.25))
-                angle_local = angle_local % (2 * np.pi)
-                new_x = parent_pt_cur[0] + new_distance * np.cos(angle_local)
-                new_y = parent_pt_cur[1] + new_distance * np.sin(angle_local)
-                new_gen_pt = np.array([new_x, new_y])
+                    st.session_state["anim_generated_point"] = parent_pt_cur.copy()
+                    st.session_state["anim_distance"] = 0.0
+                    st.session_state["anim_in_search"] = True
+                    # Sync multi-point data
+                    st.session_state["anim_selected_indices"] = [int(parent_idx)]
+                    st.session_state["anim_generated_points"] = {int(parent_idx): parent_pt_cur.copy()}
+                    st.session_state["anim_movement_vectors"] = {}
+            else:
+                # Standard exponential search step: halve distance, tweak angle
+                if gen_pt is not None and all_pts.size > 0:
+                    if parent_idx < n_total_points:
+                        parent_pt_cur = all_pts[parent_idx]
+                    else:
+                        succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+                        sidx = int(parent_idx - n_total_points)
+                        if 0 <= sidx < len(succ_list):
+                            parent_pt_cur = succ_list[sidx]["point"]
+                        else:
+                            parent_pt_cur = np.array([0.0, 0.0])
 
-                if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
-                    angle_local = (angle_local + np.pi) % (2 * np.pi)
+                    new_distance = distance / 2.0
+                    min_distance = 1e-5
+                    if new_distance < min_distance:
+                        new_distance = min_distance * 2.0
+                        angle_local = float(np.random.uniform(0, 2 * np.pi))
+                    else:
+                        angle_local = angle
+                    angle_local += float(np.random.uniform(-0.25, 0.25))
+                    angle_local = angle_local % (2 * np.pi)
                     new_x = parent_pt_cur[0] + new_distance * np.cos(angle_local)
                     new_y = parent_pt_cur[1] + new_distance * np.sin(angle_local)
                     new_gen_pt = np.array([new_x, new_y])
 
-                st.session_state["anim_generated_point"] = new_gen_pt
-                st.session_state["anim_distance"] = new_distance
-                st.session_state["anim_angle"] = angle_local
-                st.session_state["anim_in_search"] = True
+                    if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
+                        angle_local = (angle_local + np.pi) % (2 * np.pi)
+                        new_x = parent_pt_cur[0] + new_distance * np.cos(angle_local)
+                        new_y = parent_pt_cur[1] + new_distance * np.sin(angle_local)
+                        new_gen_pt = np.array([new_x, new_y])
+
+                    st.session_state["anim_generated_point"] = new_gen_pt
+                    st.session_state["anim_distance"] = new_distance
+                    st.session_state["anim_angle"] = angle_local
+                    st.session_state["anim_in_search"] = True
 
     # Determine rerun behavior based on animation mode
     # _manual_step_mode: pause after each step (one search iteration)
