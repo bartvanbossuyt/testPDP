@@ -3814,21 +3814,38 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             # Get generated point for this index
             sel_gen_pt = generated_points.get(sel_idx_int, None)
             
-            # Calculate the actual distance from generated point to parent point
-            # The circle radius should ALWAYS equal this distance (red dot on circle edge)
-            if sel_gen_pt is not None:
-                actual_dist = float(np.linalg.norm(np.array(sel_gen_pt) - sel_parent_pt))
+            # For multi-point mode: ALL circles must have the SAME radius = anim_distance
+            # This is the "search radius" for the current iteration step
+            circle_radius = float(distance)
+            
+            # Calculate red dot position: parent + direction × distance
+            # Use the movement vector to get the exact direction, place dot at exact distance
+            movement_vecs = st.session_state.get("anim_movement_vectors", {})
+            mv = movement_vecs.get(sel_idx_int, None)
+            
+            if mv is not None and (abs(mv[0]) > 1e-9 or abs(mv[1]) > 1e-9):
+                # Normalize the movement vector to get direction
+                mv_arr = np.array([float(mv[0]), float(mv[1])])
+                mv_mag = float(np.linalg.norm(mv_arr))
+                if mv_mag > 1e-9:
+                    direction = mv_arr / mv_mag
+                else:
+                    direction = np.array([1.0, 0.0])
+                # Red dot at parent + direction × circle_radius (exact distance, no clipping)
+                red_dot_pos = sel_parent_pt + direction * circle_radius
+                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f}")
+            elif sel_gen_pt is not None:
+                # Fallback: use the stored generated point position
+                red_dot_pos = np.array(sel_gen_pt)
+                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f} (fallback)")
             else:
-                actual_dist = float(distance)  # Fallback to stored distance if no gen_pt
+                red_dot_pos = None
+                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot=None, radius={circle_radius:.4f}")
             
-            # DEBUG: Print circle info
-            print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, gen_pt={sel_gen_pt}, actual_dist={actual_dist:.4f}")
-            
-            # Draw circle around parent point with radius = actual distance to red dot
-            # This ensures the red dot is ALWAYS on the circle edge
+            # Draw circle around parent point with radius = anim_distance (same for ALL points)
             circle = matplotlib.patches.Circle(
                 (sel_parent_pt[0], sel_parent_pt[1]),
-                radius=actual_dist,
+                radius=circle_radius,
                 edgecolor='red',
                 facecolor='none',
                 linewidth=1.2,
@@ -3836,9 +3853,9 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             )
             ax.add_patch(circle)  # type: ignore
             
-            # Draw red dot at generated point if we have one
-            if sel_gen_pt is not None:
-                ax.scatter([sel_gen_pt[0]], [sel_gen_pt[1]], s=40, zorder=6, color='red')  # type: ignore
+            # Draw red dot exactly on the circle edge
+            if red_dot_pos is not None:
+                ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=6, color='red')  # type: ignore
         
         # ============= Buffer/Rough Visualization =============
         # (Only for the primary generated point for simplicity)
@@ -4402,8 +4419,7 @@ if _should_process_animation:
                         if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
                             all_within_bounds = False
                         
-                        new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
-                        new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+                        # NO CLIPPING - all points must be at exact same distance from parent
                         generated_points[idx] = np.array([new_x, new_y])
                     
                     if all_within_bounds:
@@ -4473,8 +4489,7 @@ if _should_process_animation:
                     if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
                         all_within_bounds = False
                     
-                    new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
-                    new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+                    # NO CLIPPING - all points must be at exact same distance from parent
                     generated_points[idx] = np.array([new_x, new_y])
                 
                 if all_within_bounds:
@@ -4723,6 +4738,7 @@ if _should_process_animation:
                     parent_pt = get_parent_for_idx_exp(idx)
                     
                     # Get original movement vector and scale to new distance
+                    # Direction is preserved from initial generation - NO random tweaks!
                     orig_vec = movement_vectors.get(idx, (0.0, 0.0))
                     orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
                     if orig_mag > 1e-9:
@@ -4730,18 +4746,9 @@ if _should_process_animation:
                     else:
                         direction = np.array([1.0, 0.0])
                     
-                    # Add small angle tweak per point
-                    angle_tweak = float(np.random.uniform(-0.15, 0.15))
-                    cos_t, sin_t = np.cos(angle_tweak), np.sin(angle_tweak)
-                    direction = np.array([
-                        direction[0] * cos_t - direction[1] * sin_t,
-                        direction[0] * sin_t + direction[1] * cos_t
-                    ])
-                    
                     # New position: parent + direction × dist
+                    # NO CLIPPING - all points must be at exact same distance from parent
                     new_pt = parent_pt + direction * dist
-                    new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
-                    new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
                     new_positions[idx] = new_pt
                 return new_positions
 
