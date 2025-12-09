@@ -3674,8 +3674,8 @@ def annotate_points(
         except Exception:
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
-        # Use simple text label without LaTeX to avoid parsing issues
-        label_text = f"{label_prefix}_{lbl}"
+        # Use LaTeX format: italic letter with subscript number (e.g., $\mathit{k}_0$)
+        label_text = f"$\\mathit{{{label_prefix}}}_{{{lbl}}}$"
         ax.annotate(  # type: ignore
             label_text,
             xy=(x, y),
@@ -3777,15 +3777,17 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
     offsets = [(3, 3), (3, -8), (-8, 3)]
 
     def make_label(prefix: str, tval: float, gen_marker: str = "") -> str:
-        """Helper to build a simple label prefix_gen_marker_t."""
+        """Helper to build a LaTeX label with italic letter and subscript number."""
         try:
             tnum = float(tval)
         except Exception:
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
         if gen_marker:
-            return f"{prefix}{gen_marker}_{lbl}"
-        return f"{prefix}_{lbl}"
+            # e.g., k'_0 becomes $\mathit{k}'_0$
+            return f"$\\mathit{{{prefix}}}{gen_marker}_{{{lbl}}}$"
+        # e.g., k_0 becomes $\mathit{k}_0$
+        return f"$\\mathit{{{prefix}}}_{{{lbl}}}$"
 
     def _get_original_index(sp: SuccessfulPoint) -> int | None:
         """Return original parent index if present, otherwise None."""
