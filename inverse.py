@@ -4122,9 +4122,12 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             )
             ax.add_patch(circle)  # type: ignore
             
+            # Draw small white dot at center of circle (parent point) - small, no stroke
+            ax.scatter([sel_parent_pt[0]], [sel_parent_pt[1]], s=6, zorder=6, color='white')  # type: ignore
+            
             # Draw red dot exactly on the circle edge
             if red_dot_pos is not None:
-                ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=6, color='red')  # type: ignore
+                ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=7, color='red')  # type: ignore
         
         # ============= Buffer/Rough Visualization =============
         # (Only for the primary generated point for simplicity)
