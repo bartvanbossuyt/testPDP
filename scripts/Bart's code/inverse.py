@@ -6,9 +6,6 @@
 # Axis labels: d₁ and d₂; point labels: k₀, k₁, k₂ (blue, smaller).
 # maxdist = max(||k0-k1||, ||k1-k2||); axes get at least maxdist margin to every border.
 
-from matplotlib.backends.backend_agg import FigureCanvas
-from matplotlib.figure import Figure
-
 from pathlib import Path
 from typing import Tuple, Callable, IO, TypedDict
 import io
@@ -21,16 +18,17 @@ import streamlit as st
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.axes
-import matplotlib.spines
 import matplotlib.patches
 
 import plotly.graph_objects as go
-import plotly.express as px
 
 # ============= Coordinate Precision Settings =============
 # Change these values to adjust coordinate display precision throughout the app
 COORD_DISPLAY_PRECISION = 2   # Decimal places for UI display (hover text, status messages)
 COORD_CSV_PRECISION = 3       # Decimal places for CSV export (3 digits after decimal point)
+
+# ============= Object Labels for Display =============
+OBJECT_LABELS = ["k", "l", "m", "n", "p", "q", "r", "s", "u", "v"]
 
 # Type definition for successful point data in the search process
 class SuccessfulPoint(TypedDict):
@@ -890,10 +888,10 @@ with sc4:
     # Choice of search strategy for generating new configurations
     strategy = st.radio(
         "Strategy",
-        options=["exponential", "binary"],
+        options=["exponential", "linear", "binary"],
         index=0,
         key="cfg_strategy",
-        help="Choose the search strategy for configuration generation."
+        help="Choose the search strategy for configuration generation.\n- exponential: halve distance until match\n- linear: decrease by 10% of maxdist per step\n- binary: 7-step binary search"
     )
 with sc5:
     # Number of iterations per configuration (used by both animate and generate)
@@ -926,7 +924,7 @@ ps_col1, ps_col2 = st.columns([1, 1], gap="small")
 with ps_col1:
     point_selection_mode = st.selectbox(
         "Selection mode",
-        options=["Single point", "Multiple random points", "Group pattern (Np + Nt)"],
+        options=["Single point", "Multiple random points", "Consecutive time stamps"],
         index=0,
         key="cfg_point_selection_mode",
         help="""How to select points to move in each iteration:
@@ -935,7 +933,7 @@ with ps_col1:
 
 • **Multiple random points**: Move N randomly selected points together
 
-• **Group pattern (Np + Nt)**: Move groups of consecutive timestamps. Select N objects (p) and T consecutive timestamps (t) per object. The starting timestamp is random, then T consecutive timestamps are used for each object."""
+• **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
     )
 
 with ps_col2:
@@ -962,27 +960,58 @@ if point_selection_mode == "Multiple random points":
         key="cfg_num_random_points",
         help="How many random points to select and move together in each iteration."
     )
-elif point_selection_mode == "Group pattern (Np + Nt)":
-    gp_col1, gp_col2 = st.columns([1, 1], gap="small")
+elif point_selection_mode == "Consecutive time stamps":
+    # Get available objects from data (check if variables exist first)
+    _obj_ids_available = 'all_obj_ids_flat' in dir() and all_obj_ids_flat is not None and hasattr(all_obj_ids_flat, 'size') and all_obj_ids_flat.size > 0
+    if _obj_ids_available:
+        available_objects = sorted(set(all_obj_ids_flat.tolist()))
+    else:
+        available_objects = [0, 1]  # Default: assume k and l
+    object_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in available_objects]
+    
+    # Get max timestamps for selected object
+    def get_max_timestamps_for_object(obj_id: int) -> int:
+        if not _obj_ids_available:
+            return 3  # Default assumption
+        return int(np.sum(all_obj_ids_flat == obj_id))
+    
+    gp_col1, gp_col2, gp_col3 = st.columns([1, 1, 1], gap="small")
     with gp_col1:
-        group_num_objects = st.number_input(
-            "Objects (p)",
-            min_value=1,
-            max_value=10,
-            value=2,
-            step=1,
-            key="cfg_group_num_objects",
-            help="Number of different objects to include in the group. Objects are randomly selected."
+        selected_object_label = st.selectbox(
+            "Object",
+            options=object_labels,
+            index=0,
+            key="cfg_consecutive_object",
+            help="Select which object's points to move (k, l, etc.)"
         )
+        # Convert label back to object id
+        selected_object_idx = object_labels.index(selected_object_label) if selected_object_label in object_labels else 0
+        selected_object_id = available_objects[selected_object_idx] if selected_object_idx < len(available_objects) else 0
+        st.session_state["cfg_consecutive_object_id"] = selected_object_id
+    
     with gp_col2:
+        max_ts = get_max_timestamps_for_object(selected_object_id)
         group_num_timestamps = st.number_input(
             "Consecutive timestamps (t)",
             min_value=1,
-            max_value=10,
-            value=2,
+            max_value=max(1, max_ts),
+            value=min(2, max_ts),
             step=1,
             key="cfg_group_num_timestamps",
-            help="Number of consecutive timestamps per object. Starting timestamp is random, then t consecutive timestamps are used."
+            help="Number of consecutive timestamps to move together."
+        )
+    
+    with gp_col3:
+        # First timestamp selection (0-indexed, max depends on num_timestamps)
+        max_first_ts = max(0, max_ts - int(group_num_timestamps))
+        first_timestamp = st.number_input(
+            "First timestamp",
+            min_value=0,
+            max_value=max_first_ts,
+            value=0,
+            step=1,
+            key="cfg_consecutive_first_timestamp",
+            help=f"Starting timestamp index (0 to {max_first_ts}). The next {group_num_timestamps} consecutive timestamps will be selected."
         )
 
 # PDP Variant Selection (Multiple variants)
@@ -1382,6 +1411,12 @@ if reset_btn_clicked and reset_btn_should_be_enabled:
         "anim_delta",
         "anim_delta_vector",  # Binary search delta vector
         "anim_had_full_match",
+        # Linear search state
+        "anim_linear_mode",
+        "anim_linear_step",
+        "anim_linear_current_distance",
+        "anim_linear_maxdist",
+        "anim_linear_step_size",
         # Circle visualization
         "anim_circle_idx",
         "show_anim_circle",
@@ -1567,46 +1602,36 @@ def select_points_for_iteration() -> list[int]:
         selected = list(np.random.choice(movable_indices, size=num_points, replace=False))
         return [int(idx) for idx in selected]
     
-    elif point_selection_mode == "Group pattern (Np + Nt)":
-        # Select N objects, each with T consecutive timestamps
-        num_objects = int(st.session_state.get("cfg_group_num_objects", 2))
+    elif point_selection_mode == "Consecutive time stamps":
+        # Select consecutive timestamps from a single user-chosen object
+        selected_object_id = int(st.session_state.get("cfg_consecutive_object_id", 0))
         num_timestamps = int(st.session_state.get("cfg_group_num_timestamps", 2))
+        first_timestamp_idx = int(st.session_state.get("cfg_consecutive_first_timestamp", 0))
         
-        # Group movable indices by object
-        indices_by_object: dict[int, list[tuple[int, float]]] = {}  # obj_id -> [(flat_idx, timestamp), ...]
+        # Get indices for the selected object, sorted by timestamp
+        indices_for_object: list[tuple[int, float]] = []  # (flat_idx, timestamp)
         for flat_idx in movable_indices:
             o_id = all_obj_ids_flat[flat_idx]
-            t = all_ts_flat[flat_idx]
-            if o_id not in indices_by_object:
-                indices_by_object[o_id] = []
-            indices_by_object[o_id].append((flat_idx, t))
+            if o_id == selected_object_id:
+                t = all_ts_flat[flat_idx]
+                indices_for_object.append((flat_idx, t))
         
-        # Sort by timestamp within each object
-        for o_id in indices_by_object:
-            indices_by_object[o_id].sort(key=lambda x: x[1])
+        # Sort by timestamp
+        indices_for_object.sort(key=lambda x: x[1])
         
-        # Filter to objects with at least num_timestamps points
-        valid_objects = [o_id for o_id, pts in indices_by_object.items() if len(pts) >= num_timestamps]
-        
-        if not valid_objects:
-            # Fall back to single point if no valid objects
+        if not indices_for_object:
+            # Fall back to single point if no points for this object
             return [int(np.random.choice(movable_indices))]
         
-        # Select random objects
-        num_objects = min(num_objects, len(valid_objects))
-        selected_objects = list(np.random.choice(valid_objects, size=num_objects, replace=False))
+        # Clamp first_timestamp_idx to valid range
+        max_start = max(0, len(indices_for_object) - num_timestamps)
+        first_timestamp_idx = min(first_timestamp_idx, max_start)
         
+        # Select consecutive points starting from first_timestamp_idx
         selected_indices = []
-        for o_id in selected_objects:
-            pts_list = indices_by_object[o_id]
-            # Select random starting position that allows num_timestamps consecutive points
-            max_start = len(pts_list) - num_timestamps
-            if max_start < 0:
-                continue
-            start_pos = int(np.random.randint(0, max_start + 1))
-            # Add consecutive points
-            for i in range(num_timestamps):
-                selected_indices.append(pts_list[start_pos + i][0])
+        for i in range(num_timestamps):
+            if first_timestamp_idx + i < len(indices_for_object):
+                selected_indices.append(indices_for_object[first_timestamp_idx + i][0])
         
         return [int(idx) for idx in selected_indices] if selected_indices else [int(np.random.choice(movable_indices))]
     
@@ -1617,27 +1642,116 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     """
     Generate movement vectors for selected points based on movement direction mode.
     Returns a dict mapping flat_idx -> (delta_x, delta_y)
+    
+    For multi-point mode, ensures that the chosen direction keeps ALL points within bounds.
+    If after max_attempts no valid direction is found, uses the best direction found.
     """
     if not selected_indices:
         return {}
     
     movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
     
+    # Get coordinate bounds
+    coord_min_x = float(st.session_state.get("coord_min_x", -50.0))
+    coord_max_x = float(st.session_state.get("coord_max_x", 150.0))
+    coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
+    coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
+    
+    def point_in_bounds(x: float, y: float) -> bool:
+        """Check if a point is within coordinate bounds."""
+        return coord_min_x <= x <= coord_max_x and coord_min_y <= y <= coord_max_y
+    
+    def get_parent_point(idx: int) -> np.ndarray:
+        """Get the current parent point position for a given index."""
+        # Check successful_points first for updated parent position
+        successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+        for s in reversed(successful_points):
+            if int(s.get("original_parent_idx", -1)) == idx:
+                return np.array(s["point"])
+        # Fall back to original position
+        if 0 <= idx < len(all_pts_flat):
+            return all_pts_flat[idx]
+        return np.array([0.0, 0.0])
+    
     if movement_direction == "Same direction":
-        # All points move with the same angle
+        # All points move with the same angle - find a direction that keeps ALL points in bounds
+        max_attempts = 50
+        best_angle = None
+        best_in_bounds_count = 0
+        
+        for attempt in range(max_attempts):
+            angle = float(np.random.uniform(0, 2 * np.pi))
+            delta_x = base_distance * np.cos(angle)
+            delta_y = base_distance * np.sin(angle)
+            
+            # Check if all points would be in bounds with this direction
+            in_bounds_count = 0
+            all_in_bounds = True
+            for idx in selected_indices:
+                parent_pt = get_parent_point(idx)
+                new_x = parent_pt[0] + delta_x
+                new_y = parent_pt[1] + delta_y
+                if point_in_bounds(new_x, new_y):
+                    in_bounds_count += 1
+                else:
+                    all_in_bounds = False
+            
+            # Track best attempt
+            if in_bounds_count > best_in_bounds_count:
+                best_in_bounds_count = in_bounds_count
+                best_angle = angle
+            
+            if all_in_bounds:
+                # Found a valid direction
+                return {int(idx): (delta_x, delta_y) for idx in selected_indices}
+        
+        # Use best direction found (may not keep all points in bounds, but maximizes in-bounds count)
+        if best_angle is not None:
+            delta_x = base_distance * np.cos(best_angle)
+            delta_y = base_distance * np.sin(best_angle)
+            return {int(idx): (delta_x, delta_y) for idx in selected_indices}
+        
+        # Fallback: use first random angle
         angle = float(np.random.uniform(0, 2 * np.pi))
         delta_x = base_distance * np.cos(angle)
         delta_y = base_distance * np.sin(angle)
         return {int(idx): (delta_x, delta_y) for idx in selected_indices}
     
     else:  # Random directions
-        # Each point gets its own random angle
+        # Each point gets its own random angle - ensure each point stays in bounds
         vectors = {}
+        max_attempts = 50
+        
         for idx in selected_indices:
-            angle = float(np.random.uniform(0, 2 * np.pi))
-            delta_x = base_distance * np.cos(angle)
-            delta_y = base_distance * np.sin(angle)
-            vectors[int(idx)] = (delta_x, delta_y)
+            parent_pt = get_parent_point(idx)
+            best_angle = None
+            
+            for attempt in range(max_attempts):
+                angle = float(np.random.uniform(0, 2 * np.pi))
+                delta_x = base_distance * np.cos(angle)
+                delta_y = base_distance * np.sin(angle)
+                
+                new_x = parent_pt[0] + delta_x
+                new_y = parent_pt[1] + delta_y
+                
+                if point_in_bounds(new_x, new_y):
+                    vectors[int(idx)] = (delta_x, delta_y)
+                    break
+                elif best_angle is None:
+                    best_angle = angle
+            else:
+                # No valid angle found after max_attempts, use first angle tried
+                if best_angle is not None:
+                    delta_x = base_distance * np.cos(best_angle)
+                    delta_y = base_distance * np.sin(best_angle)
+                    vectors[int(idx)] = (delta_x, delta_y)
+                else:
+                    # Complete fallback
+                    angle = float(np.random.uniform(0, 2 * np.pi))
+                    delta_x = base_distance * np.cos(angle)
+                    delta_y = base_distance * np.sin(angle)
+                    vectors[int(idx)] = (delta_x, delta_y)
+        
         return vectors
 
 def scale_movement_vectors(vectors: dict[int, tuple[float, float]], scale: float) -> dict[int, tuple[float, float]]:
@@ -2554,7 +2668,7 @@ def generate_exp_multipoint() -> None:
     Supports:
     - Single point (default, original behavior)
     - Multiple random points
-    - Group pattern (Np + Nt)
+    - Consecutive time stamps
     
     With movement direction options:
     - Same direction (coherent)
@@ -3107,6 +3221,7 @@ if animate_btn:
         st.session_state["anim_all_configs"] = []
         st.session_state["anim_search_steps"] = 0
         st.session_state["anim_binary_mode"] = False
+        st.session_state["anim_linear_mode"] = False
         st.session_state["anim_binary_step"] = 0
         st.session_state["diag_rows"] = []
         st.session_state["binary_iteration_summary"] = []
@@ -3177,9 +3292,13 @@ if animate_btn:
             print(f"[DEBUG BINARY INIT] idx={idx}, parent={all_pts[idx]}, movement_vec={vec}, magnitude={vec_mag:.4f}")
         
         # Step a-f: Check if all points are within bounds, retry with new directions if not
-        max_direction_attempts = 10
+        # Even if no perfect direction is found, use the best attempt (some points may be at bounds)
+        max_direction_attempts = 50  # Increase attempts for multi-point mode
         found_valid = False
-        for _ in range(max_direction_attempts):
+        best_generated_points: dict[int, np.ndarray] = {}
+        best_movement_vectors = movement_vectors.copy()
+        
+        for attempt in range(max_direction_attempts):
             all_within_bounds = True
             generated_points: dict[int, np.ndarray] = {}
             
@@ -3193,17 +3312,26 @@ if animate_btn:
                 if not (COORD_MIN_X <= candidate_x <= COORD_MAX_X and COORD_MIN_Y <= candidate_y <= COORD_MAX_Y):
                     all_within_bounds = False
                 
-                # Clip for storage (even if out of bounds, for visualization)
-                candidate_x = np.clip(candidate_x, COORD_MIN_X, COORD_MAX_X)
-                candidate_y = np.clip(candidate_y, COORD_MIN_Y, COORD_MAX_Y)
+                # Store unclipped position for visualization (points at maxdist)
                 generated_points[idx] = np.array([candidate_x, candidate_y])
+            
+            # Keep track of first attempt as fallback
+            if attempt == 0:
+                best_generated_points = {k: v.copy() for k, v in generated_points.items()}
+                best_movement_vectors = {k: v for k, v in movement_vectors.items()}
             
             if all_within_bounds:
                 found_valid = True
+                best_generated_points = generated_points
+                best_movement_vectors = movement_vectors.copy()
                 break
             
             # Regenerate movement vectors with new random directions
             movement_vectors = generate_movement_vectors(selected_indices, maxdist)
+        
+        # Use the best attempt (either valid or first attempt)
+        generated_points = best_generated_points
+        movement_vectors = best_movement_vectors
         
         # DEBUG: Verify distances
         print(f"[DEBUG BINARY INIT] found_valid={found_valid}")
@@ -3213,13 +3341,11 @@ if animate_btn:
             actual_dist = np.linalg.norm(gen_pt_dbg - parent_pt_dbg)
             print(f"[DEBUG BINARY INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
         
+        # ALWAYS start at maxdist, even if some points may be outside bounds
+        # The points will be visually shown at their calculated positions
+        current_distance = maxdist
         if not found_valid:
-            # Step f fail: use parent coordinates for all points
-            print(f"[DEBUG BINARY] Failed to find valid direction after {max_direction_attempts} attempts, using parents")
-            generated_points = {idx: all_pts[idx].copy() for idx in selected_indices}
-            current_distance = 0.0
-        else:
-            current_distance = maxdist
+            print(f"[DEBUG BINARY] No perfect direction found after {max_direction_attempts} attempts, using best attempt at maxdist")
         
         # Step g: Initialize correct_order with parent coordinates for all selected points
         correct_orders: dict[int, np.ndarray] = {idx: all_pts[idx].copy() for idx in selected_indices}
@@ -3256,6 +3382,7 @@ if animate_btn:
 
         # Binary search state (new specification):
         st.session_state["anim_binary_mode"] = True
+        st.session_state["anim_linear_mode"] = False  # Not linear
         st.session_state["anim_binary_step"] = 0  # 0 = showing maxdist, will halve first
         st.session_state["anim_binary_direction"] = direction.copy()  # Unit vector (for first point, backwards compat)
         st.session_state["anim_binary_current_distance"] = current_distance  # Current distance from parent
@@ -3284,6 +3411,141 @@ if animate_btn:
         # Rerun to update button states immediately
         st.rerun()
 
+    elif strategy == "linear":
+        # ============= LINEAR SEARCH STRATEGY INITIALIZATION =============
+        # Same as binary but decreases by 0.1×maxdist per step instead of binary search
+        print(f"[DEBUG INIT LINEAR] strategy={strategy}, setting anim_linear_mode=True")
+        num_configs_to_generate = num_anim_configs_val
+
+        all_pts = all_pts_flat.copy()
+        all_ts = all_ts_flat.copy()
+        n_total = all_pts.shape[0]
+        
+        # Multi-point selection support
+        selected_indices = select_points_for_iteration()
+        if not selected_indices:
+            movable_indices = get_movable_indices()
+            selected_indices = [int(np.random.choice(movable_indices))] if movable_indices else [0]
+        
+        # For backwards compatibility, use first selected index as "parent_idx"
+        parent_idx = selected_indices[0]
+        parent_pt = all_pts[parent_idx]
+
+        # Use global maxdist (already calculated from point distances)
+        # Same as exponential and binary strategies
+        
+        # Generate movement vectors for all selected points
+        movement_vectors = generate_movement_vectors(selected_indices, maxdist)
+        
+        # Generate initial positions at maxdist for all selected points
+        generated_points: dict[int, np.ndarray] = {}
+        max_direction_attempts = 50
+        found_valid = False
+        best_generated_points: dict[int, np.ndarray] = {}
+        best_movement_vectors: dict[int, tuple[float, float]] = {}
+        
+        for attempt in range(max_direction_attempts):
+            all_within_bounds = True
+            generated_points = {}
+            
+            for idx in selected_indices:
+                parent_pt_idx = all_pts[idx]
+                mv = movement_vectors.get(idx, (0.0, 0.0))
+                candidate_x = parent_pt_idx[0] + mv[0]
+                candidate_y = parent_pt_idx[1] + mv[1]
+                
+                # Check if within bounds
+                if not (COORD_MIN_X <= candidate_x <= COORD_MAX_X and COORD_MIN_Y <= candidate_y <= COORD_MAX_Y):
+                    all_within_bounds = False
+                
+                generated_points[idx] = np.array([candidate_x, candidate_y])
+            
+            if attempt == 0:
+                best_generated_points = {k: v.copy() for k, v in generated_points.items()}
+                best_movement_vectors = {k: v for k, v in movement_vectors.items()}
+            
+            if all_within_bounds:
+                found_valid = True
+                best_generated_points = generated_points
+                best_movement_vectors = movement_vectors.copy()
+                break
+            
+            movement_vectors = generate_movement_vectors(selected_indices, maxdist)
+        
+        generated_points = best_generated_points
+        movement_vectors = best_movement_vectors
+        
+        # DEBUG: Verify distances
+        print(f"[DEBUG LINEAR INIT] found_valid={found_valid}")
+        for idx in selected_indices:
+            parent_pt_dbg = all_pts[idx]
+            gen_pt_dbg = generated_points.get(idx, parent_pt_dbg)
+            actual_dist = np.linalg.norm(gen_pt_dbg - parent_pt_dbg)
+            print(f"[DEBUG LINEAR INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
+        
+        # Start at maxdist
+        current_distance = maxdist
+        
+        # Initialize correct_order with parent coordinates for all selected points
+        correct_orders: dict[int, np.ndarray] = {idx: all_pts[idx].copy() for idx in selected_indices}
+        
+        # For backwards compatibility
+        generated_point = generated_points.get(parent_idx, all_pts[parent_idx].copy())
+        correct_order = correct_orders.get(parent_idx, parent_pt.copy())
+        alfa = np.arctan2(
+            generated_point[1] - parent_pt[1],
+            generated_point[0] - parent_pt[0]
+        ) if np.linalg.norm(generated_point - parent_pt) > 1e-9 else 0.0
+        direction = np.array([np.cos(alfa), np.sin(alfa)])
+
+        st.session_state["show_anim_circle"] = True
+        st.session_state["anim_running"] = True
+        st.session_state["anim_circle_idx"] = int(parent_idx)
+        st.session_state["anim_distance"] = current_distance
+        st.session_state["anim_generated_point"] = generated_point
+        st.session_state["anim_parent_idx"] = int(parent_idx)
+        st.session_state["anim_all_pts"] = all_pts
+        st.session_state["anim_all_ts"] = all_ts
+        st.session_state["anim_angle"] = alfa
+        st.session_state["anim_iteration"] = 0
+        st.session_state["anim_max_iterations"] = int(num_iterations)
+        st.session_state["anim_iterations_per_run"] = int(num_iterations)
+        st.session_state["anim_completed_iterations"] = 0
+        st.session_state["anim_last_update"] = time.time()
+        st.session_state["anim_successful_points"] = []
+        st.session_state["anim_in_search"] = True
+        st.session_state["anim_num_configs"] = int(num_configs)
+        st.session_state["anim_current_config"] = 1
+        st.session_state["anim_all_configs"] = []
+        st.session_state["anim_search_steps"] = 0
+
+        # Linear search state
+        st.session_state["anim_binary_mode"] = False  # Not binary
+        st.session_state["anim_linear_mode"] = True   # Linear mode
+        st.session_state["anim_linear_step"] = 0      # Step counter
+        st.session_state["anim_linear_current_distance"] = current_distance
+        st.session_state["anim_linear_maxdist"] = maxdist
+        st.session_state["anim_linear_step_size"] = maxdist * 0.1  # 10% of maxdist per step
+        st.session_state["anim_binary_correct_order"] = correct_order.copy()
+        st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+        st.session_state["anim_had_full_match"] = False
+        st.session_state["diag_rows"] = []
+        st.session_state["binary_iteration_summary"] = []
+        
+        # Multi-point animation support
+        st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+        st.session_state["anim_generated_points"] = {int(k): v for k, v in generated_points.items()}
+        st.session_state["anim_movement_vectors"] = {int(k): v for k, v in movement_vectors.items()}
+        
+        # Multi-variant support
+        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        st.session_state["anim_pdp_variants_list"] = pdp_variants_list
+        st.session_state["anim_current_variant_idx"] = 0
+        st.session_state["anim_current_variant"] = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        
+        # Rerun to update button states immediately
+        st.rerun()
+
 
 # ============= Generate button handler (non-animated exponential) ============
 if generate_btn:
@@ -3294,6 +3556,7 @@ if generate_btn:
     st.session_state["anim_current_config"] = 1
     st.session_state["anim_search_steps"] = 0
     st.session_state["anim_binary_mode"] = False
+    st.session_state["anim_linear_mode"] = False
     st.session_state["anim_binary_step"] = 0
     st.session_state["anim_delta"] = None
     st.session_state["diag_rows"] = []
@@ -3392,8 +3655,7 @@ OBJECT_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
 # Plotly-compatible colors (hex equivalents of matplotlib's default color cycle)
 OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
                         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
-# Labels for all objects
-OBJECT_LABELS = ["k", "l", "m", "n", "p", "q", "r", "s", "u", "v"]
+# Note: OBJECT_LABELS is defined at the top of the file
 
 def annotate_points(
     ax: matplotlib.axes.Axes,
@@ -3820,10 +4082,17 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             
             # Calculate red dot position: parent + direction × distance
             # Use the movement vector to get the exact direction, place dot at exact distance
+            # EXCEPTION: when distance is ~0 (finalized), use stored generated_points directly
             movement_vecs = st.session_state.get("anim_movement_vectors", {})
             mv = movement_vecs.get(sel_idx_int, None)
             
-            if mv is not None and (abs(mv[0]) > 1e-9 or abs(mv[1]) > 1e-9):
+            if circle_radius < 1e-6 and sel_gen_pt is not None:
+                # FINALIZED: distance is 0, use stored final position from correct_orders
+                # Calculate actual radius as distance from parent to final position
+                red_dot_pos = np.array(sel_gen_pt)
+                circle_radius = float(np.linalg.norm(red_dot_pos - sel_parent_pt))
+                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f} (FINALIZED)")
+            elif mv is not None and (abs(mv[0]) > 1e-9 or abs(mv[1]) > 1e-9):
                 # Normalize the movement vector to get direction
                 mv_arr = np.array([float(mv[0]), float(mv[1])])
                 mv_mag = float(np.linalg.norm(mv_arr))
@@ -4148,6 +4417,12 @@ if _should_process_animation:
             "anim_ok_point",
             "anim_delta",
             "anim_had_full_match",
+            # Linear search state
+            "anim_linear_mode",
+            "anim_linear_step",
+            "anim_linear_current_distance",
+            "anim_linear_maxdist",
+            "anim_linear_step_size",
             "anim_all_pts",
             "anim_all_ts",
             "diag_rows",
@@ -4281,6 +4556,7 @@ if _should_process_animation:
 
     ok_point = st.session_state.get("anim_ok_point", gen_pt)
     binary_mode = bool(st.session_state.get("anim_binary_mode", False))
+    linear_mode = bool(st.session_state.get("anim_linear_mode", False))
     binary_step = int(st.session_state.get("anim_binary_step", 0))
 
     current_strategy = st.session_state.get("cfg_strategy", strategy)
@@ -4517,16 +4793,21 @@ if _should_process_animation:
             st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
             st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector (first point)
             st.session_state["anim_had_full_match"] = False
+            # Linear mode state reset for new iteration
+            st.session_state["anim_linear_mode"] = linear_mode  # Keep the same mode
+            st.session_state["anim_linear_step"] = 0
+            st.session_state["anim_linear_current_distance"] = maxdist
+            st.session_state["anim_linear_step_size"] = maxdist * 0.1
             # Sync multi-point data
             st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
             st.session_state["anim_generated_points"] = {int(k): v for k, v in generated_points.items()}
             st.session_state["anim_movement_vectors"] = {int(k): v for k, v in movement_vectors.items()}
     else:
         # === Case 2: keep searching ===
-        # Different behavior for binary vs exponential strategy
+        # Different behavior for binary vs linear vs exponential strategy
         
         # DEBUG: Print which strategy branch we're taking
-        print(f"[DEBUG ANIM] binary_mode={binary_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
+        print(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
         
         if binary_mode:
             # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
@@ -4552,8 +4833,10 @@ if _should_process_animation:
             
             # Get correct_orders for all points (multi-point state)
             correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+            print(f"[DEBUG BINARY LOAD] correct_orders from session_state: {len(correct_orders)} entries, keys={list(correct_orders.keys())}")
             if not correct_orders:
                 # Fallback: initialize from parent positions
+                print(f"[DEBUG BINARY LOAD] correct_orders was EMPTY, initializing from parent positions")
                 for idx in selected_indices:
                     if idx < n_total_points:
                         correct_orders[idx] = all_pts[idx].copy()
@@ -4634,13 +4917,23 @@ if _should_process_animation:
                     st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
                     st.session_state["anim_had_full_match"] = True
                 
-                # Place final points at correct_order positions
-                final_positions = {int(idx): correct_orders.get(idx, all_pts[idx].copy()) for idx in selected_indices}
+                # DEBUG: print correct_orders contents
+                print(f"[DEBUG BINARY FINALIZE] correct_orders keys={list(correct_orders.keys())}")
+                for k, v in correct_orders.items():
+                    print(f"[DEBUG BINARY FINALIZE] correct_orders[{k}]={v}")
+                print(f"[DEBUG BINARY FINALIZE] had_full_match={st.session_state.get('anim_had_full_match', False)}")
+                
+                # Place final points at correct_order positions (use int(idx) for key lookup)
+                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                
+                # DEBUG: print final_positions
+                for k, v in final_positions.items():
+                    print(f"[DEBUG BINARY FINALIZE] final_positions[{k}]={v}")
                 
                 # For backwards compatibility, keep single generated_point as first one
                 first_idx = selected_indices[0] if selected_indices else parent_idx
                 st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(first_idx, np.array([0.0, 0.0])).copy()
+                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
                 st.session_state["anim_distance"] = 0.0  # Trigger success
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
@@ -4703,6 +4996,136 @@ if _should_process_animation:
                 st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
                 print(f"[DEBUG BINARY STEP {binary_step}] Next candidates at distance {new_distance:.4f} for {len(selected_indices)} points")
         
+        elif linear_mode:
+            # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
+            # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
+            # Stop when: (1) all points match, or (2) distance <= 0
+            search_steps += 1
+            st.session_state["anim_search_steps"] = search_steps
+            
+            linear_step = int(st.session_state.get("anim_linear_step", 0))
+            linear_step += 1
+            st.session_state["anim_linear_step"] = linear_step
+            
+            # Get all selected indices and their movement vectors
+            selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+            movement_vectors = st.session_state.get("anim_movement_vectors", {})
+            anim_generated_points = st.session_state.get("anim_generated_points", {})
+            
+            # Get correct_orders for all points (multi-point state)
+            correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+            if not correct_orders:
+                for idx in selected_indices:
+                    if idx < n_total_points:
+                        correct_orders[idx] = all_pts[idx].copy()
+                    else:
+                        sidx = int(idx - n_total_points)
+                        succ_list = st.session_state.get("anim_successful_points", [])
+                        if 0 <= sidx < len(succ_list):
+                            correct_orders[idx] = succ_list[sidx]["point"].copy()
+                        else:
+                            correct_orders[idx] = np.array([0.0, 0.0])
+            
+            # Get current distance and step size
+            current_distance = float(st.session_state.get("anim_linear_current_distance", maxdist))
+            step_size = float(st.session_state.get("anim_linear_step_size", maxdist * 0.1))
+            
+            # Check if current candidate configuration matches PDP (ALL n points together)
+            current_matches = same_d1 and same_d2
+            
+            print(f"[DEBUG LINEAR STEP {linear_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
+            
+            # Add diagnostic row
+            diag_rows = st.session_state.get("diag_rows", [])
+            diag_rows.append({
+                "n": linear_step,
+                "order_match_d1": same_d1,
+                "order_match_d2": same_d2,
+                "current_distance": current_distance,
+                "n_selected_points": len(selected_indices),
+            })
+            st.session_state["diag_rows"] = diag_rows
+            
+            # Helper: get parent position for an index
+            def get_parent_for_idx_lin(idx: int) -> np.ndarray:
+                succ_list = st.session_state.get("anim_successful_points", [])
+                for s in reversed(succ_list):
+                    if int(s.get("original_parent_idx", -1)) == idx:
+                        return s["point"]
+                if idx < n_total_points:
+                    return all_pts[idx]
+                else:
+                    sidx = int(idx - n_total_points)
+                    if 0 <= sidx < len(succ_list):
+                        return succ_list[sidx]["point"]
+                    return np.array([0.0, 0.0])
+            
+            # Helper: compute new positions for all points at given distance
+            def compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
+                new_positions: dict[int, np.ndarray] = {}
+                for idx in selected_indices:
+                    parent_pt = get_parent_for_idx_lin(idx)
+                    orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                    orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                    if orig_mag > 1e-9:
+                        direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
+                    else:
+                        direction = np.array([1.0, 0.0])
+                    new_pt = parent_pt + direction * dist
+                    new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
+                    new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                    new_positions[idx] = new_pt
+                return new_positions
+            
+            if current_matches:
+                # MATCH! Update correct_orders to current positions and FINALIZE
+                for idx in selected_indices:
+                    if idx in anim_generated_points:
+                        correct_orders[int(idx)] = np.array(anim_generated_points[idx])
+                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                st.session_state["anim_had_full_match"] = True
+                
+                # Place final points at correct_order positions
+                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                
+                first_idx = selected_indices[0] if selected_indices else parent_idx
+                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                st.session_state["anim_distance"] = 0.0  # Trigger success
+                st.session_state["anim_in_search"] = True
+                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                st.session_state["anim_generated_points"] = final_positions
+                print(f"[DEBUG LINEAR] MATCH at step {linear_step}, distance {current_distance:.4f} - FINALIZE")
+                
+            else:
+                # NO MATCH: decrease distance by step_size (10% of maxdist)
+                new_distance = current_distance - step_size
+                
+                if new_distance <= 0:
+                    # Distance reached 0, finalize at parent positions (no match found)
+                    final_positions = {int(idx): get_parent_for_idx_lin(idx).copy() for idx in selected_indices}
+                    
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    st.session_state["anim_movement_vectors"] = {}
+                    print(f"[DEBUG LINEAR] Distance reached 0, snapping {len(selected_indices)} points to parents")
+                else:
+                    # Update distance and compute new positions
+                    st.session_state["anim_linear_current_distance"] = new_distance
+                    new_positions = compute_linear_positions(new_distance)
+                    
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = new_distance
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
+                    print(f"[DEBUG LINEAR STEP {linear_step}] NO MATCH! distance {current_distance:.4f} - {step_size:.4f} = {new_distance:.4f}")
+
         else:
             # ============= EXPONENTIAL SEARCH STRATEGY (MULTI-POINT) =============
             # Algorithm: Halve distance for ALL n points TOGETHER until ALL n points have order match
