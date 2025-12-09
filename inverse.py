@@ -4093,7 +4093,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                 # Calculate actual radius as distance from parent to final position
                 red_dot_pos = np.array(sel_gen_pt)
                 circle_radius = float(np.linalg.norm(red_dot_pos - sel_parent_pt))
-                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f} (FINALIZED)")
+                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (FINALIZED)")
             elif mv is not None and (abs(mv[0]) > 1e-9 or abs(mv[1]) > 1e-9):
                 # Normalize the movement vector to get direction
                 mv_arr = np.array([float(mv[0]), float(mv[1])])
@@ -4104,31 +4104,31 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     direction = np.array([1.0, 0.0])
                 # Red dot at parent + direction × circle_radius (exact distance, no clipping)
                 red_dot_pos = sel_parent_pt + direction * circle_radius
-                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f}")
+                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f}")
             elif sel_gen_pt is not None:
                 # Fallback: use the stored generated point position
                 red_dot_pos = np.array(sel_gen_pt)
-                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot={red_dot_pos}, radius={circle_radius:.4f} (fallback)")
+                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (fallback)")
             else:
                 red_dot_pos = None
-                print(f"[DEBUG CIRCLE] parent={sel_parent_pt}, red_dot=None, radius={circle_radius:.4f}")
+                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot=None, distance={circle_radius:.4f}")
             
-            # Draw circle around parent point with radius = anim_distance (same for ALL points)
-            circle = matplotlib.patches.Circle(
-                (sel_parent_pt[0], sel_parent_pt[1]),
-                radius=circle_radius,
-                edgecolor='red',
-                facecolor='none',
-                linewidth=1.2,
-                zorder=5
-            )
-            ax.add_patch(circle)  # type: ignore
-            
-            # Draw small white dot at center of circle (parent point) - small, no stroke
-            ax.scatter([sel_parent_pt[0]], [sel_parent_pt[1]], s=6, zorder=6, color='white')  # type: ignore
-            
-            # Draw red dot exactly on the circle edge
+            # Draw black arrow from parent point (tail) to red dot position (head)
             if red_dot_pos is not None:
+                ax.annotate(
+                    '',
+                    xy=(red_dot_pos[0], red_dot_pos[1]),  # Arrow head
+                    xytext=(sel_parent_pt[0], sel_parent_pt[1]),  # Arrow tail
+                    arrowprops=dict(
+                        arrowstyle='->',
+                        color='black',
+                        lw=0.8,
+                        shrinkA=0,
+                        shrinkB=0
+                    ),
+                    zorder=5
+                )
+                # Draw red dot at arrow head
                 ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=7, color='red')  # type: ignore
         
         # ============= Buffer/Rough Visualization =============
