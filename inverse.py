@@ -713,100 +713,105 @@ if coord_min_x >= coord_max_x:
 if coord_min_y >= coord_max_y:
     st.warning("Min Y must be less than Max Y")
 
-# ============= Auto Detect Coordinate Bounds Button =============
-# This button recalculates the coordinate bounds based on the currently selected
+# ============= Auto Detect Coordinate Bounds =============
+# This logic recalculates the coordinate bounds based on the currently selected
 # configuration (c) and timestamp window. Useful when switching between configurations
 # or changing the number of timestamps, as parent points may fall outside the current bounds.
+
+def _auto_detect_bounds_logic() -> bool:
+    """
+    Calculate and update coordinate bounds based on current configuration and timestamp window.
+    Returns True if bounds were successfully updated, False otherwise.
+    """
+    _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
+    _detect_k = int(st.session_state.get("cfg_k", 3))  # Number of timestamps
+    _detect_start_t = st.session_state.get("cfg_start_t", None)
+    
+    # Get time values for the selected configuration
+    _detect_t_k = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 0)]["t"].unique().tolist())
+    _detect_t_l = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 1)]["t"].unique().tolist())
+    _detect_t_common = [t for t in _detect_t_k if t in _detect_t_l]
+    
+    # Determine the timestamp window
+    if _detect_start_t is not None and _detect_start_t in _detect_t_common:
+        _detect_start_idx = _detect_t_common.index(_detect_start_t)
+    else:
+        _detect_start_idx = 0
+    _detect_end_idx = min(_detect_start_idx + _detect_k, len(_detect_t_common))
+    _detect_ts_window = _detect_t_common[_detect_start_idx:_detect_end_idx]
+    
+    # Filter dataframe to selected configuration and timestamp window
+    _df_filtered = _df_all[
+        (_df_all["c"] == _detect_c) & 
+        (_df_all["t"].isin(_detect_ts_window))
+    ]
+    
+    if len(_df_filtered) > 0:
+        # Calculate bounds from filtered data
+        _new_min_x = float(_df_filtered["x"].min())
+        _new_max_x = float(_df_filtered["x"].max())
+        _new_min_y = float(_df_filtered["y"].min())
+        _new_max_y = float(_df_filtered["y"].max())
+        
+        # Add 10% margin (or minimum margin for very small ranges)
+        _new_range_x = _new_max_x - _new_min_x
+        _new_range_y = _new_max_y - _new_min_y
+        
+        # Use 10% margin, but ensure at least some minimum margin for very tight data
+        _margin_x = max(0.1 * _new_range_x, 0.5) if _new_range_x > 0 else 1.0
+        _margin_y = max(0.1 * _new_range_y, 0.5) if _new_range_y > 0 else 1.0
+        
+        _new_min_x = _new_min_x - _margin_x
+        _new_max_x = _new_max_x + _margin_x
+        _new_min_y = _new_min_y - _margin_y
+        _new_max_y = _new_max_y + _margin_y
+        
+        # Smart rounding: choose rounding unit based on data range
+        def smart_round_min(val: float, data_range: float) -> float:
+            if data_range < 10:
+                return float(np.floor(val))
+            elif data_range < 100:
+                return float(np.floor(val / 5) * 5)
+            else:
+                return float(np.floor(val / 10) * 10)
+        
+        def smart_round_max(val: float, data_range: float) -> float:
+            if data_range < 10:
+                return float(np.ceil(val))
+            elif data_range < 100:
+                return float(np.ceil(val / 5) * 5)
+            else:
+                return float(np.ceil(val / 10) * 10)
+        
+        _new_min_x = smart_round_min(_new_min_x, _new_range_x)
+        _new_max_x = smart_round_max(_new_max_x, _new_range_x)
+        _new_min_y = smart_round_min(_new_min_y, _new_range_y)
+        _new_max_y = smart_round_max(_new_max_y, _new_range_y)
+        
+        # Store pending bounds
+        st.session_state["_pending_bounds_update"] = True
+        st.session_state["_pending_bounds"] = {
+            "min_x": _new_min_x,
+            "max_x": _new_max_x,
+            "min_y": _new_min_y,
+            "max_y": _new_max_y
+        }
+        
+        # Set a special hash to prevent auto-recalculation from overwriting
+        st.session_state["_bounds_data_hash"] = f"auto_detect_{_detect_c}_{_new_min_x:.2f}_{_new_max_x:.2f}_{_new_min_y:.2f}_{_new_max_y:.2f}"
+        return True
+    return False
+
 if data_source != "Create random configuration":
     # Only show Auto Detect button when using preset or uploaded data
     st.markdown('<div class="auto-detect-bounds-wrapper" style="margin-top:0.5rem;">', unsafe_allow_html=True)
     if st.button("🔍 Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
                  help="Recalculate axis bounds based on currently selected configuration (c) and timestamp window. Use this when parent points fall outside the visible area after changing settings."):
-        # Get currently selected configuration and timestamps from session state
+        # Use the shared auto-detect logic
         _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
-        _detect_k = int(st.session_state.get("cfg_k", 3))  # Number of timestamps
-        _detect_start_t = st.session_state.get("cfg_start_t", None)
-        
-        # Get time values for the selected configuration
-        _detect_t_k = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 0)]["t"].unique().tolist())
-        _detect_t_l = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 1)]["t"].unique().tolist())
-        _detect_t_common = [t for t in _detect_t_k if t in _detect_t_l]
-        
-        # Determine the timestamp window
-        if _detect_start_t is not None and _detect_start_t in _detect_t_common:
-            _detect_start_idx = _detect_t_common.index(_detect_start_t)
-        else:
-            _detect_start_idx = 0
-        _detect_end_idx = min(_detect_start_idx + _detect_k, len(_detect_t_common))
-        _detect_ts_window = _detect_t_common[_detect_start_idx:_detect_end_idx]
-        
-        # Filter dataframe to selected configuration and timestamp window
-        _df_filtered = _df_all[
-            (_df_all["c"] == _detect_c) & 
-            (_df_all["t"].isin(_detect_ts_window))
-        ]
-        
-        if len(_df_filtered) > 0:
-            # Calculate bounds from filtered data
-            _new_min_x = float(_df_filtered["x"].min())
-            _new_max_x = float(_df_filtered["x"].max())
-            _new_min_y = float(_df_filtered["y"].min())
-            _new_max_y = float(_df_filtered["y"].max())
-            
-            # Add 10% margin (or minimum margin for very small ranges)
-            _new_range_x = _new_max_x - _new_min_x
-            _new_range_y = _new_max_y - _new_min_y
-            
-            # Use 10% margin, but ensure at least some minimum margin for very tight data
-            _margin_x = max(0.1 * _new_range_x, 0.5) if _new_range_x > 0 else 1.0
-            _margin_y = max(0.1 * _new_range_y, 0.5) if _new_range_y > 0 else 1.0
-            
-            _new_min_x = _new_min_x - _margin_x
-            _new_max_x = _new_max_x + _margin_x
-            _new_min_y = _new_min_y - _margin_y
-            _new_max_y = _new_max_y + _margin_y
-            
-            # Smart rounding: choose rounding unit based on data range
-            # For small ranges (< 10), round to nearest 1
-            # For medium ranges (10-100), round to nearest 5
-            # For large ranges (> 100), round to nearest 10
-            def smart_round_min(val: float, data_range: float) -> float:
-                """Round down to a nice value based on data range."""
-                if data_range < 10:
-                    return float(np.floor(val))  # Round to nearest 1
-                elif data_range < 100:
-                    return float(np.floor(val / 5) * 5)  # Round to nearest 5
-                else:
-                    return float(np.floor(val / 10) * 10)  # Round to nearest 10
-            
-            def smart_round_max(val: float, data_range: float) -> float:
-                """Round up to a nice value based on data range."""
-                if data_range < 10:
-                    return float(np.ceil(val))  # Round to nearest 1
-                elif data_range < 100:
-                    return float(np.ceil(val / 5) * 5)  # Round to nearest 5
-                else:
-                    return float(np.ceil(val / 10) * 10)  # Round to nearest 10
-            
-            _new_min_x = smart_round_min(_new_min_x, _new_range_x)
-            _new_max_x = smart_round_max(_new_max_x, _new_range_x)
-            _new_min_y = smart_round_min(_new_min_y, _new_range_y)
-            _new_max_y = smart_round_max(_new_max_y, _new_range_y)
-            
-            # Store pending bounds - these will be applied on next rerun BEFORE widgets are created
-            st.session_state["_pending_bounds_update"] = True
-            st.session_state["_pending_bounds"] = {
-                "min_x": _new_min_x,
-                "max_x": _new_max_x,
-                "min_y": _new_min_y,
-                "max_y": _new_max_y
-            }
-            
-            # Set a special hash to prevent auto-recalculation from overwriting user-triggered detection
-            st.session_state["_bounds_data_hash"] = f"auto_detect_{_detect_c}_{_new_min_x:.2f}_{_new_max_x:.2f}_{_new_min_y:.2f}_{_new_max_y:.2f}"
-            
-            st.success(f"Bounds updated for config {_detect_c}: X=[{_new_min_x:.0f}, {_new_max_x:.0f}], Y=[{_new_min_y:.0f}, {_new_max_y:.0f}]")
-            # Rerun to apply the new bounds
+        if _auto_detect_bounds_logic():
+            _bounds = st.session_state.get("_pending_bounds", {})
+            st.success(f"Bounds updated for config {_detect_c}: X=[{_bounds.get('min_x', 0):.0f}, {_bounds.get('max_x', 100):.0f}], Y=[{_bounds.get('min_y', 0):.0f}, {_bounds.get('max_y', 100):.0f}]")
             st.rerun()
         else:
             st.warning("No data found for the selected configuration and timestamps.")
@@ -1441,6 +1446,70 @@ if reset_btn_clicked and reset_btn_should_be_enabled:
 
 st.markdown("</div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
+
+# ============= Auto-detect bounds when configuration settings change =============
+# This must happen AFTER all widgets are rendered, so we have access to the NEW values
+# Track previous values to detect changes
+_prev_cfg_k = st.session_state.get("_prev_cfg_k", None)
+_prev_cfg_start_t = st.session_state.get("_prev_cfg_start_t", None)
+_prev_cfg_c = st.session_state.get("_prev_cfg_c", None)
+_curr_cfg_k = st.session_state.get("cfg_k", None)
+_curr_cfg_start_t = st.session_state.get("cfg_start_t", None)
+_curr_cfg_c = st.session_state.get("cfg_c", None)
+
+# Check if any configuration changed (but only if previous values were set, i.e., not on first run)
+_config_changed = (
+    _prev_cfg_k is not None and 
+    (_prev_cfg_k != _curr_cfg_k or _prev_cfg_start_t != _curr_cfg_start_t or _prev_cfg_c != _curr_cfg_c)
+)
+
+# Store current values for next comparison
+st.session_state["_prev_cfg_k"] = _curr_cfg_k
+st.session_state["_prev_cfg_start_t"] = _curr_cfg_start_t
+st.session_state["_prev_cfg_c"] = _curr_cfg_c
+
+# Reset animation state when timestamp settings change (to remove red circle/black arrow)
+if _config_changed:
+    # Clear all animation-related session state keys
+    animation_keys_to_clear = [
+        "anim_running",
+        "anim_step",
+        "anim_iteration",
+        "anim_config_num",
+        "anim_pos",
+        "anim_angle",
+        "anim_distance",
+        "anim_best_pos",
+        "anim_best_distance",
+        "anim_ok_point",
+        "anim_delta",
+        "anim_delta_vector",
+        "anim_had_full_match",
+        "anim_linear_mode",
+        "anim_linear_step",
+        "anim_linear_current_distance",
+        "anim_linear_maxdist",
+        "anim_linear_step_size",
+        "anim_circle_idx",
+        "show_anim_circle",
+        "anim_selected_indices",
+        "anim_movement_vectors",
+        "anim_pdp_variants_list",
+        "anim_current_variant_idx",
+        "anim_current_variant",
+        "diag_rows",
+        "binary_iteration_summary",
+        "anim_state_history",
+        "anim_all_configs",
+    ]
+    for key in animation_keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+# Trigger auto-detect bounds if config changed
+if _config_changed and data_source != "Create random configuration":
+    if _auto_detect_bounds_logic():
+        st.rerun()
 
 # ============= Data window (select subset of k and l) ============
 # Extract points from _df_all (works for all data sources: preset, uploaded, random)
@@ -3610,6 +3679,92 @@ if generate_btn:
         generate_binary_multipoint()
 
 # ============= Drawing (without gridlines) ============
+
+def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
+    """
+    Infer traffic lanes from point trajectories and draw them subtly on the background.
+    
+    This function analyzes the movement patterns of objects (cars) to infer lane boundaries.
+    Lanes are drawn as subtle gray lines extending across the visible x-range.
+    Only draws lanes for traffic configurations (0-11).
+    """
+    # Only draw lanes for traffic configurations (0-11)
+    current_config = st.session_state.get("cfg_c", 0)
+    if current_config is None or int(current_config) > 11:
+        return
+    
+    # Check if we have point data
+    if 'all_points_plot' not in globals() or not all_points_plot:
+        return
+    
+    # Collect all y-values per object to understand lane positions
+    object_y_ranges: dict[int, tuple[float, float, float]] = {}  # obj_id -> (min_y, max_y, mean_y)
+    
+    for obj_id, pts in all_points_plot.items():
+        if pts.shape[0] > 0:
+            y_vals = pts[:, 1]
+            object_y_ranges[obj_id] = (float(np.min(y_vals)), float(np.max(y_vals)), float(np.mean(y_vals)))
+    
+    if len(object_y_ranges) < 1:
+        return
+    
+    # Sort objects by their mean y-position
+    sorted_objects = sorted(object_y_ranges.items(), key=lambda x: x[1][2])
+    
+    # Calculate lane boundaries based on object trajectories
+    # Each object's trajectory defines a "lane" - we draw boundaries between lanes
+    lane_centers = [data[2] for _, data in sorted_objects]  # mean y of each object
+    
+    # Estimate lane width from the y-range of movements (cars don't move much laterally in a lane)
+    avg_y_spread = np.mean([data[1] - data[0] for _, data in sorted_objects])
+    lane_half_width = max(avg_y_spread * 1.5, 1.5)  # At least 1.5m half-width (3m total lane)
+    
+    # Draw lane markings
+    x_start = xlim[0] - 10  # Extend slightly beyond visible area
+    x_end = xlim[1] + 10
+    
+    # Style for lane markings (subtle, realistic)
+    lane_line_color = '#D0D0D0'  # Light gray
+    lane_line_width = 1.0
+    center_line_color = '#C0C0C0'  # Slightly darker for center line
+    edge_line_color = '#B0B0B0'   # Edge lines
+    
+    if len(lane_centers) >= 2:
+        # Multiple lanes: draw dashed center line between lanes and solid edge lines
+        
+        # Calculate the boundary between lanes (midpoint between adjacent lane centers)
+        for i in range(len(lane_centers) - 1):
+            mid_y = (lane_centers[i] + lane_centers[i + 1]) / 2
+            # Dashed center line (road marking style)
+            ax.axhline(y=mid_y, color=center_line_color, linewidth=lane_line_width, 
+                      linestyle='--', dashes=(10, 5), alpha=0.6, zorder=0)
+        
+        # Draw edge lines (solid) at the outer boundaries
+        # Top edge (above highest lane)
+        top_edge_y = lane_centers[-1] + lane_half_width
+        if top_edge_y <= ylim[1]:
+            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
+                      linestyle='-', alpha=0.5, zorder=0)
+        
+        # Bottom edge (below lowest lane)
+        bottom_edge_y = lane_centers[0] - lane_half_width
+        if bottom_edge_y >= ylim[0]:
+            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
+                      linestyle='-', alpha=0.5, zorder=0)
+    
+    elif len(lane_centers) == 1:
+        # Single lane: just draw edge lines
+        center_y = lane_centers[0]
+        top_edge_y = center_y + lane_half_width
+        bottom_edge_y = center_y - lane_half_width
+        
+        if top_edge_y <= ylim[1]:
+            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width, 
+                      linestyle='-', alpha=0.5, zorder=0)
+        if bottom_edge_y >= ylim[0]:
+            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width, 
+                      linestyle='-', alpha=0.5, zorder=0)
+
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """Configure axes to be square, with simple ticks and labels d₁, d₂."""
     ax.set_xlim(*xlim)
@@ -3621,6 +3776,8 @@ def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim:
     ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")  # type: ignore
     ax.set_xlabel("d₁", fontsize=11, labelpad=8)  # type: ignore
     ax.set_ylabel("d₂", fontsize=11, labelpad=8)  # type: ignore
+    # Draw inferred lane markings on the background (for traffic configurations 0-10)
+    infer_and_draw_lanes(ax, xlim, ylim)
 
 def render_square_matplotlib_figure(
     draw_fn: Callable[[matplotlib.axes.Axes], None],
@@ -4115,6 +4272,9 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             
             # Draw black arrow from parent point (tail) to red dot position (head)
             if red_dot_pos is not None:
+                # Draw red dot at arrow head first (lowest z-index: 5)
+                ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=5, color='red')  # type: ignore
+                # Draw arrow on top of red dot (z-index: 6)
                 ax.annotate(
                     '',
                     xy=(red_dot_pos[0], red_dot_pos[1]),  # Arrow head
@@ -4126,10 +4286,10 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                         shrinkA=0,
                         shrinkB=0
                     ),
-                    zorder=5
+                    zorder=6
                 )
-                # Draw red dot at arrow head
-                ax.scatter([red_dot_pos[0]], [red_dot_pos[1]], s=40, zorder=7, color='red')  # type: ignore
+                # Draw small white dot at arrow tail / parent point (highest z-index: 7)
+                ax.scatter([sel_parent_pt[0]], [sel_parent_pt[1]], s=6, zorder=7, color='white')  # type: ignore
         
         # ============= Buffer/Rough Visualization =============
         # (Only for the primary generated point for simplicity)

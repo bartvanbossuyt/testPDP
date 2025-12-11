@@ -802,31 +802,6 @@ def _auto_detect_bounds_logic() -> bool:
         return True
     return False
 
-# Auto-detect bounds when configuration settings change
-# Track previous values to detect changes
-_prev_cfg_k = st.session_state.get("_prev_cfg_k", None)
-_prev_cfg_start_t = st.session_state.get("_prev_cfg_start_t", None)
-_prev_cfg_c = st.session_state.get("_prev_cfg_c", None)
-_curr_cfg_k = st.session_state.get("cfg_k", None)
-_curr_cfg_start_t = st.session_state.get("cfg_start_t", None)
-_curr_cfg_c = st.session_state.get("cfg_c", None)
-
-# Check if any configuration changed (but only if previous values were set, i.e., not on first run)
-_config_changed = (
-    _prev_cfg_k is not None and 
-    (_prev_cfg_k != _curr_cfg_k or _prev_cfg_start_t != _curr_cfg_start_t or _prev_cfg_c != _curr_cfg_c)
-)
-
-# Store current values for next comparison
-st.session_state["_prev_cfg_k"] = _curr_cfg_k
-st.session_state["_prev_cfg_start_t"] = _curr_cfg_start_t
-st.session_state["_prev_cfg_c"] = _curr_cfg_c
-
-# Trigger auto-detect if config changed
-if _config_changed and data_source != "Create random configuration":
-    if _auto_detect_bounds_logic():
-        st.rerun()
-
 if data_source != "Create random configuration":
     # Only show Auto Detect button when using preset or uploaded data
     st.markdown('<div class="auto-detect-bounds-wrapper" style="margin-top:0.5rem;">', unsafe_allow_html=True)
@@ -1471,6 +1446,70 @@ if reset_btn_clicked and reset_btn_should_be_enabled:
 
 st.markdown("</div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
+
+# ============= Auto-detect bounds when configuration settings change =============
+# This must happen AFTER all widgets are rendered, so we have access to the NEW values
+# Track previous values to detect changes
+_prev_cfg_k = st.session_state.get("_prev_cfg_k", None)
+_prev_cfg_start_t = st.session_state.get("_prev_cfg_start_t", None)
+_prev_cfg_c = st.session_state.get("_prev_cfg_c", None)
+_curr_cfg_k = st.session_state.get("cfg_k", None)
+_curr_cfg_start_t = st.session_state.get("cfg_start_t", None)
+_curr_cfg_c = st.session_state.get("cfg_c", None)
+
+# Check if any configuration changed (but only if previous values were set, i.e., not on first run)
+_config_changed = (
+    _prev_cfg_k is not None and 
+    (_prev_cfg_k != _curr_cfg_k or _prev_cfg_start_t != _curr_cfg_start_t or _prev_cfg_c != _curr_cfg_c)
+)
+
+# Store current values for next comparison
+st.session_state["_prev_cfg_k"] = _curr_cfg_k
+st.session_state["_prev_cfg_start_t"] = _curr_cfg_start_t
+st.session_state["_prev_cfg_c"] = _curr_cfg_c
+
+# Reset animation state when timestamp settings change (to remove red circle/black arrow)
+if _config_changed:
+    # Clear all animation-related session state keys
+    animation_keys_to_clear = [
+        "anim_running",
+        "anim_step",
+        "anim_iteration",
+        "anim_config_num",
+        "anim_pos",
+        "anim_angle",
+        "anim_distance",
+        "anim_best_pos",
+        "anim_best_distance",
+        "anim_ok_point",
+        "anim_delta",
+        "anim_delta_vector",
+        "anim_had_full_match",
+        "anim_linear_mode",
+        "anim_linear_step",
+        "anim_linear_current_distance",
+        "anim_linear_maxdist",
+        "anim_linear_step_size",
+        "anim_circle_idx",
+        "show_anim_circle",
+        "anim_selected_indices",
+        "anim_movement_vectors",
+        "anim_pdp_variants_list",
+        "anim_current_variant_idx",
+        "anim_current_variant",
+        "diag_rows",
+        "binary_iteration_summary",
+        "anim_state_history",
+        "anim_all_configs",
+    ]
+    for key in animation_keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+# Trigger auto-detect bounds if config changed
+if _config_changed and data_source != "Create random configuration":
+    if _auto_detect_bounds_logic():
+        st.rerun()
 
 # ============= Data window (select subset of k and l) ============
 # Extract points from _df_all (works for all data sources: preset, uploaded, random)
@@ -3640,6 +3679,92 @@ if generate_btn:
         generate_binary_multipoint()
 
 # ============= Drawing (without gridlines) ============
+
+def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
+    """
+    Infer traffic lanes from point trajectories and draw them subtly on the background.
+    
+    This function analyzes the movement patterns of objects (cars) to infer lane boundaries.
+    Lanes are drawn as subtle gray lines extending across the visible x-range.
+    Only draws lanes for traffic configurations (0-11).
+    """
+    # Only draw lanes for traffic configurations (0-11)
+    current_config = st.session_state.get("cfg_c", 0)
+    if current_config is None or int(current_config) > 11:
+        return
+    
+    # Check if we have point data
+    if 'all_points_plot' not in globals() or not all_points_plot:
+        return
+    
+    # Collect all y-values per object to understand lane positions
+    object_y_ranges: dict[int, tuple[float, float, float]] = {}  # obj_id -> (min_y, max_y, mean_y)
+    
+    for obj_id, pts in all_points_plot.items():
+        if pts.shape[0] > 0:
+            y_vals = pts[:, 1]
+            object_y_ranges[obj_id] = (float(np.min(y_vals)), float(np.max(y_vals)), float(np.mean(y_vals)))
+    
+    if len(object_y_ranges) < 1:
+        return
+    
+    # Sort objects by their mean y-position
+    sorted_objects = sorted(object_y_ranges.items(), key=lambda x: x[1][2])
+    
+    # Calculate lane boundaries based on object trajectories
+    # Each object's trajectory defines a "lane" - we draw boundaries between lanes
+    lane_centers = [data[2] for _, data in sorted_objects]  # mean y of each object
+    
+    # Estimate lane width from the y-range of movements (cars don't move much laterally in a lane)
+    avg_y_spread = np.mean([data[1] - data[0] for _, data in sorted_objects])
+    lane_half_width = max(avg_y_spread * 1.5, 1.5)  # At least 1.5m half-width (3m total lane)
+    
+    # Draw lane markings
+    x_start = xlim[0] - 10  # Extend slightly beyond visible area
+    x_end = xlim[1] + 10
+    
+    # Style for lane markings (subtle, realistic)
+    lane_line_color = '#D0D0D0'  # Light gray
+    lane_line_width = 1.0
+    center_line_color = '#C0C0C0'  # Slightly darker for center line
+    edge_line_color = '#B0B0B0'   # Edge lines
+    
+    if len(lane_centers) >= 2:
+        # Multiple lanes: draw dashed center line between lanes and solid edge lines
+        
+        # Calculate the boundary between lanes (midpoint between adjacent lane centers)
+        for i in range(len(lane_centers) - 1):
+            mid_y = (lane_centers[i] + lane_centers[i + 1]) / 2
+            # Dashed center line (road marking style)
+            ax.axhline(y=mid_y, color=center_line_color, linewidth=lane_line_width, 
+                      linestyle='--', dashes=(10, 5), alpha=0.6, zorder=0)
+        
+        # Draw edge lines (solid) at the outer boundaries
+        # Top edge (above highest lane)
+        top_edge_y = lane_centers[-1] + lane_half_width
+        if top_edge_y <= ylim[1]:
+            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
+                      linestyle='-', alpha=0.5, zorder=0)
+        
+        # Bottom edge (below lowest lane)
+        bottom_edge_y = lane_centers[0] - lane_half_width
+        if bottom_edge_y >= ylim[0]:
+            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
+                      linestyle='-', alpha=0.5, zorder=0)
+    
+    elif len(lane_centers) == 1:
+        # Single lane: just draw edge lines
+        center_y = lane_centers[0]
+        top_edge_y = center_y + lane_half_width
+        bottom_edge_y = center_y - lane_half_width
+        
+        if top_edge_y <= ylim[1]:
+            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width, 
+                      linestyle='-', alpha=0.5, zorder=0)
+        if bottom_edge_y >= ylim[0]:
+            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width, 
+                      linestyle='-', alpha=0.5, zorder=0)
+
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """Configure axes to be square, with simple ticks and labels d₁, d₂."""
     ax.set_xlim(*xlim)
@@ -3651,6 +3776,8 @@ def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim:
     ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")  # type: ignore
     ax.set_xlabel("d₁", fontsize=11, labelpad=8)  # type: ignore
     ax.set_ylabel("d₂", fontsize=11, labelpad=8)  # type: ignore
+    # Draw inferred lane markings on the background (for traffic configurations 0-10)
+    infer_and_draw_lanes(ax, xlim, ylim)
 
 def render_square_matplotlib_figure(
     draw_fn: Callable[[matplotlib.axes.Axes], None],
