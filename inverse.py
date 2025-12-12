@@ -1026,7 +1026,7 @@ st.markdown("**PDP Variant Configuration** (select one or more)")
 # Multi-select for PDP variants
 pdp_variants_selected = st.multiselect(
     "PDP Variants to calculate",
-    options=["fundamental", "buffer", "rough", "bufferrough"],
+    options=["fundamental", "buffer", "rough", "bufferrough", "realistic"],
     default=["fundamental"],
     key="cfg_pdp_variants",
     help="""Select PDP variants for configuration generation:
@@ -1037,12 +1037,16 @@ pdp_variants_selected = st.multiselect(
 
 • **rough**: Adds equality tolerance. Points within roughness distance are considered EQUAL (matrix value 1). More permissive - allows small variations.
 
-• **bufferrough**: Combines buffer expansion AND roughness tolerance. 5N×5N matrix with fuzzy equality."""
+• **bufferrough**: Combines buffer expansion AND roughness tolerance. 5N×5N matrix with fuzzy equality.
+
+• **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d₁ (x-axis, driving direction) and roughness ONLY on d₂ (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
 )
 
 # Show parameter inputs if any variant needs them
-needs_buffer = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
-needs_rough = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
+# "realistic" uses buffer_x AND rough_y (but not buffer_y or rough_x)
+needs_buffer = any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants_selected)
+needs_rough = any(v in ["rough", "bufferrough", "realistic"] for v in pdp_variants_selected)
+needs_realistic = "realistic" in pdp_variants_selected
 
 if needs_buffer or needs_rough:
     st.markdown("**Parameters for selected variants:**")
@@ -1050,47 +1054,66 @@ if needs_buffer or needs_rough:
     
     with param_col1:
         if needs_buffer:
+            # Show buffer_x for all buffer variants including realistic
+            buffer_x_default = 10.0 if needs_realistic else 25.0
             buffer_x = st.number_input(
-                "Buffer X",
+                "Buffer X (d₁)",
                 min_value=0.0,
                 max_value=100.0,
-                value=25.0,
+                value=buffer_x_default,
                 step=1.0,
                 key="cfg_buffer_x",
-                help="Buffer distance in x-direction. Each point is expanded to 5 variants: (x±buffer_x, y) and (x, y±buffer_y) plus the original. The PDP comparison uses these 5N expanded points, creating a 5N×5N inequality matrix. During animation, buffer points are shown as PURPLE X markers connected by dashed lines."
+                help="Buffer distance in x-direction (d₁, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
             )
-            buffer_y = st.number_input(
-                "Buffer Y",
-                min_value=0.0,
-                max_value=100.0,
-                value=10.0,
-                step=1.0,
-                key="cfg_buffer_y",
-                help="Buffer distance in y-direction. Each point is expanded to 5 variants: (x±buffer_x, y) and (x, y±buffer_y) plus the original. The PDP comparison uses these 5N expanded points, creating a 5N×5N inequality matrix. During animation, buffer points are shown as PURPLE X markers connected by dashed lines."
-            )
+            # Only show buffer_y if NOT exclusively using realistic
+            needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
+            if needs_buffer_y:
+                buffer_y = st.number_input(
+                    "Buffer Y (d₂)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=10.0,
+                    step=1.0,
+                    key="cfg_buffer_y",
+                    help="Buffer distance in y-direction (d₂, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
+                )
+            else:
+                buffer_y = 0.0
+                if needs_realistic:
+                    st.info("ℹ️ 'realistic' uses roughness on y instead of buffer")
         else:
             buffer_x = 0.0
             buffer_y = 0.0
     
     with param_col2:
         if needs_rough:
-            rough_x = st.number_input(
-                "Roughness X",
-                min_value=0.0,
-                max_value=100.0,
-                value=0.0,
-                step=0.1,
-                key="cfg_rough_x",
-                help="Equality tolerance in x-direction. Two x-coordinates are considered EQUAL if their difference is ≤ roughness_x. This creates 'fuzzy' equality zones in the inequality matrix (value 1 instead of 0 or 2). During animation, the roughness zone is shown as a GREEN semi-transparent rectangle around the candidate point."
-            )
+            # Only show rough_x if NOT exclusively using realistic
+            needs_rough_x = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
+            if needs_rough_x:
+                rough_x = st.number_input(
+                    "Roughness X (d₁)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=0.1,
+                    key="cfg_rough_x",
+                    help="Equality tolerance in x-direction (d₁). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
+                )
+            else:
+                rough_x = 0.0
+                if needs_realistic:
+                    st.info("ℹ️ 'realistic' uses buffer on x instead of roughness")
+            
+            # Show rough_y for all rough variants including realistic
+            rough_y_default = 1.5 if needs_realistic else 0.0
             rough_y = st.number_input(
-                "Roughness Y",
+                "Roughness Y (d₂)",
                 min_value=0.0,
                 max_value=100.0,
-                value=0.0,
+                value=rough_y_default,
                 step=0.1,
                 key="cfg_rough_y",
-                help="Equality tolerance in y-direction. Two y-coordinates are considered EQUAL if their difference is ≤ roughness_y. This creates 'fuzzy' equality zones in the inequality matrix (value 1 instead of 0 or 2). During animation, the roughness zone is shown as a GREEN semi-transparent rectangle around the candidate point."
+                help="Equality tolerance in y-direction (d₂, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
             )
         else:
             rough_x = 0.0
@@ -2206,11 +2229,13 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     """
     Check if generated configuration matches original using PDP inequality matrices.
     
-    This uses the exact PDP logic from N_PDP.py with support for all four variants:
+    This uses the exact PDP logic from N_PDP.py with support for all five variants:
     - fundamental: Basic PDP matching with no tolerance (N×N matrix comparison)
     - buffer: Apply buffer transformation to both configs, compare 5N×5N matrices
     - rough: Use roughness as equality tolerance in N×N matrix comparison
     - bufferrough: Apply buffer transformation AND use roughness tolerance
+    - realistic: Buffer ONLY on x (d₁, driving direction), roughness ONLY on y (d₂, lateral/lane position)
+                 Designed for traffic scenarios where lane changes are unrealistic
     
     For buffer variants:
     - Each point is expanded to 5 buffer variants (±buffer_x, ±buffer_y, original)
@@ -2220,11 +2245,11 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     Args:
         original_points: All original points (N, 2) - can be any number of points
         generated_points: All generated points (N, 2) - same count as original
-        pdp_variant: PDP variant to use ("fundamental", "buffer", "rough", "bufferrough")
-        buffer_x: Buffer distance in x-direction (for buffer variants)
-        buffer_y: Buffer distance in y-direction (for buffer variants)
-        rough_x: Roughness tolerance in x-direction (for rough variants)
-        rough_y: Roughness tolerance in y-direction (for rough variants)
+        pdp_variant: PDP variant to use ("fundamental", "buffer", "rough", "bufferrough", "realistic")
+        buffer_x: Buffer distance in x-direction (for buffer/bufferrough/realistic variants)
+        buffer_y: Buffer distance in y-direction (for buffer/bufferrough variants)
+        rough_x: Roughness tolerance in x-direction (for rough/bufferrough variants)
+        rough_y: Roughness tolerance in y-direction (for rough/bufferrough/realistic variants)
         debug: If True, print debug information
     
     Returns:
@@ -2239,13 +2264,26 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
         orig_pts = apply_buffer_transformation(orig_pts, buffer_x, buffer_y)
         gen_pts = apply_buffer_transformation(gen_pts, buffer_x, buffer_y)
         print(f"[DEBUG BUFFER] Applied buffer transform: {n_before} -> {len(orig_pts)} points, buffer=({buffer_x}, {buffer_y})")
+    elif pdp_variant == "realistic":
+        # For realistic: buffer ONLY on x (driving direction), no buffer on y (lane position)
+        n_before = len(orig_pts)
+        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, 0.0)
+        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, 0.0)
+        print(f"[DEBUG REALISTIC] Applied x-only buffer transform: {n_before} -> {len(orig_pts)} points, buffer_x={buffer_x}")
     
-    # Determine roughness values
-    roughness_x = rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0
-    roughness_y = rough_y if pdp_variant in ["rough", "bufferrough"] else 0.0
-    
+    # Determine roughness values based on variant
     if pdp_variant in ["rough", "bufferrough"]:
+        roughness_x = rough_x
+        roughness_y = rough_y
         print(f"[DEBUG ROUGH] Using roughness=({roughness_x}, {roughness_y})")
+    elif pdp_variant == "realistic":
+        # For realistic: roughness ONLY on y (lane position), no roughness on x
+        roughness_x = 0.0
+        roughness_y = rough_y
+        print(f"[DEBUG REALISTIC] Using y-only roughness: rough_y={roughness_y}")
+    else:
+        roughness_x = 0.0
+        roughness_y = 0.0
     
     if debug:
         n_orig = len(orig_pts)
@@ -2263,7 +2301,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     d1_match = compare_inequality_matrices(original_x_matrix, generated_x_matrix)
     d2_match = compare_inequality_matrices(original_y_matrix, generated_y_matrix)
     
-    if pdp_variant in ["buffer", "rough", "bufferrough"]:
+    if pdp_variant in ["buffer", "rough", "bufferrough", "realistic"]:
         print(f"[DEBUG {pdp_variant.upper()}] Match result: d1={d1_match}, d2={d2_match}")
     
     return d1_match, d2_match
@@ -3682,88 +3720,58 @@ if generate_btn:
 
 def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """
-    Infer traffic lanes from point trajectories and draw them subtly on the background.
+    Draw traffic lane markings for traffic configurations.
     
-    This function analyzes the movement patterns of objects (cars) to infer lane boundaries.
-    Lanes are drawn as subtle gray lines extending across the visible x-range.
-    Only draws lanes for traffic configurations (0-11).
+    There are 3 lanes, each 3 meters wide (total road width: 9 meters).
+    Lane boundaries are drawn as subtle gray lines extending across the visible x-range.
+    Only draws lanes for traffic configurations 0-10 (NOT for configuration 11).
+    
+    Lane layout (right-hand traffic, rightmost lane = slowest):
+    - Lane 1 (right/slow):  y = -6.0 to -3.0 (center at -4.5)
+    - Lane 2 (middle):      y = -3.0 to  0.0 (center at -1.5)
+    - Lane 3 (left/fast):   y =  0.0 to +3.0 (center at +1.5)
     """
-    # Only draw lanes for traffic configurations (0-11)
+    # Only draw lanes for traffic configurations 0-10 (exclude 11)
     current_config = st.session_state.get("cfg_c", 0)
-    if current_config is None or int(current_config) > 11:
+    if current_config is None or int(current_config) > 10:
         return
     
-    # Check if we have point data
-    if 'all_points_plot' not in globals() or not all_points_plot:
-        return
+    # Fixed lane configuration: 3 lanes, each 3m wide
+    # Bottom of road at y = -6.0, top at y = +3.0
+    LANE_WIDTH = 3.0  # meters
+    NUM_LANES = 3
+    ROAD_BOTTOM = -6.0  # Bottom edge of the road (right side in right-hand traffic)
     
-    # Collect all y-values per object to understand lane positions
-    object_y_ranges: dict[int, tuple[float, float, float]] = {}  # obj_id -> (min_y, max_y, mean_y)
-    
-    for obj_id, pts in all_points_plot.items():
-        if pts.shape[0] > 0:
-            y_vals = pts[:, 1]
-            object_y_ranges[obj_id] = (float(np.min(y_vals)), float(np.max(y_vals)), float(np.mean(y_vals)))
-    
-    if len(object_y_ranges) < 1:
-        return
-    
-    # Sort objects by their mean y-position
-    sorted_objects = sorted(object_y_ranges.items(), key=lambda x: x[1][2])
-    
-    # Calculate lane boundaries based on object trajectories
-    # Each object's trajectory defines a "lane" - we draw boundaries between lanes
-    lane_centers = [data[2] for _, data in sorted_objects]  # mean y of each object
-    
-    # Estimate lane width from the y-range of movements (cars don't move much laterally in a lane)
-    avg_y_spread = np.mean([data[1] - data[0] for _, data in sorted_objects])
-    lane_half_width = max(avg_y_spread * 1.5, 1.5)  # At least 1.5m half-width (3m total lane)
-    
-    # Draw lane markings
-    x_start = xlim[0] - 10  # Extend slightly beyond visible area
-    x_end = xlim[1] + 10
+    # Lane boundaries (y-coordinates)
+    lane_boundaries = [ROAD_BOTTOM + i * LANE_WIDTH for i in range(NUM_LANES + 1)]
+    # This gives: [-6.0, -3.0, 0.0, 3.0]
     
     # Style for lane markings (subtle, realistic)
-    lane_line_color = '#D0D0D0'  # Light gray
+    center_line_color = '#C0C0C0'  # Gray for center lines between lanes
+    edge_line_color = '#A0A0A0'    # Darker gray for road edges
     lane_line_width = 1.0
-    center_line_color = '#C0C0C0'  # Slightly darker for center line
-    edge_line_color = '#B0B0B0'   # Edge lines
     
-    if len(lane_centers) >= 2:
-        # Multiple lanes: draw dashed center line between lanes and solid edge lines
-        
-        # Calculate the boundary between lanes (midpoint between adjacent lane centers)
-        for i in range(len(lane_centers) - 1):
-            mid_y = (lane_centers[i] + lane_centers[i + 1]) / 2
-            # Dashed center line (road marking style)
-            ax.axhline(y=mid_y, color=center_line_color, linewidth=lane_line_width, 
-                      linestyle='--', dashes=(10, 5), alpha=0.6, zorder=0)
-        
-        # Draw edge lines (solid) at the outer boundaries
-        # Top edge (above highest lane)
-        top_edge_y = lane_centers[-1] + lane_half_width
-        if top_edge_y <= ylim[1]:
-            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
-                      linestyle='-', alpha=0.5, zorder=0)
-        
-        # Bottom edge (below lowest lane)
-        bottom_edge_y = lane_centers[0] - lane_half_width
-        if bottom_edge_y >= ylim[0]:
-            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.2, 
-                      linestyle='-', alpha=0.5, zorder=0)
+    # Draw edge lines (solid) at the outer boundaries of the road
+    # Bottom edge (y = -6.0)
+    bottom_edge_y = lane_boundaries[0]
+    if bottom_edge_y >= ylim[0] and bottom_edge_y <= ylim[1]:
+        ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.5, 
+                  linestyle='-', alpha=0.6, zorder=0)
     
-    elif len(lane_centers) == 1:
-        # Single lane: just draw edge lines
-        center_y = lane_centers[0]
-        top_edge_y = center_y + lane_half_width
-        bottom_edge_y = center_y - lane_half_width
-        
-        if top_edge_y <= ylim[1]:
-            ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width, 
-                      linestyle='-', alpha=0.5, zorder=0)
-        if bottom_edge_y >= ylim[0]:
-            ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width, 
-                      linestyle='-', alpha=0.5, zorder=0)
+    # Top edge (y = +3.0)
+    top_edge_y = lane_boundaries[-1]
+    if top_edge_y >= ylim[0] and top_edge_y <= ylim[1]:
+        ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.5, 
+                  linestyle='-', alpha=0.6, zorder=0)
+    
+    # Draw dashed center lines between lanes
+    # Between lane 1 and 2 (y = -3.0)
+    # Between lane 2 and 3 (y = 0.0)
+    for i in range(1, NUM_LANES):
+        boundary_y = lane_boundaries[i]
+        if boundary_y >= ylim[0] and boundary_y <= ylim[1]:
+            ax.axhline(y=boundary_y, color=center_line_color, linewidth=lane_line_width, 
+                      linestyle='--', dashes=(10, 5), alpha=0.5, zorder=0)
 
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """Configure axes to be square, with simple ticks and labels d₁, d₂."""
