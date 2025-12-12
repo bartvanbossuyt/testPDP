@@ -19,6 +19,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.axes
 import matplotlib.patches
+import matplotlib.pyplot as plt
 
 import plotly.graph_objects as go
 
@@ -80,6 +81,31 @@ def compare_inequality_matrices(matrix1: np.ndarray, matrix2: np.ndarray) -> boo
     Returns True if matrices are identical (same PDP pattern).
     """
     return np.array_equal(matrix1, matrix2)
+
+def compare_inequality_matrices_with_threshold(matrix1: np.ndarray, matrix2: np.ndarray, threshold: float = 1.0) -> tuple[bool, float]:
+    """
+    Compare two inequality matrices with a percentage threshold.
+    
+    Args:
+        matrix1: First inequality matrix
+        matrix2: Second inequality matrix
+        threshold: Minimum required match percentage (0.0 to 1.0), default 1.0 = 100%
+    
+    Returns:
+        (is_match, match_percentage): Tuple of boolean match result and actual match percentage
+    """
+    if matrix1.shape != matrix2.shape:
+        return False, 0.0
+    
+    total_elements = matrix1.size
+    if total_elements == 0:
+        return True, 1.0
+    
+    matching_elements = np.sum(matrix1 == matrix2)
+    match_percentage = matching_elements / total_elements
+    is_match = match_percentage >= threshold
+    
+    return is_match, match_percentage
 
 def apply_buffer_transformation(points: np.ndarray, buffer_x: float, buffer_y: float) -> np.ndarray:
     """
@@ -1123,6 +1149,18 @@ else:
     buffer_y = 0.0
     rough_x = 0.0
     rough_y = 0.0
+
+# Match threshold selection
+st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
+st.markdown("**Order Match Threshold**")
+match_threshold = st.radio(
+    "Accept configuration when order match is:",
+    options=["100%", "90%", "75%"],
+    index=0,
+    horizontal=True,
+    key="cfg_match_threshold",
+    help="100%: All pairwise orderings must match (strict). 90%: Allow up to 10% mismatches. 75%: Allow up to 25% mismatches (permissive)."
+)
 
 # External (fixed) reference points
 st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
@@ -2225,6 +2263,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
                     buffer_y: float = 10.0,
                     rough_x: float = 0.0,
                     rough_y: float = 0.0,
+                    match_threshold: float = 1.0,
                     debug: bool = False) -> tuple[bool, bool]:
     """
     Check if generated configuration matches original using PDP inequality matrices.
@@ -2250,6 +2289,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
         buffer_y: Buffer distance in y-direction (for buffer/bufferrough variants)
         rough_x: Roughness tolerance in x-direction (for rough/bufferrough variants)
         rough_y: Roughness tolerance in y-direction (for rough/bufferrough/realistic variants)
+        match_threshold: Minimum match percentage required (0.0 to 1.0), default 1.0 = 100%
         debug: If True, print debug information
     
     Returns:
@@ -2288,7 +2328,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     if debug:
         n_orig = len(orig_pts)
         n_gen = len(gen_pts)
-        print(f"[DEBUG check_pdp_match] variant={pdp_variant}, points={n_orig}, roughness=({roughness_x}, {roughness_y})")
+        print(f"[DEBUG check_pdp_match] variant={pdp_variant}, points={n_orig}, roughness=({roughness_x}, {roughness_y}), threshold={match_threshold}")
     
     # Compute inequality matrices for both dimensions
     original_x_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
@@ -2297,14 +2337,104 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     generated_x_matrix = compute_inequality_matrix(gen_pts, 0, roughness_x)
     generated_y_matrix = compute_inequality_matrix(gen_pts, 1, roughness_y)
     
-    # Compare matrices
-    d1_match = compare_inequality_matrices(original_x_matrix, generated_x_matrix)
-    d2_match = compare_inequality_matrices(original_y_matrix, generated_y_matrix)
+    # Compare matrices and get percentages
+    _, d1_percentage = compare_inequality_matrices_with_threshold(original_x_matrix, generated_x_matrix, 1.0)
+    _, d2_percentage = compare_inequality_matrices_with_threshold(original_y_matrix, generated_y_matrix, 1.0)
+    
+    # For threshold < 1.0 (relaxed matching), use AVERAGE of d1 and d2 percentages
+    # For threshold == 1.0 (strict matching), both must be exactly 100%
+    if match_threshold < 1.0:
+        avg_percentage = (d1_percentage + d2_percentage) / 2.0
+        d1_match = avg_percentage >= match_threshold
+        d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
+    else:
+        d1_match = d1_percentage >= match_threshold
+        d2_match = d2_percentage >= match_threshold
     
     if pdp_variant in ["buffer", "rough", "bufferrough", "realistic"]:
-        print(f"[DEBUG {pdp_variant.upper()}] Match result: d1={d1_match}, d2={d2_match}")
+        print(f"[DEBUG {pdp_variant.upper()}] Match result: d1={d1_match}, d2={d2_match} (threshold={match_threshold})")
     
     return d1_match, d2_match
+
+def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.ndarray,
+                              pdp_variant: str = "fundamental",
+                              buffer_x: float = 25.0,
+                              buffer_y: float = 10.0,
+                              rough_x: float = 0.0,
+                              rough_y: float = 0.0,
+                              match_threshold: float = 1.0) -> dict:
+    """
+    Extended version of check_pdp_match that returns detailed results for heat map visualization.
+    
+    Returns:
+        Dictionary with:
+        - d1_match: Boolean (True if d1 match >= threshold)
+        - d2_match: Boolean (True if d2 match >= threshold)
+        - d1_percentage: Float (actual d1 match percentage)
+        - d2_percentage: Float (actual d2 match percentage)
+        - original_d1_matrix: N×N inequality matrix for original d1
+        - original_d2_matrix: N×N inequality matrix for original d2
+        - generated_d1_matrix: N×N inequality matrix for generated d1
+        - generated_d2_matrix: N×N inequality matrix for generated d2
+    """
+    # Apply buffer transformation if needed (expands N points to 5N points)
+    orig_pts = original_points.copy()
+    gen_pts = generated_points.copy()
+    
+    if pdp_variant in ["buffer", "bufferrough"]:
+        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, buffer_y)
+        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, buffer_y)
+    elif pdp_variant == "realistic":
+        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, 0.0)
+        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, 0.0)
+    
+    # Determine roughness values based on variant
+    if pdp_variant in ["rough", "bufferrough"]:
+        roughness_x = rough_x
+        roughness_y = rough_y
+    elif pdp_variant == "realistic":
+        roughness_x = 0.0
+        roughness_y = rough_y
+    else:
+        roughness_x = 0.0
+        roughness_y = 0.0
+    
+    # Compute inequality matrices for both dimensions
+    original_d1_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
+    original_d2_matrix = compute_inequality_matrix(orig_pts, 1, roughness_y)
+    
+    generated_d1_matrix = compute_inequality_matrix(gen_pts, 0, roughness_x)
+    generated_d2_matrix = compute_inequality_matrix(gen_pts, 1, roughness_y)
+    
+    # Get percentages (always compare to 1.0 to get actual percentage)
+    _, d1_percentage = compare_inequality_matrices_with_threshold(
+        original_d1_matrix, generated_d1_matrix, 1.0
+    )
+    _, d2_percentage = compare_inequality_matrices_with_threshold(
+        original_d2_matrix, generated_d2_matrix, 1.0
+    )
+    
+    # For threshold < 1.0 (relaxed matching), use AVERAGE of d1 and d2 percentages
+    # For threshold == 1.0 (strict matching), both must be exactly 100%
+    if match_threshold < 1.0:
+        avg_percentage = (d1_percentage + d2_percentage) / 2.0
+        d1_match = avg_percentage >= match_threshold
+        d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
+    else:
+        d1_match = d1_percentage >= match_threshold
+        d2_match = d2_percentage >= match_threshold
+    
+    return {
+        "d1_match": d1_match,
+        "d2_match": d2_match,
+        "d1_percentage": d1_percentage,
+        "d2_percentage": d2_percentage,
+        "avg_percentage": (d1_percentage + d2_percentage) / 2.0,
+        "original_d1_matrix": original_d1_matrix,
+        "original_d2_matrix": original_d2_matrix,
+        "generated_d1_matrix": generated_d1_matrix,
+        "generated_d2_matrix": generated_d2_matrix,
+    }
 
 # Legacy wrapper for backward compatibility
 def check_pdp_match_legacy(original_k: np.ndarray, original_l: np.ndarray, 
@@ -2330,6 +2460,7 @@ def update_order_match_flags() -> None:
     This function now uses the same PDP logic as N_PDP.py for consistency.
     Works with any number of objects (not just k and l).
     Supports multi-point selection: checks ALL n selected points together.
+    Also stores inequality matrices for heat map visualization.
     """
     # Get all current candidate points (multi-point support)
     anim_generated_points = st.session_state.get("anim_generated_points", {})
@@ -2339,6 +2470,7 @@ def update_order_match_flags() -> None:
     if not anim_generated_points and gen_pt is None:
         st.session_state["order_match_d1"] = False
         st.session_state["order_match_d2"] = False
+        st.session_state["pdp_detailed_results"] = None
         return
     
     successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
@@ -2382,19 +2514,31 @@ def update_order_match_flags() -> None:
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
-    # Use PDP inequality matrix comparison with selected variant
-    d1_match, d2_match = check_pdp_match(
+    # Get match threshold from session_state
+    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
+    match_threshold = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    
+    # Use detailed PDP check to get matrices for heat maps
+    detailed_results = check_pdp_match_detailed(
         all_pts_flat,
         generated_points,
         pdp_variant=pdp_variant,
         buffer_x=buffer_x,
         buffer_y=buffer_y,
         rough_x=rough_x,
-        rough_y=rough_y
+        rough_y=rough_y,
+        match_threshold=match_threshold
     )
     
-    st.session_state["order_match_d1"] = d1_match
-    st.session_state["order_match_d2"] = d2_match
+    st.session_state["order_match_d1"] = detailed_results["d1_match"]
+    st.session_state["order_match_d2"] = detailed_results["d2_match"]
+    st.session_state["pdp_detailed_results"] = detailed_results
+
+# ============= Helper: Get match threshold from session_state ============
+def get_match_threshold() -> float:
+    """Get the match threshold from session_state (0.75 for 75%, 0.9 for 90%, 1.0 for 100%)."""
+    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
+    return 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
 
 # ============= Helper: Binary search iteration ============
 def run_binary_iteration(
@@ -2405,6 +2549,7 @@ def run_binary_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
+    match_threshold: float = 1.0,
     max_binary_steps: int = 7
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
@@ -2494,7 +2639,8 @@ def run_binary_iteration(
             buffer_x=buffer_x,
             buffer_y=buffer_y,
             rough_x=rough_x,
-            rough_y=rough_y
+            rough_y=rough_y,
+            match_threshold=match_threshold
         )
         
         # Record diagnostic row
@@ -2508,10 +2654,15 @@ def run_binary_iteration(
         })
         
         if same_d1 and same_d2:
-            # Match! Update ok_points to current candidates, keep delta for next step
+            # Match! Update ok_points to current candidates
             had_full_match = True
             for idx in selected_indices:
                 ok_points[idx] = candidate_positions[idx].copy()
+            # Stop early if using a relaxed threshold (< 100%)
+            # This ensures the algorithm stops at the first valid configuration
+            # rather than continuing to search for a "better" match
+            if match_threshold < 1.0:
+                break
         else:
             # No match: halve delta (binary search narrowing)
             for idx in selected_indices:
@@ -2600,7 +2751,8 @@ def generate_binary_multipoint() -> None:
                     buffer_x=buffer_x,
                     buffer_y=buffer_y,
                     rough_x=rough_x,
-                    rough_y=rough_y
+                    rough_y=rough_y,
+                    match_threshold=get_match_threshold()
                 )
             
             # Store this configuration
@@ -2709,7 +2861,8 @@ def run_multipoint_iteration(
             buffer_x=buffer_x,
             buffer_y=buffer_y,
             rough_x=rough_x,
-            rough_y=rough_y
+            rough_y=rough_y,
+            match_threshold=get_match_threshold()
         )
         
         if same_d1 and same_d2:
@@ -2918,7 +3071,8 @@ def generate_exp() -> None:
             buffer_x=buffer_x,
             buffer_y=buffer_y,
             rough_x=rough_x,
-            rough_y=rough_y
+            rough_y=rough_y,
+            match_threshold=get_match_threshold()
         )
 
         completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
@@ -4534,6 +4688,198 @@ with col2:
             _set_display_config(new_cfg)
             st.rerun()
 
+# ============= Heat Maps for PDP Inequality Matrices ============
+st.markdown("---")
+st.markdown("### PDP Inequality Matrix Heat Maps")
+
+# Always compute heat maps fresh to include current candidate point
+# This ensures the display reflects the current animation state
+pdp_detailed = None
+
+if n_total_points > 0:
+    # Get PDP variant parameters from session_state
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
+    match_threshold = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    
+    # Build generated configuration INCLUDING current candidate point
+    generated_points = all_pts_flat.copy()
+    successful_points_hm: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+    
+    # Track the latest generated point for each original index
+    latest_generated: dict[int, np.ndarray] = {}
+    for sp in successful_points_hm:
+        orig_idx = int(sp["original_parent_idx"])
+        latest_generated[orig_idx] = sp["point"]
+    
+    # CRITICAL: Include current candidate point being tested (for live heat map update)
+    anim_generated_points = st.session_state.get("anim_generated_points", {})
+    gen_pt = st.session_state.get("anim_generated_point", None)
+    
+    if anim_generated_points:
+        for idx, pt in anim_generated_points.items():
+            latest_generated[int(idx)] = np.array(pt)
+    elif gen_pt is not None:
+        parent_idx = int(st.session_state.get("anim_parent_idx", 0))
+        if parent_idx < n_total_points:
+            current_original_parent_idx = parent_idx
+        else:
+            sidx = parent_idx - n_total_points
+            if 0 <= sidx < len(successful_points_hm):
+                current_original_parent_idx = int(successful_points_hm[sidx]["original_parent_idx"])
+            else:
+                current_original_parent_idx = 0
+        latest_generated[current_original_parent_idx] = np.array(gen_pt)
+    
+    # Apply all generated points to the configuration
+    for flat_idx in range(n_total_points):
+        if flat_idx in latest_generated:
+            generated_points[flat_idx] = latest_generated[flat_idx]
+    
+    # Compute detailed results with the current configuration
+    pdp_detailed = check_pdp_match_detailed(
+        all_pts_flat,
+        generated_points,
+        pdp_variant=pdp_variant,
+        buffer_x=buffer_x,
+        buffer_y=buffer_y,
+        rough_x=rough_x,
+        rough_y=rough_y,
+        match_threshold=match_threshold
+    )
+
+if pdp_detailed is not None:
+    # Get match percentages
+    d1_pct = pdp_detailed.get("d1_percentage", 0.0) * 100
+    d2_pct = pdp_detailed.get("d2_percentage", 0.0) * 100
+    avg_pct = pdp_detailed.get("avg_percentage", (d1_pct/100 + d2_pct/100) / 2.0) * 100
+    d1_match = pdp_detailed.get("d1_match", False)
+    d2_match = pdp_detailed.get("d2_match", False)
+    
+    # Display match percentages with average
+    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
+    threshold_val = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    avg_match = avg_pct >= (threshold_val * 100)
+    
+    if threshold_val < 1.0:
+        # Show average for relaxed thresholds
+        st.markdown(f"**Threshold:** {threshold_str} | **d₁:** {d1_pct:.1f}% | **d₂:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'✅' if avg_match else '❌'}")
+    else:
+        # Show individual matches for strict threshold
+        st.markdown(f"**Threshold:** {threshold_str} | **d₁ Match:** {d1_pct:.1f}% {'✅' if d1_match else '❌'} | **d₂ Match:** {d2_pct:.1f}% {'✅' if d2_match else '❌'}")
+    
+    # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
+    hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
+    
+    # Color map: 0=green (greater precedence), 1=yellow (equal), 2=red (less precedence)
+    from matplotlib.colors import ListedColormap
+    hm_cmap = ListedColormap(['#00AA00', '#FFFF00', '#FF0000'])  # green, yellow, red
+    
+    # Labels should be: k0, l0, k1, l1, k2, l2 (sorted by timestamp first, then by object)
+    # But data in all_pts_flat is: k0, k1, k2, l0, l1, l2 (sorted by object first, then by timestamp)
+    # We need to reorder the matrix to match the desired label order
+    
+    def get_reorder_indices(n: int) -> list[int]:
+        """Get indices to reorder from (k0,k1,k2,l0,l1,l2) to (k0,l0,k1,l1,k2,l2)."""
+        if n != 6:
+            return list(range(n))  # No reordering if not exactly 6 points
+        # Original order: k0(0), k1(1), k2(2), l0(3), l1(4), l2(5)
+        # Desired order:  k0(0), l0(3), k1(1), l1(4), k2(2), l2(5)
+        return [0, 3, 1, 4, 2, 5]
+    
+    def reorder_matrix(matrix: np.ndarray) -> np.ndarray:
+        """Reorder matrix rows and columns to match desired label order."""
+        n = matrix.shape[0]
+        if n != 6:
+            return matrix
+        idx = get_reorder_indices(n)
+        # Reorder both rows and columns
+        return matrix[np.ix_(idx, idx)]
+    
+    def get_point_labels(n: int) -> list[str]:
+        """Generate labels: k0, l0, k1, l1, k2, l2 (sorted by timestamp, then object)."""
+        if n > 6:
+            return []  # Don't show labels if more than 6 points
+        labels = []
+        for t in range(3):  # 3 timestamps
+            for obj in ["k", "l"]:  # 2 objects per timestamp
+                if len(labels) < n:
+                    labels.append(f"{obj}{t}")
+        return labels
+    
+    def create_heatmap_figure(matrix: np.ndarray, title: str) -> Figure:
+        """Create a heat map figure for an inequality matrix."""
+        fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
+        n = matrix.shape[0]
+        
+        # Reorder matrix to match label order (k0, l0, k1, l1, k2, l2)
+        display_matrix = reorder_matrix(matrix)
+        
+        # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
+        im = ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
+        
+        # Add axis labels only if 6 or fewer points
+        point_labels = get_point_labels(n)
+        if point_labels:
+            ax_hm.set_xticks(range(n))
+            ax_hm.set_yticks(range(n))
+            ax_hm.set_xticklabels(point_labels, fontsize=7)
+            ax_hm.set_yticklabels(point_labels, fontsize=7)
+        else:
+            ax_hm.set_xticks([])
+            ax_hm.set_yticks([])
+        
+        ax_hm.set_title(title, fontsize=9, fontweight='bold')
+        # No axis titles (removed 'Point j' and 'Point i')
+        
+        fig_hm.tight_layout()
+        return fig_hm
+    
+    # Create heat map for each matrix
+    orig_d1_matrix = pdp_detailed.get("original_d1_matrix")
+    orig_d2_matrix = pdp_detailed.get("original_d2_matrix")
+    gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")
+    gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")
+    
+    with hm_col1:
+        st.markdown("**Original d₁**")
+        if orig_d1_matrix is not None:
+            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d₁ (x)")
+            st.pyplot(fig_hm1)
+            plt.close(fig_hm1)
+    
+    with hm_col2:
+        st.markdown("**Original d₂**")
+        if orig_d2_matrix is not None:
+            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d₂ (y)")
+            st.pyplot(fig_hm2)
+            plt.close(fig_hm2)
+    
+    with hm_col3:
+        st.markdown("**Generated d₁**")
+        if gen_d1_matrix is not None:
+            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d₁ (x)")
+            st.pyplot(fig_hm3)
+            plt.close(fig_hm3)
+    
+    with hm_col4:
+        st.markdown("**Generated d₂**")
+        if gen_d2_matrix is not None:
+            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d₂ (y)")
+            st.pyplot(fig_hm4)
+            plt.close(fig_hm4)
+    
+    # Legend
+    st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i")
+    
+else:
+    st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
+
 # ============= Animation progress (both strategies) ============
 # In manual mode, only process animation when user clicked the appropriate "Next" button
 # In auto mode, always process
@@ -4705,7 +5051,8 @@ if _should_process_animation:
         buffer_x=buffer_x,
         buffer_y=buffer_y,
         rough_x=rough_x,
-        rough_y=rough_y
+        rough_y=rough_y,
+        match_threshold=get_match_threshold()
     )
 
     completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
