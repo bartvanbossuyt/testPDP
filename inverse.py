@@ -1314,25 +1314,29 @@ if is_any_manual_mode:
     # Manual mode: show 4 buttons (Generate, Previous, Next, Reset)
     # Button labels change based on the manual mode type
     
+    # Check if there's a redo stack (for dynamic labels)
+    has_redo_for_labels = len(st.session_state.get("anim_state_redo", [])) > 0
+    
     # Determine button labels based on mode
+    # Button always shows "Complete iteration/config" - the action either completes new work or redoes previous
     if is_manual_step_mode:
         prev_label = "◀ Previous step"
         next_label = "▶ Next step"
         prev_help = "Click to go back to the previous animation step."
-        next_help = "Click to advance the animation by one step."
+        next_help = "Click to redo the next step." if has_redo_for_labels else "Click to advance the animation by one step."
         generate_help = "Start generating configurations step-by-step. Click 'Next step' to advance each step manually."
     elif is_manual_iteration_mode:
-        prev_label = "◀ Previous iteration"
-        next_label = "▶ Next iteration"
-        prev_help = "Click to go back to the previous iteration."
-        next_help = "Click to complete one full iteration (all search steps until a point is placed)."
-        generate_help = "Start generating configurations. Click 'Next iteration' to complete one iteration at a time."
+        prev_label = "◀ Previous"
+        next_label = "▶ Complete iteration"
+        prev_help = "Click to go back to the previous iteration state."
+        next_help = "Click to restore the next iteration." if has_redo_for_labels else "Click to complete the current iteration (finish all search steps and place the point)."
+        generate_help = "Start generating configurations. Click 'Complete iteration' to finish each iteration."
     else:  # is_manual_config_mode
-        prev_label = "◀ Previous config"
-        next_label = "▶ Next config"
-        prev_help = "Click to go back to the previous configuration."
-        next_help = "Click to complete one full configuration (all iterations)."
-        generate_help = "Start generating configurations. Click 'Next config' to complete one configuration at a time."
+        prev_label = "◀ Previous"
+        next_label = "▶ Complete config"
+        prev_help = "Click to go back to the previous configuration state."
+        next_help = "Click to restore the next configuration." if has_redo_for_labels else "Click to complete the current configuration (finish all remaining iterations)."
+        generate_help = "Start generating configurations. Click 'Complete config' to finish each configuration."
     
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1, 1, 0.6], gap="small")
     # No "Generate without animation" button in manual mode
@@ -1344,15 +1348,49 @@ if is_any_manual_mode:
             help=generate_help
         )
     with col_btn2:
-        # Show "Previous" button - enabled only when animation is running and there is history
+        # Show "Previous" button - enabled when there is history to go back to
+        # In manual iteration/config mode, allow going back even when waiting for user input
         anim_history = st.session_state.get("anim_state_history", [])
+        anim_redo_stack = st.session_state.get("anim_state_redo", [])
+        has_history = len(anim_history) > 0
+        has_redo = len(anim_redo_stack) > 0
+        # Enable Previous button whenever there is history - don't require animation to be running
+        # This allows users to go back after an iteration completes in manual mode
+        prev_enabled = has_history
         prev_step_clicked = st.button(
             prev_label, 
             key="btn_prev_step", 
-            disabled=not anim_is_running or len(anim_history) == 0,
-            help=prev_help + " Only active when animation is running and there is history to go back to."
+            disabled=not prev_enabled,
+            help=prev_help
         )
-        if prev_step_clicked and anim_is_running and len(anim_history) > 0:
+        if prev_step_clicked and has_history:
+            # Save current state to redo stack before going back
+            import copy
+            current_state_for_redo = {}
+            anim_state_keys = [
+                "anim_generated_point", "anim_parent_idx", "anim_successful_points",
+                "anim_distance", "anim_angle", "anim_search_steps", "anim_completed_iterations",
+                "anim_current_config", "anim_in_search", "anim_binary_mode", "anim_binary_step",
+                "anim_ok_point", "anim_delta", "anim_had_full_match", "anim_linear_mode",
+                "anim_linear_step", "anim_linear_current_distance", "anim_linear_maxdist",
+                "anim_linear_step_size", "anim_all_pts", "anim_all_ts", "diag_rows",
+                "binary_iteration_summary", "anim_circle_idx", "show_anim_circle",
+                "anim_selected_indices", "anim_generated_points", "anim_movement_vectors",
+                "anim_pdp_variants_list", "anim_current_variant_idx", "anim_current_variant",
+                "anim_running"
+            ]
+            for key in anim_state_keys:
+                if key in st.session_state:
+                    value = st.session_state[key]
+                    if isinstance(value, np.ndarray):
+                        current_state_for_redo[key] = value.copy()
+                    elif isinstance(value, (list, dict)):
+                        current_state_for_redo[key] = copy.deepcopy(value)
+                    else:
+                        current_state_for_redo[key] = value
+            anim_redo_stack.append(current_state_for_redo)
+            st.session_state["anim_state_redo"] = anim_redo_stack
+            
             # Pop the last state from history and restore it
             previous_state = anim_history.pop()
             st.session_state["anim_state_history"] = anim_history
@@ -1361,23 +1399,65 @@ if is_any_manual_mode:
                 st.session_state[key] = value
             st.rerun()
     with col_btn3:
-        # Show "Next" button - enabled only when animation is running
+        # Show "Next/Complete" button
+        # In iteration/config mode: enabled when animation is running (more iterations to complete)
+        # OR when there's a redo stack (can go forward through previously completed iterations)
+        # The button completes the current iteration/config, so it should be enabled while there's work to do
+        can_go_forward = has_redo or anim_is_running
         next_step_clicked = st.button(
             next_label, 
             key="btn_next_step", 
             type="primary", 
-            disabled=not anim_is_running,
-            help=next_help + " Only active when animation is running."
+            disabled=not can_go_forward,
+            help=next_help
         )
-        if next_step_clicked and anim_is_running:
-            # Set flags to indicate what type of manual advance was requested
-            # The animation progress code will check these flags
-            if is_manual_step_mode:
-                st.session_state["anim_manual_step_requested"] = True
-            elif is_manual_iteration_mode:
-                st.session_state["anim_manual_iteration_requested"] = True
-            else:  # is_manual_config_mode
-                st.session_state["anim_manual_config_requested"] = True
+        if next_step_clicked:
+            if has_redo:
+                # Redo: restore the next state from redo stack
+                # First save current state to history
+                import copy
+                current_state_for_history = {}
+                anim_state_keys = [
+                    "anim_generated_point", "anim_parent_idx", "anim_successful_points",
+                    "anim_distance", "anim_angle", "anim_search_steps", "anim_completed_iterations",
+                    "anim_current_config", "anim_in_search", "anim_binary_mode", "anim_binary_step",
+                    "anim_ok_point", "anim_delta", "anim_had_full_match", "anim_linear_mode",
+                    "anim_linear_step", "anim_linear_current_distance", "anim_linear_maxdist",
+                    "anim_linear_step_size", "anim_all_pts", "anim_all_ts", "diag_rows",
+                    "binary_iteration_summary", "anim_circle_idx", "show_anim_circle",
+                    "anim_selected_indices", "anim_generated_points", "anim_movement_vectors",
+                    "anim_pdp_variants_list", "anim_current_variant_idx", "anim_current_variant",
+                    "anim_running"
+                ]
+                for key in anim_state_keys:
+                    if key in st.session_state:
+                        value = st.session_state[key]
+                        if isinstance(value, np.ndarray):
+                            current_state_for_history[key] = value.copy()
+                        elif isinstance(value, (list, dict)):
+                            current_state_for_history[key] = copy.deepcopy(value)
+                        else:
+                            current_state_for_history[key] = value
+                anim_history.append(current_state_for_history)
+                st.session_state["anim_state_history"] = anim_history
+                
+                # Pop from redo stack and restore
+                next_state = anim_redo_stack.pop()
+                st.session_state["anim_state_redo"] = anim_redo_stack
+                for key, value in next_state.items():
+                    st.session_state[key] = value
+                st.rerun()
+            elif anim_is_running:
+                # Clear redo stack when making new progress (branching off)
+                st.session_state["anim_state_redo"] = []
+                # Set flags to indicate what type of manual advance was requested
+                # The animation progress code will check these flags
+                if is_manual_step_mode:
+                    st.session_state["anim_manual_step_requested"] = True
+                elif is_manual_iteration_mode:
+                    st.session_state["anim_manual_iteration_requested"] = True
+                else:  # is_manual_config_mode
+                    st.session_state["anim_manual_config_requested"] = True
     with col_btn4:
         # Reset button - halts animation and resets all graphs to initial state
         # Enabled when animation is running OR when there are generated configurations to clear
@@ -3388,8 +3468,9 @@ if animate_btn:
     # Reset search diagnostics for a fresh animation run
     st.session_state["anim_delta"] = None
     
-    # Clear animation history when starting a new animation (for "Previous step" functionality)
+    # Clear animation history and redo stack when starting a new animation (for "Previous/Next" functionality)
     st.session_state["anim_state_history"] = []
+    st.session_state["anim_state_redo"] = []
     
     # Use the same "Number of configurations" setting as batch generation
     num_anim_configs_val = int(num_configs)
