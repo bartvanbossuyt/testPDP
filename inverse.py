@@ -4692,11 +4692,38 @@ with col2:
 st.markdown("---")
 st.markdown("### PDP Inequality Matrix Heat Maps")
 
-# Always compute heat maps fresh to include current candidate point
-# This ensures the display reflects the current animation state
+# Determine when to update heat maps based on animation settings:
+# a) Auto-advance with wait_interval >= 1000ms: update every step
+# b) Auto-advance with wait_interval < 1000ms: update only at end of iteration
+# c) Manual modes: update only at end of last step/iteration/config
+
+anim_mode = st.session_state.get("cfg_anim_mode", "Auto-advance")
+wait_interval = int(st.session_state.get("cfg_wait_interval", 2000))
+anim_running = st.session_state.get("anim_running", False)
+search_steps = int(st.session_state.get("anim_search_steps", 0))
+
+# Determine if we should update heat maps now
+should_update_heatmaps = False
+
+if not anim_running:
+    # Not running animation - always update (final state)
+    should_update_heatmaps = True
+elif anim_mode == "Auto-advance":
+    if wait_interval >= 1000:
+        # a) Auto-advance with slow interval: update every step
+        should_update_heatmaps = True
+    else:
+        # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 7)
+        # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
+        should_update_heatmaps = (search_steps == 0)
+else:
+    # c) Manual modes: only update at end of step/iteration/config
+    # In manual mode, we update after each manual advancement (when not in middle of search)
+    should_update_heatmaps = (search_steps == 0)
+
 pdp_detailed = None
 
-if n_total_points > 0:
+if n_total_points > 0 and should_update_heatmaps:
     # Get PDP variant parameters from session_state
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
@@ -4717,7 +4744,7 @@ if n_total_points > 0:
         orig_idx = int(sp["original_parent_idx"])
         latest_generated[orig_idx] = sp["point"]
     
-    # CRITICAL: Include current candidate point being tested (for live heat map update)
+    # Include current candidate point being tested (for live heat map update)
     anim_generated_points = st.session_state.get("anim_generated_points", {})
     gen_pt = st.session_state.get("anim_generated_point", None)
     
@@ -4752,6 +4779,11 @@ if n_total_points > 0:
         rough_y=rough_y,
         match_threshold=match_threshold
     )
+    # Store for later use
+    st.session_state["pdp_detailed_results"] = pdp_detailed
+elif n_total_points > 0:
+    # Use cached results if not updating
+    pdp_detailed = st.session_state.get("pdp_detailed_results", None)
 
 if pdp_detailed is not None:
     # Get match percentages
@@ -4904,6 +4936,14 @@ if _manual_iteration_requested:
 if _manual_config_requested:
     st.session_state["_config_in_progress"] = True
     _config_in_progress = True
+
+# INSTANT ITERATION COMPLETION for manual iteration/config modes
+# When user clicks "Next iteration" or "Next config", complete the iteration instantly without animations
+if _manual_iteration_requested or _manual_config_requested:
+    # Set flag to skip all wait intervals and complete iteration in single pass
+    st.session_state["_skip_wait_intervals"] = True
+else:
+    st.session_state["_skip_wait_intervals"] = False
 
 _should_process_animation = (
     st.session_state.get("anim_running", False) and 
@@ -5329,6 +5369,9 @@ if _should_process_animation:
         # DEBUG: Print which strategy branch we're taking
         print(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
         
+        # Check if we should skip wait intervals (manual iteration/config mode)
+        _skip_wait_intervals = st.session_state.get("_skip_wait_intervals", False)
+        
         if binary_mode:
             # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
             # Algorithm:
@@ -5341,8 +5384,121 @@ if _should_process_animation:
             # - End: place all n points at their correct_order positions
             
             binary_step = int(st.session_state.get("anim_binary_step", 0))
-            binary_step += 1
-            st.session_state["anim_binary_step"] = binary_step
+            
+            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining binary steps at once
+            if _skip_wait_intervals and binary_step < 7:
+                # Get all selected indices and movement vectors
+                selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+                
+                if not correct_orders:
+                    for idx in selected_indices:
+                        if idx < n_total_points:
+                            correct_orders[idx] = all_pts[idx].copy()
+                        else:
+                            sidx = int(idx - n_total_points)
+                            succ_list = st.session_state.get("anim_successful_points", [])
+                            if 0 <= sidx < len(succ_list):
+                                correct_orders[idx] = succ_list[sidx]["point"].copy()
+                            else:
+                                correct_orders[idx] = np.array([0.0, 0.0])
+                
+                current_distance = float(st.session_state.get("anim_binary_current_distance", maxdist))
+                
+                # Helper function to compute positions at a given distance
+                def _compute_positions_at_distance(dist: float) -> dict[int, np.ndarray]:
+                    positions: dict[int, np.ndarray] = {}
+                    for idx in selected_indices:
+                        parent_pt = None
+                        succ_list = st.session_state.get("anim_successful_points", [])
+                        for s in reversed(succ_list):
+                            if int(s.get("original_parent_idx", -1)) == idx:
+                                parent_pt = s["point"]
+                                break
+                        if parent_pt is None:
+                            if idx < n_total_points:
+                                parent_pt = all_pts[idx]
+                            else:
+                                sidx = int(idx - n_total_points)
+                                if 0 <= sidx < len(succ_list):
+                                    parent_pt = succ_list[sidx]["point"]
+                                else:
+                                    parent_pt = np.array([0.0, 0.0])
+                        
+                        orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                        orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                        if orig_mag > 1e-9:
+                            direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
+                        else:
+                            direction = np.array([1.0, 0.0])
+                        
+                        new_pt = parent_pt + direction * dist
+                        new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
+                        new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                        positions[idx] = new_pt
+                    return positions
+                
+                # Helper to check PDP match for a set of positions
+                def _check_match_for_positions(positions: dict[int, np.ndarray]) -> bool:
+                    test_points = all_pts_flat.copy()
+                    for idx, pt in positions.items():
+                        if idx < len(test_points):
+                            test_points[idx] = pt
+                    match_d1, match_d2 = check_pdp_match(
+                        all_pts_flat, test_points,
+                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                    )
+                    return match_d1 and match_d2
+                
+                # Simulate all remaining binary search steps (from current step to 7)
+                print(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
+                
+                # Step 1: halve to 0.5×maxdist if not done yet
+                if binary_step == 0:
+                    current_distance = 0.5 * maxdist
+                    binary_step = 1
+                
+                # Steps 2-7: simulate binary search
+                while binary_step < 7:
+                    binary_step += 1
+                    test_positions = _compute_positions_at_distance(current_distance)
+                    matches = _check_match_for_positions(test_positions)
+                    
+                    delta_term = (0.5 ** binary_step) * maxdist
+                    if matches:
+                        # Update correct_orders
+                        for idx in selected_indices:
+                            if idx in test_positions:
+                                correct_orders[int(idx)] = np.array(test_positions[idx])
+                        current_distance = current_distance + delta_term
+                    else:
+                        current_distance = max(current_distance - delta_term, 0.0)
+                    
+                    print(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
+                
+                # Finalize: set to step 7+ and trigger completion
+                st.session_state["anim_binary_step"] = 7
+                st.session_state["anim_search_steps"] = 7
+                st.session_state["anim_binary_current_distance"] = current_distance
+                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                
+                # Place final points at correct_order positions
+                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                first_idx = selected_indices[0] if selected_indices else parent_idx
+                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                st.session_state["anim_distance"] = 0.0  # Trigger success
+                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                st.session_state["anim_generated_points"] = final_positions
+                st.session_state["_skip_wait_intervals"] = False
+                print(f"[DEBUG INSTANT BINARY] Completed - final distance: {current_distance:.4f}")
+            else:
+                # Normal step-by-step processing
+                binary_step += 1
+                st.session_state["anim_binary_step"] = binary_step
+            
             search_steps += 1
             st.session_state["anim_search_steps"] = search_steps
             
@@ -5520,12 +5676,118 @@ if _should_process_animation:
             # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
             # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
             # Stop when: (1) all points match, or (2) distance <= 0
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
             
             linear_step = int(st.session_state.get("anim_linear_step", 0))
-            linear_step += 1
-            st.session_state["anim_linear_step"] = linear_step
+            
+            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining linear steps at once
+            if _skip_wait_intervals:
+                # Get all selected indices and movement vectors
+                selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+                
+                if not correct_orders:
+                    for idx in selected_indices:
+                        if idx < n_total_points:
+                            correct_orders[idx] = all_pts[idx].copy()
+                        else:
+                            sidx = int(idx - n_total_points)
+                            succ_list = st.session_state.get("anim_successful_points", [])
+                            if 0 <= sidx < len(succ_list):
+                                correct_orders[idx] = succ_list[sidx]["point"].copy()
+                            else:
+                                correct_orders[idx] = np.array([0.0, 0.0])
+                
+                current_distance = float(st.session_state.get("anim_linear_current_distance", maxdist))
+                step_size = float(st.session_state.get("anim_linear_step_size", maxdist * 0.1))
+                
+                # Helper: get parent position for an index
+                def _get_parent_lin(idx: int) -> np.ndarray:
+                    succ_list = st.session_state.get("anim_successful_points", [])
+                    for s in reversed(succ_list):
+                        if int(s.get("original_parent_idx", -1)) == idx:
+                            return s["point"]
+                    if idx < n_total_points:
+                        return all_pts[idx]
+                    else:
+                        sidx = int(idx - n_total_points)
+                        if 0 <= sidx < len(succ_list):
+                            return succ_list[sidx]["point"]
+                        return np.array([0.0, 0.0])
+                
+                # Helper to compute positions at a given distance
+                def _compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
+                    positions: dict[int, np.ndarray] = {}
+                    for idx in selected_indices:
+                        parent_pt = _get_parent_lin(idx)
+                        orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                        orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                        if orig_mag > 1e-9:
+                            direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
+                        else:
+                            direction = np.array([1.0, 0.0])
+                        new_pt = parent_pt + direction * dist
+                        new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
+                        new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                        positions[idx] = new_pt
+                    return positions
+                
+                # Helper to check PDP match for a set of positions
+                def _check_linear_match(positions: dict[int, np.ndarray]) -> bool:
+                    test_points = all_pts_flat.copy()
+                    for idx, pt in positions.items():
+                        if idx < len(test_points):
+                            test_points[idx] = pt
+                    match_d1, match_d2 = check_pdp_match(
+                        all_pts_flat, test_points,
+                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                    )
+                    return match_d1 and match_d2
+                
+                # Simulate all linear search steps until match or distance <= 0
+                print(f"[DEBUG INSTANT LINEAR] Starting instant completion from step {linear_step}")
+                max_linear_steps = 100  # Safety limit
+                
+                while linear_step < max_linear_steps and current_distance > 0:
+                    linear_step += 1
+                    test_positions = _compute_linear_positions(current_distance)
+                    matches = _check_linear_match(test_positions)
+                    
+                    print(f"[DEBUG INSTANT LINEAR] Step {linear_step}: match={matches}, distance={current_distance:.4f}")
+                    
+                    if matches:
+                        # Update correct_orders and finalize
+                        for idx in selected_indices:
+                            if idx in test_positions:
+                                correct_orders[int(idx)] = np.array(test_positions[idx])
+                        break
+                    
+                    current_distance = max(current_distance - step_size, 0.0)
+                
+                # Finalize
+                st.session_state["anim_linear_step"] = linear_step
+                st.session_state["anim_search_steps"] = linear_step
+                st.session_state["anim_linear_current_distance"] = current_distance
+                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                
+                # Place final points at correct_order positions
+                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                first_idx = selected_indices[0] if selected_indices else parent_idx
+                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                st.session_state["anim_distance"] = 0.0  # Trigger success
+                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                st.session_state["anim_generated_points"] = final_positions
+                st.session_state["_skip_wait_intervals"] = False
+                print(f"[DEBUG INSTANT LINEAR] Completed at step {linear_step}, distance: {current_distance:.4f}")
+            else:
+                # Normal step-by-step processing
+                linear_step += 1
+                st.session_state["anim_linear_step"] = linear_step
+            
+            search_steps += 1
+            st.session_state["anim_search_steps"] = search_steps
             
             # Get all selected indices and their movement vectors
             selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
@@ -5695,7 +5957,57 @@ if _should_process_animation:
                     new_positions[idx] = new_pt
                 return new_positions
 
-            if search_steps >= max_search_steps:
+            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining exponential steps at once
+            if _skip_wait_intervals:
+                # Helper to check PDP match for a set of positions
+                def _check_exp_match(positions: dict[int, np.ndarray]) -> bool:
+                    test_points = all_pts_flat.copy()
+                    for idx, pt in positions.items():
+                        if idx < len(test_points):
+                            test_points[idx] = pt
+                    match_d1, match_d2 = check_pdp_match(
+                        all_pts_flat, test_points,
+                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                    )
+                    return match_d1 and match_d2
+                
+                # Simulate all exponential search steps until match or min distance
+                print(f"[DEBUG INSTANT EXPONENTIAL] Starting instant completion from step {search_steps}")
+                current_dist = float(distance)
+                min_distance = 1e-5
+                final_positions: dict[int, np.ndarray] = {}
+                
+                while search_steps < max_search_steps and current_dist > min_distance:
+                    search_steps += 1
+                    current_dist = current_dist / 2.0
+                    if current_dist < min_distance:
+                        current_dist = min_distance * 2.0
+                    
+                    test_positions = compute_exp_positions(current_dist)
+                    matches = _check_exp_match(test_positions)
+                    
+                    print(f"[DEBUG INSTANT EXPONENTIAL] Step {search_steps}: match={matches}, distance={current_dist:.4f}")
+                    
+                    if matches:
+                        final_positions = {int(k): v.copy() for k, v in test_positions.items()}
+                        break
+                
+                # If no match found, snap to parent positions
+                if not final_positions:
+                    for idx in selected_indices:
+                        final_positions[int(idx)] = get_parent_for_idx_exp(idx).copy()
+                
+                # Finalize
+                st.session_state["anim_search_steps"] = search_steps
+                first_idx = selected_indices[0] if selected_indices else parent_idx
+                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                st.session_state["anim_distance"] = 0.0  # Trigger success
+                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                st.session_state["anim_generated_points"] = final_positions
+                st.session_state["_skip_wait_intervals"] = False
+                print(f"[DEBUG INSTANT EXPONENTIAL] Completed at step {search_steps}, distance: {current_dist:.4f}")
+            elif search_steps >= max_search_steps:
                 # If search did not converge, snap ALL points back to parent positions
                 final_positions: dict[int, np.ndarray] = {}
                 for idx in selected_indices:
