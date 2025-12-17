@@ -603,15 +603,12 @@ if data_source == "Create random configuration":
     _default_min_x, _default_max_x = 0.0, 100.0
     _default_min_y, _default_max_y = 0.0, 100.0
 else:
-    # Calculate bounds from loaded data (use default config if multiple exist)
-    # For preset/upload: use first config or config 11 if available
-    _default_config = 11 if 11 in available_configs else available_configs[0]
-    _df_for_bounds = _df_all[_df_all["c"] == _default_config]
-
-    _data_min_x = float(_df_for_bounds["x"].min())
-    _data_max_x = float(_df_for_bounds["x"].max())
-    _data_min_y = float(_df_for_bounds["y"].min())
-    _data_max_y = float(_df_for_bounds["y"].max())
+    # Calculate bounds from ALL loaded data (across all configurations)
+    # This ensures bounds cover the entire dataset regardless of which config is selected
+    _data_min_x = float(_df_all["x"].min())
+    _data_max_x = float(_df_all["x"].max())
+    _data_min_y = float(_df_all["y"].min())
+    _data_max_y = float(_df_all["y"].max())
 
     # Add 10% margin to auto-calculated bounds
     _data_range_x = _data_max_x - _data_min_x
@@ -912,9 +909,8 @@ with sc3:
         st.code(str(valid_starts[0]))
         start_t = valid_starts[0]
 
-# Strategy, iterations, configurations
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-sc4, sc5, sc6 = st.columns([1,1,1], gap="small")
+# Strategy, iterations, configurations - on one row with 4 columns for compactness
+sc4, sc5, sc6, sc7 = st.columns([1.2, 1, 1, 1], gap="small")
 with sc4:
     # Choice of search strategy for generating new configurations
     strategy = st.radio(
@@ -922,12 +918,13 @@ with sc4:
         options=["exponential", "linear", "binary"],
         index=0,
         key="cfg_strategy",
+        horizontal=True,
         help="Choose the search strategy for configuration generation.\n- exponential: halve distance until match\n- linear: decrease by 10% of maxdist per step\n- binary: 7-step binary search"
     )
 with sc5:
     # Number of iterations per configuration (used by both animate and generate)
     num_iterations = st.number_input(
-        "Number of iterations",
+        "Iterations",
         min_value=1,
         max_value=100,
         value=3,
@@ -938,7 +935,7 @@ with sc5:
 with sc6:
     # How many configurations to generate (used by both animate and generate)
     num_configs = st.number_input(
-        "Number of configurations",
+        "Configurations",
         min_value=1,
         max_value=1000,
         value=1,
@@ -946,116 +943,124 @@ with sc6:
         key="cfg_num_configs",
         help="How many independent configurations to create when clicking 'Generate configurations'. Each configuration is a complete new set of generated points (all k and l points) that preserves the original PDP pattern. Use this for batch generation without animation."
     )
-
-# Point Selection Mode and Movement Direction
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-st.markdown("**Point Selection (per iteration)**")
-
-ps_col1, ps_col2 = st.columns([1, 1], gap="small")
-with ps_col1:
-    point_selection_mode = st.selectbox(
-        "Selection mode",
-        options=["Single point", "Multiple random points", "Consecutive time stamps"],
+with sc7:
+    # Match threshold selection - moved here for compactness
+    match_threshold = st.radio(
+        "Match threshold",
+        options=["100%", "90%", "75%"],
         index=0,
-        key="cfg_point_selection_mode",
-        help="""How to select points to move in each iteration:
-        
+        horizontal=True,
+        key="cfg_match_threshold",
+        help="100%: All pairwise orderings must match (strict). 90%: Allow up to 10% mismatches. 75%: Allow up to 25% mismatches (permissive)."
+    )
+
+# Advanced Settings in collapsible expander
+with st.expander("⚙️ Advanced Point Selection", expanded=False):
+    st.markdown("**Point Selection (per iteration)**")
+    
+    ps_col1, ps_col2 = st.columns([1, 1], gap="small")
+    with ps_col1:
+        point_selection_mode = st.selectbox(
+            "Selection mode",
+            options=["Single point", "Multiple random points", "Consecutive time stamps"],
+            index=0,
+            key="cfg_point_selection_mode",
+            help="""How to select points to move in each iteration:
+            
 • **Single point**: Move 1 random point per iteration (default, current behavior)
 
 • **Multiple random points**: Move N randomly selected points together
 
 • **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
-    )
-
-with ps_col2:
-    movement_direction = st.selectbox(
-        "Movement direction",
-        options=["Same direction", "Random directions"],
-        index=0,
-        key="cfg_movement_direction",
-        help="""How selected points move together:
-        
+        )
+    
+    with ps_col2:
+        movement_direction = st.selectbox(
+            "Movement direction",
+            options=["Same direction", "Random directions"],
+            index=0,
+            key="cfg_movement_direction",
+            help="""How selected points move together:
+            
 • **Same direction**: All points move with the same angle and distance (coherent movement)
 
 • **Random directions**: Each point gets its own random angle and distance (independent movement)"""
-    )
-
-# Show additional inputs based on selection mode
-if point_selection_mode == "Multiple random points":
-    num_random_points = st.number_input(
-        "Number of points to move together",
-        min_value=1,
-        max_value=20,
-        value=2,
-        step=1,
-        key="cfg_num_random_points",
-        help="How many random points to select and move together in each iteration."
-    )
-elif point_selection_mode == "Consecutive time stamps":
-    # Get available objects from data (check if variables exist first)
-    _obj_ids_available = 'all_obj_ids_flat' in dir() and all_obj_ids_flat is not None and hasattr(all_obj_ids_flat, 'size') and all_obj_ids_flat.size > 0
-    if _obj_ids_available:
-        available_objects = sorted(set(all_obj_ids_flat.tolist()))
-    else:
-        available_objects = [0, 1]  # Default: assume k and l
-    object_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in available_objects]
-    
-    # Get max timestamps for selected object
-    def get_max_timestamps_for_object(obj_id: int) -> int:
-        if not _obj_ids_available:
-            return 3  # Default assumption
-        return int(np.sum(all_obj_ids_flat == obj_id))
-    
-    gp_col1, gp_col2, gp_col3 = st.columns([1, 1, 1], gap="small")
-    with gp_col1:
-        selected_object_label = st.selectbox(
-            "Object",
-            options=object_labels,
-            index=0,
-            key="cfg_consecutive_object",
-            help="Select which object's points to move (k, l, etc.)"
         )
-        # Convert label back to object id
-        selected_object_idx = object_labels.index(selected_object_label) if selected_object_label in object_labels else 0
-        selected_object_id = available_objects[selected_object_idx] if selected_object_idx < len(available_objects) else 0
-        st.session_state["cfg_consecutive_object_id"] = selected_object_id
     
-    with gp_col2:
-        max_ts = get_max_timestamps_for_object(selected_object_id)
-        group_num_timestamps = st.number_input(
-            "Consecutive timestamps (t)",
+    # Show additional inputs based on selection mode
+    if point_selection_mode == "Multiple random points":
+        num_random_points = st.number_input(
+            "Number of points to move together",
             min_value=1,
-            max_value=max(1, max_ts),
-            value=min(2, max_ts),
+            max_value=20,
+            value=2,
             step=1,
-            key="cfg_group_num_timestamps",
-            help="Number of consecutive timestamps to move together."
+            key="cfg_num_random_points",
+            help="How many random points to select and move together in each iteration."
         )
-    
-    with gp_col3:
-        # First timestamp selection (0-indexed, max depends on num_timestamps)
-        max_first_ts = max(0, max_ts - int(group_num_timestamps))
-        first_timestamp = st.number_input(
-            "First timestamp",
-            min_value=0,
-            max_value=max_first_ts,
-            value=0,
-            step=1,
-            key="cfg_consecutive_first_timestamp",
-            help=f"Starting timestamp index (0 to {max_first_ts}). The next {group_num_timestamps} consecutive timestamps will be selected."
-        )
+    elif point_selection_mode == "Consecutive time stamps":
+        # Get available objects from data (check if variables exist first)
+        _obj_ids_available = 'all_obj_ids_flat' in dir() and all_obj_ids_flat is not None and hasattr(all_obj_ids_flat, 'size') and all_obj_ids_flat.size > 0
+        if _obj_ids_available:
+            available_objects = sorted(set(all_obj_ids_flat.tolist()))
+        else:
+            available_objects = [0, 1]  # Default: assume k and l
+        object_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in available_objects]
+        
+        # Get max timestamps for selected object
+        def get_max_timestamps_for_object(obj_id: int) -> int:
+            if not _obj_ids_available:
+                return 3  # Default assumption
+            return int(np.sum(all_obj_ids_flat == obj_id))
+        
+        gp_col1, gp_col2, gp_col3 = st.columns([1, 1, 1], gap="small")
+        with gp_col1:
+            selected_object_label = st.selectbox(
+                "Object",
+                options=object_labels,
+                index=0,
+                key="cfg_consecutive_object",
+                help="Select which object's points to move (k, l, etc.)"
+            )
+            # Convert label back to object id
+            selected_object_idx = object_labels.index(selected_object_label) if selected_object_label in object_labels else 0
+            selected_object_id = available_objects[selected_object_idx] if selected_object_idx < len(available_objects) else 0
+            st.session_state["cfg_consecutive_object_id"] = selected_object_id
+        
+        with gp_col2:
+            max_ts = get_max_timestamps_for_object(selected_object_id)
+            group_num_timestamps = st.number_input(
+                "Consecutive timestamps (t)",
+                min_value=1,
+                max_value=max(1, max_ts),
+                value=min(2, max_ts),
+                step=1,
+                key="cfg_group_num_timestamps",
+                help="Number of consecutive timestamps to move together."
+            )
+        
+        with gp_col3:
+            # First timestamp selection (0-indexed, max depends on num_timestamps)
+            max_first_ts = max(0, max_ts - int(group_num_timestamps))
+            first_timestamp = st.number_input(
+                "First timestamp",
+                min_value=0,
+                max_value=max_first_ts,
+                value=0,
+                step=1,
+                key="cfg_consecutive_first_timestamp",
+                help=f"Starting timestamp index (0 to {max_first_ts}). The next {group_num_timestamps} consecutive timestamps will be selected."
+            )
 
-# PDP Variant Selection (Multiple variants)
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-st.markdown("**PDP Variant Configuration** (select one or more)")
-
-# Multi-select for PDP variants
-pdp_variants_selected = st.multiselect(
-    "PDP Variants to calculate",
-    options=["fundamental", "buffer", "rough", "bufferrough", "realistic"],
-    default=["fundamental"],
-    key="cfg_pdp_variants",
-    help="""Select PDP variants for configuration generation:
+# PDP Variant Selection (Multiple variants) - in expander for compactness
+with st.expander("🔬 PDP Variant Configuration", expanded=False):
+    # Multi-select for PDP variants
+    pdp_variants_selected = st.multiselect(
+        "PDP Variants to calculate",
+        options=["fundamental", "buffer", "rough", "bufferrough", "realistic"],
+        default=["fundamental"],
+        key="cfg_pdp_variants",
+        help="""Select PDP variants for configuration generation:
 
 • **fundamental**: Basic PDP with N×N inequality matrix. Two configurations match if ALL pairwise orderings are identical.
 
@@ -1066,184 +1071,169 @@ pdp_variants_selected = st.multiselect(
 • **bufferrough**: Combines buffer expansion AND roughness tolerance. 5N×5N matrix with fuzzy equality.
 
 • **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d₁ (x-axis, driving direction) and roughness ONLY on d₂ (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
-)
-
-# Show parameter inputs if any variant needs them
-# "realistic" uses buffer_x AND rough_y (but not buffer_y or rough_x)
-needs_buffer = any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants_selected)
-needs_rough = any(v in ["rough", "bufferrough", "realistic"] for v in pdp_variants_selected)
-needs_realistic = "realistic" in pdp_variants_selected
-
-if needs_buffer or needs_rough:
-    st.markdown("**Parameters for selected variants:**")
-    param_col1, param_col2 = st.columns([1, 1], gap="small")
+    )
     
-    with param_col1:
-        if needs_buffer:
-            # Show buffer_x for all buffer variants including realistic
-            buffer_x_default = 10.0 if needs_realistic else 25.0
-            buffer_x = st.number_input(
-                "Buffer X (d₁)",
-                min_value=0.0,
-                max_value=100.0,
-                value=buffer_x_default,
-                step=1.0,
-                key="cfg_buffer_x",
-                help="Buffer distance in x-direction (d₁, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
-            )
-            # Only show buffer_y if NOT exclusively using realistic
-            needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
-            if needs_buffer_y:
-                buffer_y = st.number_input(
-                    "Buffer Y (d₂)",
+    # Show parameter inputs if any variant needs them
+    # "realistic" uses buffer_x AND rough_y (but not buffer_y or rough_x)
+    needs_buffer = any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants_selected)
+    needs_rough = any(v in ["rough", "bufferrough", "realistic"] for v in pdp_variants_selected)
+    needs_realistic = "realistic" in pdp_variants_selected
+    
+    if needs_buffer or needs_rough:
+        st.markdown("**Parameters for selected variants:**")
+        param_col1, param_col2 = st.columns([1, 1], gap="small")
+        
+        with param_col1:
+            if needs_buffer:
+                # Show buffer_x for all buffer variants including realistic
+                buffer_x_default = 10.0 if needs_realistic else 25.0
+                buffer_x = st.number_input(
+                    "Buffer X (d₁)",
                     min_value=0.0,
                     max_value=100.0,
-                    value=10.0,
+                    value=buffer_x_default,
                     step=1.0,
-                    key="cfg_buffer_y",
-                    help="Buffer distance in y-direction (d₂, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
+                    key="cfg_buffer_x",
+                    help="Buffer distance in x-direction (d₁, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
                 )
+                # Only show buffer_y if NOT exclusively using realistic
+                needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
+                if needs_buffer_y:
+                    buffer_y = st.number_input(
+                        "Buffer Y (d₂)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=10.0,
+                        step=1.0,
+                        key="cfg_buffer_y",
+                        help="Buffer distance in y-direction (d₂, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
+                    )
+                else:
+                    buffer_y = 0.0
+                    if needs_realistic:
+                        st.info("ℹ️ 'realistic' uses roughness on y instead of buffer")
             else:
+                buffer_x = 0.0
                 buffer_y = 0.0
-                if needs_realistic:
-                    st.info("ℹ️ 'realistic' uses roughness on y instead of buffer")
-        else:
-            buffer_x = 0.0
-            buffer_y = 0.0
-    
-    with param_col2:
-        if needs_rough:
-            # Only show rough_x if NOT exclusively using realistic
-            needs_rough_x = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
-            if needs_rough_x:
-                rough_x = st.number_input(
-                    "Roughness X (d₁)",
+        
+        with param_col2:
+            if needs_rough:
+                # Only show rough_x if NOT exclusively using realistic
+                needs_rough_x = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
+                if needs_rough_x:
+                    rough_x = st.number_input(
+                        "Roughness X (d₁)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=0.0,
+                        step=0.1,
+                        key="cfg_rough_x",
+                        help="Equality tolerance in x-direction (d₁). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
+                    )
+                else:
+                    rough_x = 0.0
+                    if needs_realistic:
+                        st.info("ℹ️ 'realistic' uses buffer on x instead of roughness")
+                
+                # Show rough_y for all rough variants including realistic
+                rough_y_default = 1.5 if needs_realistic else 0.0
+                rough_y = st.number_input(
+                    "Roughness Y (d₂)",
                     min_value=0.0,
                     max_value=100.0,
-                    value=0.0,
+                    value=rough_y_default,
                     step=0.1,
-                    key="cfg_rough_x",
-                    help="Equality tolerance in x-direction (d₁). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
+                    key="cfg_rough_y",
+                    help="Equality tolerance in y-direction (d₂, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
                 )
             else:
                 rough_x = 0.0
-                if needs_realistic:
-                    st.info("ℹ️ 'realistic' uses buffer on x instead of roughness")
-            
-            # Show rough_y for all rough variants including realistic
-            rough_y_default = 1.5 if needs_realistic else 0.0
-            rough_y = st.number_input(
-                "Roughness Y (d₂)",
-                min_value=0.0,
-                max_value=100.0,
-                value=rough_y_default,
-                step=0.1,
-                key="cfg_rough_y",
-                help="Equality tolerance in y-direction (d₂, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
-            )
-        else:
-            rough_x = 0.0
-            rough_y = 0.0
-else:
-    buffer_x = 0.0
-    buffer_y = 0.0
-    rough_x = 0.0
-    rough_y = 0.0
+                rough_y = 0.0
+    else:
+        buffer_x = 0.0
+        buffer_y = 0.0
+        rough_x = 0.0
+        rough_y = 0.0
 
-# Match threshold selection
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-st.markdown("**Order Match Threshold**")
-match_threshold = st.radio(
-    "Accept configuration when order match is:",
-    options=["100%", "90%", "75%"],
-    index=0,
-    horizontal=True,
-    key="cfg_match_threshold",
-    help="100%: All pairwise orderings must match (strict). 90%: Allow up to 10% mismatches. 75%: Allow up to 25% mismatches (permissive)."
-)
-
-# External (fixed) reference points
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-st.markdown("**External Reference Points**")
-
-use_external_points = st.checkbox(
-    "Use external reference points",
-    value=st.session_state.get("use_external_points", False),
-    key="cfg_use_external_points",
-    help="Enable fixed external reference points that constrain absolute positions. "
-         "These points (e.g., corners of a tennis court, field boundaries, landmarks) "
-         "are included in the PDP inequality matrix but do NOT move during configuration generation. "
-         "This anchors the generated configurations to real-world positions."
-)
-
-# Store in session state for access later
-st.session_state["use_external_points"] = use_external_points
-
-if use_external_points:
-    st.markdown("Define fixed reference points (these remain stationary during generation):")
-    st.caption("Each row is a fixed point with coordinates (x, y). These points apply to all timestamps and constrain the absolute positions of generated configurations.")
-    
-    # Initialize external points if not present (now only x, y - no timestamp)
-    if "external_points" not in st.session_state:
-        st.session_state["external_points"] = [(0.0, 0.0)]  # Default: one point at origin
-    
-    external_pts = st.session_state["external_points"]
-    
-    # Create dataframe for editing (only x and y)
-    ext_df = pd.DataFrame({
-        "x": [p[0] for p in external_pts],
-        "y": [p[1] for p in external_pts]
-    })
-    
-    edited_ext_df = st.data_editor(
-        ext_df,
-        key="edit_external_points",
-        num_rows="dynamic",
-        width="content",
-        column_config={
-            "x": st.column_config.NumberColumn("x", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
-            "y": st.column_config.NumberColumn("y", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
-        },
+# External (fixed) reference points - in expander for compactness
+with st.expander("📍 External Reference Points", expanded=False):
+    use_external_points = st.checkbox(
+        "Use external reference points",
+        value=st.session_state.get("use_external_points", False),
+        key="cfg_use_external_points",
+        help="Enable fixed external reference points that constrain absolute positions. "
+             "These points (e.g., corners of a tennis court, field boundaries, landmarks) "
+             "are included in the PDP inequality matrix but do NOT move during configuration generation. "
+             "This anchors the generated configurations to real-world positions."
     )
     
-    # Update session state with edited values (store as x, y tuples)
-    if edited_ext_df is not None and len(edited_ext_df) > 0:
-        st.session_state["external_points"] = [
-            (float(row["x"]), float(row["y"])) 
-            for _, row in edited_ext_df.iterrows()
-        ]
-    else:
-        st.session_state["external_points"] = []
+    # Store in session state for access later
+    st.session_state["use_external_points"] = use_external_points
+    
+    if use_external_points:
+        st.markdown("Define fixed reference points (these remain stationary during generation):")
+        st.caption("Each row is a fixed point with coordinates (x, y). These points apply to all timestamps and constrain the absolute positions of generated configurations.")
+        
+        # Initialize external points if not present (now only x, y - no timestamp)
+        if "external_points" not in st.session_state:
+            st.session_state["external_points"] = [(0.0, 0.0)]  # Default: one point at origin
+        
+        external_pts = st.session_state["external_points"]
+        
+        # Create dataframe for editing (only x and y)
+        ext_df = pd.DataFrame({
+            "x": [p[0] for p in external_pts],
+            "y": [p[1] for p in external_pts]
+        })
+        
+        edited_ext_df = st.data_editor(
+            ext_df,
+            key="edit_external_points",
+            num_rows="dynamic",
+            width="content",
+            column_config={
+                "x": st.column_config.NumberColumn("x", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
+                "y": st.column_config.NumberColumn("y", format=f"%.{COORD_DISPLAY_PRECISION}f", width="small"),
+            },
+        )
+        
+        # Update session state with edited values (store as x, y tuples)
+        if edited_ext_df is not None and len(edited_ext_df) > 0:
+            st.session_state["external_points"] = [
+                (float(row["x"]), float(row["y"])) 
+                for _, row in edited_ext_df.iterrows()
+            ]
+        else:
+            st.session_state["external_points"] = []
 
-# Animation settings
-st.markdown("<hr style='margin:0.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
-st.markdown("**Animation Settings**")
-
-anim_mode = st.radio(
-    "Animation mode",
-    options=["Auto-advance", "Manual step-by-step", "Manual iteration-by-iteration", "Manual config-by-config"],
-    index=0,
-    horizontal=True,
-    key="cfg_anim_mode",
-    help=("Choose how the animation advances:\n"
-          "• **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
-          "• **Manual step-by-step**: Click to advance each search step manually.\n"
-          "• **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
-          "• **Manual config-by-config**: Click to complete one full configuration (all iterations).")
-)
-
-if anim_mode == "Auto-advance":
-    sc_wait, _, _ = st.columns([1, 1, 1], gap="small")
-    with sc_wait:
+# Animation settings - compact layout
+st.markdown("**Animation Mode**")
+anim_col1, anim_col2 = st.columns([3, 1], gap="small")
+with anim_col1:
+    anim_mode = st.radio(
+        "Animation mode",
+        options=["Auto-advance", "Manual step-by-step", "Manual iteration-by-iteration", "Manual config-by-config"],
+        index=0,
+        horizontal=True,
+        key="cfg_anim_mode",
+        label_visibility="collapsed",
+        help=("Choose how the animation advances:\n"
+              "• **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
+              "• **Manual step-by-step**: Click to advance each search step manually.\n"
+              "• **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
+              "• **Manual config-by-config**: Click to complete one full configuration (all iterations).")
+    )
+with anim_col2:
+    if anim_mode == "Auto-advance":
         wait_interval_ms = st.selectbox(
-            "Wait interval (ms)",
+            "Wait (ms)",
             options=[100, 200, 500, 1000, 2000, 5000],
             index=4,  # 2000 ms als default
             key="cfg_wait_ms",
             help="Time in milliseconds between each animation step. Lower values = faster animation."
         )
-else:
-    wait_interval_ms = None  # Manual mode - no auto interval
+    else:
+        wait_interval_ms = None  # Manual mode - no auto interval
 
 # Custom CSS for Reset button styling: white text on black background
 # This provides a visually distinct button that stands out as a "stop/reset" action
@@ -1341,19 +1331,26 @@ if is_any_manual_mode:
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1, 1, 0.6], gap="small")
     # No "Generate without animation" button in manual mode
     generate_btn = False  # Set to False so the generate_btn handler doesn't trigger
+    
+    # Check if animation is already running (has history or is actively running)
+    # Generate button should be disabled when navigating through previous states
+    anim_history = st.session_state.get("anim_state_history", [])
+    anim_redo_stack = st.session_state.get("anim_state_redo", [])
+    has_history = len(anim_history) > 0
+    has_redo = len(anim_redo_stack) > 0
+    # Disable Generate when animation is running or when there's history to navigate
+    generate_disabled = anim_is_running or has_history
+    
     with col_btn1:
         animate_btn = st.button(
             "Generate", 
             key="btn_animate",
-            help=generate_help
+            disabled=generate_disabled,
+            help=generate_help if not generate_disabled else "Reset first to start a new generation."
         )
     with col_btn2:
         # Show "Previous" button - enabled when there is history to go back to
         # In manual iteration/config mode, allow going back even when waiting for user input
-        anim_history = st.session_state.get("anim_state_history", [])
-        anim_redo_stack = st.session_state.get("anim_state_redo", [])
-        has_history = len(anim_history) > 0
-        has_redo = len(anim_redo_stack) > 0
         # Enable Previous button whenever there is history - don't require animation to be running
         # This allows users to go back after an iteration completes in manual mode
         prev_enabled = has_history
@@ -1590,58 +1587,139 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ============= Auto-detect bounds when configuration settings change =============
 # This must happen AFTER all widgets are rendered, so we have access to the NEW values
-# Track previous values to detect changes
+# Track previous values to detect changes - includes ALL settings that affect the animation
 _prev_cfg_k = st.session_state.get("_prev_cfg_k", None)
 _prev_cfg_start_t = st.session_state.get("_prev_cfg_start_t", None)
 _prev_cfg_c = st.session_state.get("_prev_cfg_c", None)
+_prev_cfg_num_timestamps = st.session_state.get("_prev_cfg_num_timestamps", None)
+_prev_cfg_strategy = st.session_state.get("_prev_cfg_strategy", None)
+_prev_cfg_iterations = st.session_state.get("_prev_cfg_iterations", None)
+_prev_cfg_num_configs = st.session_state.get("_prev_cfg_num_configs", None)
+_prev_cfg_pdp_variants = st.session_state.get("_prev_cfg_pdp_variants", None)
+_prev_cfg_match_threshold = st.session_state.get("_prev_cfg_match_threshold", None)
+_prev_cfg_point_selection = st.session_state.get("_prev_cfg_point_selection", None)
+_prev_cfg_movement_direction = st.session_state.get("_prev_cfg_movement_direction", None)
+
 _curr_cfg_k = st.session_state.get("cfg_k", None)
 _curr_cfg_start_t = st.session_state.get("cfg_start_t", None)
 _curr_cfg_c = st.session_state.get("cfg_c", None)
+_curr_cfg_num_timestamps = st.session_state.get("cfg_num_timestamps", None)
+_curr_cfg_strategy = st.session_state.get("cfg_strategy", None)
+_curr_cfg_iterations = st.session_state.get("cfg_iterations", None)
+_curr_cfg_num_configs = st.session_state.get("cfg_num_configs", None)
+_curr_cfg_pdp_variants = st.session_state.get("cfg_pdp_variants", None)
+_curr_cfg_match_threshold = st.session_state.get("cfg_match_threshold", None)
+_curr_cfg_point_selection = st.session_state.get("cfg_point_selection", None)
+_curr_cfg_movement_direction = st.session_state.get("cfg_movement_direction", None)
 
 # Check if any configuration changed (but only if previous values were set, i.e., not on first run)
+# Also check if animation is running or has history - only then do we need to reset
+_has_animation_state = (
+    st.session_state.get("anim_running", False) or 
+    len(st.session_state.get("anim_state_history", [])) > 0 or
+    len(st.session_state.get("anim_all_configs", [])) > 0 or
+    st.session_state.get("anim_generated_point") is not None
+)
+
 _config_changed = (
     _prev_cfg_k is not None and 
-    (_prev_cfg_k != _curr_cfg_k or _prev_cfg_start_t != _curr_cfg_start_t or _prev_cfg_c != _curr_cfg_c)
+    _has_animation_state and
+    (
+        _prev_cfg_k != _curr_cfg_k or 
+        _prev_cfg_start_t != _curr_cfg_start_t or 
+        _prev_cfg_c != _curr_cfg_c or
+        _prev_cfg_num_timestamps != _curr_cfg_num_timestamps or
+        _prev_cfg_strategy != _curr_cfg_strategy or
+        _prev_cfg_iterations != _curr_cfg_iterations or
+        _prev_cfg_num_configs != _curr_cfg_num_configs or
+        _prev_cfg_pdp_variants != _curr_cfg_pdp_variants or
+        _prev_cfg_match_threshold != _curr_cfg_match_threshold or
+        _prev_cfg_point_selection != _curr_cfg_point_selection or
+        _prev_cfg_movement_direction != _curr_cfg_movement_direction
+    )
 )
 
 # Store current values for next comparison
 st.session_state["_prev_cfg_k"] = _curr_cfg_k
 st.session_state["_prev_cfg_start_t"] = _curr_cfg_start_t
 st.session_state["_prev_cfg_c"] = _curr_cfg_c
+st.session_state["_prev_cfg_num_timestamps"] = _curr_cfg_num_timestamps
+st.session_state["_prev_cfg_strategy"] = _curr_cfg_strategy
+st.session_state["_prev_cfg_iterations"] = _curr_cfg_iterations
+st.session_state["_prev_cfg_num_configs"] = _curr_cfg_num_configs
+st.session_state["_prev_cfg_pdp_variants"] = _curr_cfg_pdp_variants
+st.session_state["_prev_cfg_match_threshold"] = _curr_cfg_match_threshold
+st.session_state["_prev_cfg_point_selection"] = _curr_cfg_point_selection
+st.session_state["_prev_cfg_movement_direction"] = _curr_cfg_movement_direction
 
-# Reset animation state when timestamp settings change (to remove red circle/black arrow)
+# Reset animation state when any settings change - same as Reset button
 if _config_changed:
-    # Clear all animation-related session state keys
+    # Clear all animation-related session state keys (same list as Reset button)
     animation_keys_to_clear = [
+        # Animation control flags
         "anim_running",
-        "anim_step",
-        "anim_iteration",
-        "anim_config_num",
-        "anim_pos",
-        "anim_angle",
+        "anim_manual_step_requested",
+        "anim_manual_iteration_requested",
+        "anim_manual_config_requested",
+        "anim_manual_mode",
+        "anim_manual_step_mode",
+        "anim_manual_iteration_mode",
+        "anim_manual_config_mode",
+        "_iteration_in_progress",
+        "_config_in_progress",
+        "_iteration_just_completed",
+        "_config_just_completed",
+        "anim_in_search",
+        # Point generation state - clearing these removes all daughter points
+        "anim_generated_point",
+        "anim_generated_points",
+        "anim_successful_points",  # Current configuration's successful points
+        "anim_all_configs",        # All completed configurations (used for CSV export)
+        # Search parameters
         "anim_distance",
-        "anim_best_pos",
-        "anim_best_distance",
+        "anim_angle",
+        "anim_parent_idx",
+        "anim_all_pts",
+        "anim_all_ts",
+        # Iteration tracking
+        "anim_iteration",
+        "anim_completed_iterations",
+        "anim_search_steps",
+        "anim_current_config",
+        "anim_num_configs",
+        "anim_max_iterations",
+        "anim_iterations_per_run",
+        "anim_last_update",
+        "anim_last_step",
+        # Binary search state
+        "anim_binary_mode",
+        "anim_binary_step",
         "anim_ok_point",
         "anim_delta",
         "anim_delta_vector",
         "anim_had_full_match",
+        # Linear search state
         "anim_linear_mode",
         "anim_linear_step",
         "anim_linear_current_distance",
         "anim_linear_maxdist",
         "anim_linear_step_size",
+        # Circle visualization
         "anim_circle_idx",
         "show_anim_circle",
+        # Multi-point animation support
         "anim_selected_indices",
         "anim_movement_vectors",
+        # Multi-variant support
         "anim_pdp_variants_list",
         "anim_current_variant_idx",
         "anim_current_variant",
+        # Diagnostics
         "diag_rows",
         "binary_iteration_summary",
+        # History (for Previous step functionality)
         "anim_state_history",
-        "anim_all_configs",
+        "anim_state_redo",
     ]
     for key in animation_keys_to_clear:
         if key in st.session_state:
@@ -2076,31 +2154,70 @@ def square_limits_with_margin(
 
 # ============= Coordinate Bounds from User Input =============
 # Get user-defined coordinate bounds (these define valid coordinate range)
+# These are used as fallback, but we'll compute actual visualization bounds from the data
 COORD_MIN_X = float(st.session_state.get("coord_min_x", -50.0))
 COORD_MAX_X = float(st.session_state.get("coord_max_x", 150.0))
 COORD_MIN_Y = float(st.session_state.get("coord_min_y", -50.0))
 COORD_MAX_Y = float(st.session_state.get("coord_max_y", 150.0))
 
-# Compute axis limits for visualization: coordinate bounds + 10% margin
-coord_width = COORD_MAX_X - COORD_MIN_X
-coord_height = COORD_MAX_Y - COORD_MIN_Y
+# ============= Compute XLIM/YLIM from ACTUAL plotted data =============
+# This ensures the visualization always shows the actual data points, regardless of bounds settings
+def _compute_viz_bounds_from_data() -> tuple[tuple[float, float], tuple[float, float]]:
+    """Compute visualization bounds from the actual plotted data points."""
+    # Gather all points from all objects
+    all_pts_arrays = [pts for pts in all_points_plot.values() if pts.shape[0] > 0]
+    
+    # Also include external reference points if any
+    if external_pts_for_window:
+        ext_arr = np.array(external_pts_for_window)
+        if ext_arr.shape[0] > 0:
+            all_pts_arrays.append(ext_arr)
+    
+    if not all_pts_arrays:
+        # No data - use coordinate bounds as fallback
+        return ((COORD_MIN_X, COORD_MAX_X), (COORD_MIN_Y, COORD_MAX_Y))
+    
+    all_pts = np.vstack(all_pts_arrays)
+    data_min_x = float(np.min(all_pts[:, 0]))
+    data_max_x = float(np.max(all_pts[:, 0]))
+    data_min_y = float(np.min(all_pts[:, 1]))
+    data_max_y = float(np.max(all_pts[:, 1]))
+    
+    # Add 10% margin
+    data_range_x = data_max_x - data_min_x
+    data_range_y = data_max_y - data_min_y
+    
+    # Ensure minimum range of 1.0 to avoid division by zero
+    data_range_x = max(data_range_x, 1.0)
+    data_range_y = max(data_range_y, 1.0)
+    
+    margin_x = max(data_range_x * 0.10, 1.0)  # At least 1 unit margin
+    margin_y = max(data_range_y * 0.10, 1.0)
+    
+    viz_min_x = data_min_x - margin_x
+    viz_max_x = data_max_x + margin_x
+    viz_min_y = data_min_y - margin_y
+    viz_max_y = data_max_y + margin_y
+    
+    # Make it square
+    total_width = viz_max_x - viz_min_x
+    total_height = viz_max_y - viz_min_y
+    viz_side = max(total_width, total_height)
+    
+    coord_cx = 0.5 * (viz_min_x + viz_max_x)
+    coord_cy = 0.5 * (viz_min_y + viz_max_y)
+    
+    xlim = (coord_cx - viz_side / 2.0, coord_cx + viz_side / 2.0)
+    ylim = (coord_cy - viz_side / 2.0, coord_cy + viz_side / 2.0)
+    
+    return (xlim, ylim)
 
-# Use 10% of each range as margin
-margin_x = coord_width * 0.10
-margin_y = coord_height * 0.10
-
-# Make it square by using the larger dimension (including margins)
-total_width = coord_width + 2 * margin_x
-total_height = coord_height + 2 * margin_y
-viz_side = max(total_width, total_height)
-
-# Center of coordinate bounds
-coord_cx = 0.5 * (COORD_MIN_X + COORD_MAX_X)
-coord_cy = 0.5 * (COORD_MIN_Y + COORD_MAX_Y)
-
-# Square limits with percentage-based margin for visualization
-XLIM = (coord_cx - viz_side / 2.0, coord_cx + viz_side / 2.0)
-YLIM = (coord_cy - viz_side / 2.0, coord_cy + viz_side / 2.0)
+# Compute actual visualization bounds from the data
+XLIM, YLIM = _compute_viz_bounds_from_data()
+print(f"[BOUNDS COMPUTED] XLIM={XLIM}, YLIM={YLIM}")
+print(f"[BOUNDS COMPUTED] all_points_plot.keys()={list(all_points_plot.keys())}")
+for _dbg_oid in all_points_plot:
+    print(f"[BOUNDS COMPUTED] o_id={_dbg_oid}, first_pt={all_points_plot[_dbg_oid][0] if all_points_plot[_dbg_oid].shape[0] > 0 else 'EMPTY'}")
 
 # ============= d1/d2 order strings (LaTeX) ============
 def _format_t_subscript(tval: float) -> str:
@@ -3227,6 +3344,10 @@ def generate_exp() -> None:
                     st.session_state["anim_completed_iterations"] = 0
                     st.session_state["anim_search_steps"] = 0
                     st.session_state["anim_running"] = True
+                    
+                    # CRITICAL: Reset successful_points for the new configuration
+                    # so each config generates its own unique set of points
+                    st.session_state["anim_successful_points"] = []
 
                     all_pts_reset = all_pts_flat.copy()
                     all_indices_reset = get_movable_indices()  # Only movable points
@@ -4030,8 +4151,6 @@ def render_square_matplotlib_figure(
     dpi: int = 160
 ) -> Figure:
     """Create a square Matplotlib figure and call draw_fn(ax) inside it."""
-    # DEBUG: Print figure parameters
-    print(f"[DEBUG RENDER] xlim={xlim}, ylim={ylim}, size_inches={size_inches}, dpi={dpi}")
     fig = Figure(figsize=(size_inches, size_inches), dpi=dpi)
     _ = FigureCanvas(fig)
     ax = fig.add_subplot(111)
@@ -4040,10 +4159,6 @@ def render_square_matplotlib_figure(
     # Use constrained_layout or fixed padding instead of tight_layout
     # to prevent layout changes based on content
     fig.subplots_adjust(left=0.12, right=0.95, top=0.92, bottom=0.12)
-    # DEBUG: Print actual axes limits after drawing
-    actual_xlim = ax.get_xlim()
-    actual_ylim = ax.get_ylim()
-    print(f"[DEBUG RENDER] After draw: actual_xlim={actual_xlim}, actual_ylim={actual_ylim}")
     return fig
 
 BLUE = "C0"
@@ -4067,7 +4182,7 @@ def annotate_points(
     """Draw points plus labels k_t or l_t with small offsets."""
     offsets = [(3, 3), (3, -8), (-8, 3)]
     for i, ((x, y), tval) in enumerate(zip(pts, ts)):
-        ax.scatter([x], [y], s=25, zorder=3, color=color)  # type: ignore
+        ax.scatter([x], [y], s=25, zorder=10, color=color, marker='o')  # Same size as right plot
         off = offsets[i % len(offsets)]
         try:
             tnum = float(tval)  # type: ignore[arg-type]
@@ -4089,6 +4204,12 @@ def annotate_points(
 
 def draw_original(ax: matplotlib.axes.Axes) -> None:
     """Draw all object curves in the left panel, including external reference points."""
+    # DEBUG: Check what's being drawn
+    print(f"[DRAW_ORIGINAL] all_points_plot.keys()={list(all_points_plot.keys())}")
+    for o_id in sorted(all_points_plot.keys()):
+        pts = all_points_plot[o_id]
+        print(f"[DRAW_ORIGINAL] o_id={o_id}, shape={pts.shape}, first_pt={pts[0] if pts.shape[0] > 0 else 'EMPTY'}")
+    
     # Draw all objects uniformly
     for i, o_id in enumerate(sorted(all_points_plot.keys())):
         pts = all_points_plot[o_id]
@@ -4682,15 +4803,8 @@ with col2:
     st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
     _latex_d1 = make_d1_order_latex_generated()
     _latex_d2 = make_d2_order_latex_generated()
-    # DEBUG: Print LaTeX lengths
-    print(f"[DEBUG LATEX] d1_len={len(_latex_d1)}, d2_len={len(_latex_d2)}")
-    print(f"[DEBUG LATEX] d1={_latex_d1[:100]}...")
     st.latex(_latex_d1)
     st.latex(_latex_d2)
-    # DEBUG: Print XLIM, YLIM, and anim_distance to check if they change
-    _debug_distance = st.session_state.get("anim_distance", "NOT SET")
-    _debug_binary = st.session_state.get("anim_binary_mode", False)
-    print(f"[DEBUG DRAW] XLIM={XLIM}, YLIM={YLIM}, anim_distance={_debug_distance}, binary_mode={_debug_binary}")
     # Use st.image instead of st.pyplot for consistent sizing
     st.image(_buf_right, width="stretch")
 
@@ -6457,4 +6571,258 @@ if iter_log:
     )
 else:
     st.info("No final points placed with the binary strategy yet.")
-    right_d2 = make_d2_order_latex_generated
+
+# ============= Angles Between Consecutive Timestamps Graph ============
+st.markdown("<hr />", unsafe_allow_html=True)
+st.markdown("<h3 style='margin-top:1.5rem;'>Angles Between Consecutive Timestamps</h3>", unsafe_allow_html=True)
+
+def compute_vector_angle(p1: np.ndarray, p2: np.ndarray) -> float:
+    """
+    Compute the angle (in degrees) of the vector from p1 to p2.
+    Angle is measured from the positive x-axis, counterclockwise.
+    Returns angle in degrees [-180, 180].
+    """
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    return np.degrees(np.arctan2(dy, dx))
+
+def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict: dict[int, np.ndarray], timestamps: list) -> dict[str, dict[str, float]]:
+    """
+    Build angle series data from points and timestamps.
+    Only calculates angles between consecutive timestamps for the SAME object.
+    e.g., k0→k1, k1→k2, l0→l1, l1→l2 (NOT k0→l0 or k0→k2)
+    Returns dict of series_name -> {timestamp_label: angle}
+    """
+    angle_series: dict[str, dict[str, float]] = {}
+    
+    # Only angles between consecutive timestamps for each object
+    for i, o_id in enumerate(sorted(points_dict.keys())):
+        pts = points_dict[o_id]
+        ts = vals_dict[o_id]
+        label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
+        
+        for idx in range(len(pts) - 1):
+            t_from = ts[idx]
+            t_to = ts[idx + 1]
+            angle = compute_vector_angle(pts[idx], pts[idx + 1])
+            series_name = f"{label}{int(t_from)}→{label}{int(t_to)}"
+            ts_label = f"t={int(t_from)}"
+            if series_name not in angle_series:
+                angle_series[series_name] = {}
+            angle_series[series_name][ts_label] = angle
+    
+    return angle_series
+
+# Check if we have generated configurations to display
+# Use the same data source as the Plotly comparison chart (anim_all_configs)
+angles_all_configs_list: list = st.session_state.get("anim_all_configs", [])
+angles_successful_points: list = st.session_state.get("anim_successful_points", [])
+has_generated_data = len(angles_all_configs_list) > 0 or len(angles_successful_points) > 0
+
+if has_generated_data:
+    # Get all timestamps
+    all_timestamps = sorted(selected_ts_window)
+    
+    # Build angle data for ORIGINAL configuration
+    original_angle_series = build_angle_series_from_points(all_points_plot, all_vals_plot, all_timestamps)
+    
+    # Build angle data for ALL configurations (1 to max_config)
+    generated_angle_series_all: dict[int, dict[str, dict[str, float]]] = {}
+    
+    # First, collect all generated points per config
+    all_generated_pts_per_config: dict[int, dict[tuple[int, int], np.ndarray]] = {}  # config_num -> {(obj_id, local_idx) -> point}
+    
+    # From stored configs
+    for config_data in angles_all_configs_list:
+        config_num = config_data.get("config_num", 1)
+        if config_num not in all_generated_pts_per_config:
+            all_generated_pts_per_config[config_num] = {}
+        # Note: data is stored as "points" not "successful_points"
+        points_list = config_data.get("points", config_data.get("successful_points", []))
+        for sp in points_list:
+            orig_idx = sp.get("original_parent_idx", sp.get("parent_idx", 0))
+            obj_id, local_idx, _ = get_object_info_for_flat_idx(orig_idx)
+            if obj_id != -1:
+                all_generated_pts_per_config[config_num][(obj_id, local_idx)] = np.array(sp["point"])
+    
+    # From current animation state (if not yet in all_configs)
+    current_config_num = st.session_state.get("anim_current_config", 1)
+    if current_config_num not in all_generated_pts_per_config:
+        all_generated_pts_per_config[current_config_num] = {}
+    for sp in angles_successful_points:
+        orig_idx = sp.get("original_parent_idx", sp.get("parent_idx", 0))
+        obj_id, local_idx, _ = get_object_info_for_flat_idx(orig_idx)
+        if obj_id != -1:
+            all_generated_pts_per_config[current_config_num][(obj_id, local_idx)] = np.array(sp["point"])
+    
+    # Get the maximum config number to ensure we have all configs from 1 to max
+    max_config_num = max(all_generated_pts_per_config.keys()) if all_generated_pts_per_config else 1
+    
+    # Build angle series for each config from 1 to max_config_num
+    for config_num in range(1, max_config_num + 1):
+        # Build generated points for this config
+        gen_points_dict: dict[int, np.ndarray] = {}
+        gen_vals_dict: dict[int, np.ndarray] = {}
+        
+        # Start with original points
+        for o_id in all_points_plot.keys():
+            gen_points_dict[o_id] = all_points_plot[o_id].copy()
+            gen_vals_dict[o_id] = all_vals_plot[o_id].copy()
+        
+        # Apply generated points for this config (if any)
+        if config_num in all_generated_pts_per_config:
+            for (obj_id, local_idx), gen_pt in all_generated_pts_per_config[config_num].items():
+                if obj_id in gen_points_dict:
+                    gen_points_dict[obj_id][local_idx] = gen_pt
+        
+        # Calculate angles for this config
+        if gen_points_dict:
+            generated_angle_series_all[config_num] = build_angle_series_from_points(
+                gen_points_dict, gen_vals_dict, all_timestamps
+            )
+    
+    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360°)
+    # Each line = one vector pair (e.g., k0→k1), showing its angle across all configurations
+    fig_angles = go.Figure()
+    
+    colors_plotly = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+                     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+    
+    # Get all unique vector pairs from the original angle series
+    # Each series_name is like "k0→k1" or "k0→l0"
+    all_vector_pairs = sorted(original_angle_series.keys())
+    
+    # Get all config numbers and sort them (starting from 1)
+    all_config_nums = sorted(generated_angle_series_all.keys())
+    
+    # Store stats for each vector pair
+    vector_pair_stats: dict[str, dict[str, float]] = {}
+    
+    # For each vector pair, collect angles across all configurations
+    for idx, vector_pair in enumerate(all_vector_pairs):
+        x_vals = []  # Config numbers (1, 2, 3, ...)
+        y_vals = []  # Angles for this vector pair (0-360°)
+        
+        # Get angle from each generated configuration
+        for config_num in all_config_nums:
+            if config_num in generated_angle_series_all:
+                gen_series = generated_angle_series_all[config_num]
+                if vector_pair in gen_series:
+                    # Get the first (and should be only) angle value for this vector pair
+                    angles_dict = gen_series[vector_pair]
+                    if angles_dict:
+                        # Take the first angle value (there should be one per vector pair)
+                        angle_val = list(angles_dict.values())[0]
+                        # Convert from -180/180 to 0/360 range
+                        if angle_val < 0:
+                            angle_val = angle_val + 360
+                        # Convert to 0-360 range first, then take remainder of 90
+                        angle_mod90 = angle_val % 90
+                        x_vals.append(config_num)
+                        y_vals.append(angle_mod90)
+        
+        # Calculate stats for this vector pair
+        if len(y_vals) >= 1:
+            avg_angle = np.mean(y_vals)
+            std_angle = np.std(y_vals) if len(y_vals) > 1 else 0.0
+            vector_pair_stats[vector_pair] = {
+                "avg": avg_angle,
+                "std": std_angle,
+                "count": len(y_vals)
+            }
+        
+        # Only add trace if we have data
+        if len(x_vals) >= 1:
+            # Show k0→k1 by default, hide others (click legend to show)
+            is_visible = (vector_pair == "k0→k1")
+            
+            fig_angles.add_trace(go.Scatter(
+                name=f"{vector_pair} (avg={avg_angle:.1f}°, σ={std_angle:.1f}°)",
+                x=x_vals,
+                y=y_vals,
+                mode='lines+markers',
+                line=dict(color=colors_plotly[idx % len(colors_plotly)], width=2),
+                marker=dict(size=8),
+                visible=True if is_visible else "legendonly"  # Hide by default, show in legend
+            ))
+    
+    # Determine x-axis range
+    min_config = min(all_config_nums) if all_config_nums else 1
+    max_config = max(all_config_nums) if all_config_nums else 1
+    
+    # Get the search strategy (exponential, linear, binary)
+    search_strategy = st.session_state.get("cfg_strategy", "exponential")
+    
+    # Get the PDP variants (fundamental, rough, buffer, etc.)
+    pdp_variants_list = st.session_state.get("anim_pdp_variants_list", [])
+    if not pdp_variants_list:
+        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    pdp_variants_str = ", ".join(pdp_variants_list) if pdp_variants_list else "fundamental"
+    
+    fig_angles.update_layout(
+        title=f"Vector Angles (mod 90°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
+        xaxis_title="Configuration",
+        yaxis_title="Angle mod 90° (degrees)",
+        height=800,  # Twice as high
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            itemclick="toggle",  # Click to toggle visibility
+            itemdoubleclick="toggleothers"  # Double-click to isolate
+        ),
+        xaxis=dict(
+            range=[0, max_config + 1],
+            tickmode='linear',
+            tick0=0,
+            dtick=1 if max_config <= 20 else 2,
+            fixedrange=True  # Disable zoom on x-axis
+        ),
+        yaxis=dict(
+            range=[0, 90],
+            tickvals=[0, 15, 30, 45, 60, 75, 90],
+            gridcolor='lightgray',
+            fixedrange=True  # Disable zoom on y-axis
+        ),
+        dragmode=False  # Disable all drag interactions (pan, zoom)
+    )
+    
+    # Display without zoom/pan controls
+    st.plotly_chart(fig_angles, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
+    
+    # Display statistics summary
+    st.subheader("📈 Angle Statistics per Vector Pair")
+    stats_data = []
+    for vp, stats in sorted(vector_pair_stats.items()):
+        stats_data.append({
+            "Vector Pair": vp,
+            "Average (°)": f"{stats['avg']:.2f}",
+            "Std Dev (°)": f"{stats['std']:.2f}",
+            "Count": int(stats['count'])
+        })
+    if stats_data:
+        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+    
+    # Show angle values in expandable table
+    with st.expander("📊 Angle Values (degrees)"):
+        angle_table_data = []
+        # Generated angles per config
+        for config_num in sorted(generated_angle_series_all.keys()):
+            gen_angle_series = generated_angle_series_all[config_num]
+            for vector_pair in sorted(gen_angle_series.keys()):
+                angles_dict = gen_angle_series[vector_pair]
+                for ts_label, angle in angles_dict.items():
+                    angle_mod90 = angle % 90
+                    angle_table_data.append({
+                        "Config": config_num,
+                        "Vector": vector_pair,
+                        "Angle (°)": f"{angle:.2f}",
+                        "Mod 90°": f"{angle_mod90:.2f}"
+                    })
+        if angle_table_data:
+            st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
+else:
+    st.info("Generate configurations to see angle comparisons between original and generated point configurations.")
