@@ -1861,14 +1861,19 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
     
-    # Get coordinate bounds
-    coord_min_x = float(st.session_state.get("coord_min_x", -50.0))
-    coord_max_x = float(st.session_state.get("coord_max_x", 150.0))
-    coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
-    coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
+    # Get visualization bounds (XLIM, YLIM) to keep points within the graph
+    try:
+        coord_min_x, coord_max_x = XLIM
+        coord_min_y, coord_max_y = YLIM
+    except NameError:
+        # Fallback to session state bounds if XLIM/YLIM not yet computed
+        coord_min_x = float(st.session_state.get("coord_min_x", -50.0))
+        coord_max_x = float(st.session_state.get("coord_max_x", 150.0))
+        coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
+        coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
     
     def point_in_bounds(x: float, y: float) -> bool:
-        """Check if a point is within coordinate bounds."""
+        """Check if a point is within visualization bounds."""
         return coord_min_x <= x <= coord_max_x and coord_min_y <= y <= coord_max_y
     
     def get_parent_point(idx: int) -> np.ndarray:
@@ -1971,16 +1976,25 @@ def scale_movement_vectors(vectors: dict[int, tuple[float, float]], scale: float
 def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[float, float]]) -> dict[int, np.ndarray]:
     """
     Apply movement vectors to base points and return new positions.
-    Returns dict mapping flat_idx -> new_position (clipped to bounds)
+    Returns dict mapping flat_idx -> new_position (clipped to visualization bounds)
     """
+    # Use visualization bounds (XLIM, YLIM) to keep points within the graph
+    try:
+        x_min, x_max = XLIM
+        y_min, y_max = YLIM
+    except NameError:
+        # Fallback to coordinate bounds if XLIM/YLIM not yet computed
+        x_min, x_max = COORD_MIN_X, COORD_MAX_X
+        y_min, y_max = COORD_MIN_Y, COORD_MAX_Y
+    
     new_positions = {}
     for idx, (dx, dy) in vectors.items():
         if 0 <= idx < len(base_points):
             new_x = base_points[idx, 0] + dx
             new_y = base_points[idx, 1] + dy
-            # Clip to coordinate bounds
-            new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
-            new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+            # Clip to visualization bounds to keep points within the graph
+            new_x = np.clip(new_x, x_min, x_max)
+            new_y = np.clip(new_y, y_min, y_max)
             new_positions[idx] = np.array([new_x, new_y])
     return new_positions
 
@@ -4572,11 +4586,15 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             rough_color = 'green'
             rough_alpha = 0.2
             gx, gy = gen_pt[0], gen_pt[1]
+            # Use minimum visible size when one dimension is 0 (thin line like axis thickness)
+            min_visible_size = 0.15  # Very thin, similar to axis line thickness
+            draw_rough_x = rough_x_val if rough_x_val > 0 else min_visible_size
+            draw_rough_y = rough_y_val if rough_y_val > 0 else min_visible_size
             # Rectangle from (gx - rough_x, gy - rough_y) to (gx + rough_x, gy + rough_y)
             rect = matplotlib.patches.Rectangle(
-                (gx - rough_x_val, gy - rough_y_val),
-                2 * rough_x_val if rough_x_val > 0 else 0.5,  # width
-                2 * rough_y_val if rough_y_val > 0 else 0.5,  # height
+                (gx - draw_rough_x, gy - draw_rough_y),
+                2 * draw_rough_x,  # width
+                2 * draw_rough_y,  # height
                 edgecolor=rough_color,
                 facecolor=rough_color,
                 alpha=rough_alpha,

@@ -944,15 +944,36 @@ with sc6:
         help="How many independent configurations to create when clicking 'Generate configurations'. Each configuration is a complete new set of generated points (all k and l points) that preserves the original PDP pattern. Use this for batch generation without animation."
     )
 with sc7:
-    # Match threshold selection - moved here for compactness
-    match_threshold = st.radio(
+    # Match threshold selection - two modes: percentage or absolute
+    threshold_mode = st.radio(
         "Match threshold",
-        options=["100%", "90%", "75%"],
+        options=["Percentage", "Max mismatches"],
         index=0,
         horizontal=True,
-        key="cfg_match_threshold",
-        help="100%: All pairwise orderings must match (strict). 90%: Allow up to 10% mismatches. 75%: Allow up to 25% mismatches (permissive)."
+        key="cfg_threshold_mode",
+        help="Percentage: require X% match. Max mismatches: allow up to N differing cells."
     )
+    
+    if threshold_mode == "Percentage":
+        threshold_pct = st.slider(
+            "Match %",
+            min_value=25,
+            max_value=100,
+            value=100,
+            step=5,
+            key="cfg_threshold_pct",
+            help="Minimum percentage of cells that must match (100% = strict, lower = permissive)"
+        )
+    else:
+        threshold_abs = st.number_input(
+            "Max mismatches",
+            min_value=0,
+            max_value=100,
+            value=0,
+            step=1,
+            key="cfg_threshold_abs",
+            help="Maximum number of differing cells allowed between original and generated heatmaps (0 = strict)"
+        )
 
 # Advanced Settings in collapsible expander
 with st.expander("⚙️ Advanced Point Selection", expanded=False):
@@ -1596,7 +1617,9 @@ _prev_cfg_strategy = st.session_state.get("_prev_cfg_strategy", None)
 _prev_cfg_iterations = st.session_state.get("_prev_cfg_iterations", None)
 _prev_cfg_num_configs = st.session_state.get("_prev_cfg_num_configs", None)
 _prev_cfg_pdp_variants = st.session_state.get("_prev_cfg_pdp_variants", None)
-_prev_cfg_match_threshold = st.session_state.get("_prev_cfg_match_threshold", None)
+_prev_cfg_threshold_mode = st.session_state.get("_prev_cfg_threshold_mode", None)
+_prev_cfg_threshold_pct = st.session_state.get("_prev_cfg_threshold_pct", None)
+_prev_cfg_threshold_abs = st.session_state.get("_prev_cfg_threshold_abs", None)
 _prev_cfg_point_selection = st.session_state.get("_prev_cfg_point_selection", None)
 _prev_cfg_movement_direction = st.session_state.get("_prev_cfg_movement_direction", None)
 
@@ -1608,7 +1631,9 @@ _curr_cfg_strategy = st.session_state.get("cfg_strategy", None)
 _curr_cfg_iterations = st.session_state.get("cfg_iterations", None)
 _curr_cfg_num_configs = st.session_state.get("cfg_num_configs", None)
 _curr_cfg_pdp_variants = st.session_state.get("cfg_pdp_variants", None)
-_curr_cfg_match_threshold = st.session_state.get("cfg_match_threshold", None)
+_curr_cfg_threshold_mode = st.session_state.get("cfg_threshold_mode", None)
+_curr_cfg_threshold_pct = st.session_state.get("cfg_threshold_pct", None)
+_curr_cfg_threshold_abs = st.session_state.get("cfg_threshold_abs", None)
 _curr_cfg_point_selection = st.session_state.get("cfg_point_selection", None)
 _curr_cfg_movement_direction = st.session_state.get("cfg_movement_direction", None)
 
@@ -1633,7 +1658,9 @@ _config_changed = (
         _prev_cfg_iterations != _curr_cfg_iterations or
         _prev_cfg_num_configs != _curr_cfg_num_configs or
         _prev_cfg_pdp_variants != _curr_cfg_pdp_variants or
-        _prev_cfg_match_threshold != _curr_cfg_match_threshold or
+        _prev_cfg_threshold_mode != _curr_cfg_threshold_mode or
+        _prev_cfg_threshold_pct != _curr_cfg_threshold_pct or
+        _prev_cfg_threshold_abs != _curr_cfg_threshold_abs or
         _prev_cfg_point_selection != _curr_cfg_point_selection or
         _prev_cfg_movement_direction != _curr_cfg_movement_direction
     )
@@ -1648,7 +1675,9 @@ st.session_state["_prev_cfg_strategy"] = _curr_cfg_strategy
 st.session_state["_prev_cfg_iterations"] = _curr_cfg_iterations
 st.session_state["_prev_cfg_num_configs"] = _curr_cfg_num_configs
 st.session_state["_prev_cfg_pdp_variants"] = _curr_cfg_pdp_variants
-st.session_state["_prev_cfg_match_threshold"] = _curr_cfg_match_threshold
+st.session_state["_prev_cfg_threshold_mode"] = _curr_cfg_threshold_mode
+st.session_state["_prev_cfg_threshold_pct"] = _curr_cfg_threshold_pct
+st.session_state["_prev_cfg_threshold_abs"] = _curr_cfg_threshold_abs
 st.session_state["_prev_cfg_point_selection"] = _curr_cfg_point_selection
 st.session_state["_prev_cfg_movement_direction"] = _curr_cfg_movement_direction
 
@@ -1939,14 +1968,20 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
     
-    # Get coordinate bounds
-    coord_min_x = float(st.session_state.get("coord_min_x", -50.0))
-    coord_max_x = float(st.session_state.get("coord_max_x", 150.0))
-    coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
-    coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
+    # Get visualization bounds (XLIM, YLIM) to keep points within the graph
+    # These are more restrictive than coordinate bounds and ensure points stay visible
+    try:
+        coord_min_x, coord_max_x = XLIM
+        coord_min_y, coord_max_y = YLIM
+    except NameError:
+        # Fallback to session state bounds if XLIM/YLIM not yet computed
+        coord_min_x = float(st.session_state.get("coord_min_x", -50.0))
+        coord_max_x = float(st.session_state.get("coord_max_x", 150.0))
+        coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
+        coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
     
     def point_in_bounds(x: float, y: float) -> bool:
-        """Check if a point is within coordinate bounds."""
+        """Check if a point is within visualization bounds."""
         return coord_min_x <= x <= coord_max_x and coord_min_y <= y <= coord_max_y
     
     def get_parent_point(idx: int) -> np.ndarray:
@@ -2049,16 +2084,26 @@ def scale_movement_vectors(vectors: dict[int, tuple[float, float]], scale: float
 def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[float, float]]) -> dict[int, np.ndarray]:
     """
     Apply movement vectors to base points and return new positions.
-    Returns dict mapping flat_idx -> new_position (clipped to bounds)
+    Returns dict mapping flat_idx -> new_position (clipped to visualization bounds)
     """
+    # Use visualization bounds (XLIM, YLIM) to keep points within the graph
+    # These are computed from the actual data and ensure points stay visible
+    try:
+        x_min, x_max = XLIM
+        y_min, y_max = YLIM
+    except NameError:
+        # Fallback to coordinate bounds if XLIM/YLIM not yet computed
+        x_min, x_max = COORD_MIN_X, COORD_MAX_X
+        y_min, y_max = COORD_MIN_Y, COORD_MAX_Y
+    
     new_positions = {}
     for idx, (dx, dy) in vectors.items():
         if 0 <= idx < len(base_points):
             new_x = base_points[idx, 0] + dx
             new_y = base_points[idx, 1] + dy
-            # Clip to coordinate bounds
-            new_x = np.clip(new_x, COORD_MIN_X, COORD_MAX_X)
-            new_y = np.clip(new_y, COORD_MIN_Y, COORD_MAX_Y)
+            # Clip to visualization bounds to keep points within the graph
+            new_x = np.clip(new_x, x_min, x_max)
+            new_y = np.clip(new_y, y_min, y_max)
             new_positions[idx] = np.array([new_x, new_y])
     return new_positions
 
@@ -2611,6 +2656,20 @@ def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.n
         original_d2_matrix, generated_d2_matrix, 1.0
     )
     
+    # Count mismatches (cells where matrices differ)
+    # Only count upper triangle (excluding diagonal) to avoid double counting
+    n = original_d1_matrix.shape[0]
+    d1_mismatches = 0
+    d2_mismatches = 0
+    total_cells = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            total_cells += 1
+            if original_d1_matrix[i, j] != generated_d1_matrix[i, j]:
+                d1_mismatches += 1
+            if original_d2_matrix[i, j] != generated_d2_matrix[i, j]:
+                d2_mismatches += 1
+    
     # For threshold < 1.0 (relaxed matching), use AVERAGE of d1 and d2 percentages
     # For threshold == 1.0 (strict matching), both must be exactly 100%
     if match_threshold < 1.0:
@@ -2627,6 +2686,10 @@ def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.n
         "d1_percentage": d1_percentage,
         "d2_percentage": d2_percentage,
         "avg_percentage": (d1_percentage + d2_percentage) / 2.0,
+        "d1_mismatches": d1_mismatches,
+        "d2_mismatches": d2_mismatches,
+        "total_mismatches": d1_mismatches + d2_mismatches,
+        "total_cells": total_cells,
         "original_d1_matrix": original_d1_matrix,
         "original_d2_matrix": original_d2_matrix,
         "generated_d1_matrix": generated_d1_matrix,
@@ -2712,8 +2775,7 @@ def update_order_match_flags() -> None:
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
     # Get match threshold from session_state
-    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
-    match_threshold = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    match_threshold = get_match_threshold()
     
     # Use detailed PDP check to get matrices for heat maps
     detailed_results = check_pdp_match_detailed(
@@ -2732,10 +2794,53 @@ def update_order_match_flags() -> None:
     st.session_state["pdp_detailed_results"] = detailed_results
 
 # ============= Helper: Get match threshold from session_state ============
+def get_threshold_settings() -> tuple[str, float, int]:
+    """Get the threshold settings from session_state.
+    
+    Returns:
+        tuple of (mode, percentage, max_mismatches)
+        - mode: 'Percentage' or 'Max mismatches'
+        - percentage: float 0.0-1.0 (only used if mode='Percentage')
+        - max_mismatches: int (only used if mode='Max mismatches')
+    """
+    mode = st.session_state.get("cfg_threshold_mode", "Percentage")
+    pct = st.session_state.get("cfg_threshold_pct", 100) / 100.0
+    abs_val = st.session_state.get("cfg_threshold_abs", 0)
+    return mode, pct, abs_val
+
 def get_match_threshold() -> float:
-    """Get the match threshold from session_state (0.75 for 75%, 0.9 for 90%, 1.0 for 100%)."""
-    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
-    return 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    """Get the match threshold as a percentage (for backward compatibility)."""
+    mode, pct, _ = get_threshold_settings()
+    if mode == "Percentage":
+        return pct
+    else:
+        # For absolute mode, return 0.0 to indicate "use absolute matching"
+        return 0.0
+
+def check_threshold_match(d1_pct: float, d2_pct: float, total_cells: int, d1_mismatches: int = 0, d2_mismatches: int = 0) -> tuple[bool, bool]:
+    """Check if the match meets the threshold criteria.
+    
+    Args:
+        d1_pct: d1 match percentage (0.0-1.0)
+        d2_pct: d2 match percentage (0.0-1.0)
+        total_cells: total number of comparable cells in the matrix
+        d1_mismatches: number of mismatching cells in d1
+        d2_mismatches: number of mismatching cells in d2
+    
+    Returns:
+        tuple of (d1_match, d2_match)
+    """
+    mode, pct_threshold, max_mismatches = get_threshold_settings()
+    
+    if mode == "Percentage":
+        avg_pct = (d1_pct + d2_pct) / 2.0
+        match = avg_pct >= pct_threshold
+        return match, match
+    else:
+        # Absolute mode: check if total mismatches <= max_mismatches
+        total_mismatches = d1_mismatches + d2_mismatches
+        match = total_mismatches <= max_mismatches
+        return match, match
 
 # ============= Helper: Binary search iteration ============
 def run_binary_iteration(
@@ -4693,11 +4798,15 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             rough_color = 'green'
             rough_alpha = 0.2
             gx, gy = gen_pt[0], gen_pt[1]
+            # Use minimum visible size when one dimension is 0 (thin line like axis thickness)
+            min_visible_size = 0.15  # Very thin, similar to axis line thickness
+            draw_rough_x = rough_x_val if rough_x_val > 0 else min_visible_size
+            draw_rough_y = rough_y_val if rough_y_val > 0 else min_visible_size
             # Rectangle from (gx - rough_x, gy - rough_y) to (gx + rough_x, gy + rough_y)
             rect = matplotlib.patches.Rectangle(
-                (gx - rough_x_val, gy - rough_y_val),
-                2 * rough_x_val if rough_x_val > 0 else 0.5,  # width
-                2 * rough_y_val if rough_y_val > 0 else 0.5,  # height
+                (gx - draw_rough_x, gy - draw_rough_y),
+                2 * draw_rough_x,  # width
+                2 * draw_rough_y,  # height
                 edgecolor=rough_color,
                 facecolor=rough_color,
                 alpha=rough_alpha,
@@ -4926,8 +5035,7 @@ if n_total_points > 0 and should_update_heatmaps:
     buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
-    match_threshold = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
+    match_threshold = get_match_threshold()
     
     # Build generated configuration INCLUDING current candidate point
     generated_points = all_pts_flat.copy()
@@ -4988,17 +5096,29 @@ if pdp_detailed is not None:
     d1_match = pdp_detailed.get("d1_match", False)
     d2_match = pdp_detailed.get("d2_match", False)
     
-    # Display match percentages with average
-    threshold_str = st.session_state.get("cfg_match_threshold", "100%")
-    threshold_val = 0.75 if threshold_str == "75%" else (0.90 if threshold_str == "90%" else 1.0)
-    avg_match = avg_pct >= (threshold_val * 100)
+    # Get threshold settings for display
+    mode, pct_threshold, max_mismatches = get_threshold_settings()
+    d1_mismatches = pdp_detailed.get("d1_mismatches", 0)
+    d2_mismatches = pdp_detailed.get("d2_mismatches", 0)
+    total_cells = pdp_detailed.get("total_cells", 0)
     
-    if threshold_val < 1.0:
-        # Show average for relaxed thresholds
-        st.markdown(f"**Threshold:** {threshold_str} | **d₁:** {d1_pct:.1f}% | **d₂:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'✅' if avg_match else '❌'}")
+    # Re-evaluate match based on new threshold settings
+    d1_match, d2_match = check_threshold_match(d1_pct/100, d2_pct/100, total_cells, d1_mismatches, d2_mismatches)
+    avg_match = d1_match and d2_match
+    
+    # Display match percentages with threshold info
+    if mode == "Percentage":
+        threshold_display = f"{int(pct_threshold * 100)}%"
+        if pct_threshold < 1.0:
+            # Show average for relaxed thresholds
+            st.markdown(f"**Threshold:** {threshold_display} | **d₁:** {d1_pct:.1f}% | **d₂:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'✅' if avg_match else '❌'}")
+        else:
+            # Show individual matches for strict threshold
+            st.markdown(f"**Threshold:** {threshold_display} | **d₁ Match:** {d1_pct:.1f}% {'✅' if d1_match else '❌'} | **d₂ Match:** {d2_pct:.1f}% {'✅' if d2_match else '❌'}")
     else:
-        # Show individual matches for strict threshold
-        st.markdown(f"**Threshold:** {threshold_str} | **d₁ Match:** {d1_pct:.1f}% {'✅' if d1_match else '❌'} | **d₂ Match:** {d2_pct:.1f}% {'✅' if d2_match else '❌'}")
+        # Max mismatches mode
+        threshold_display = f"≤{max_mismatches} mismatches"
+        st.markdown(f"**Threshold:** {threshold_display} | **d₁:** {d1_mismatches} mismatches {'✅' if d1_match else '❌'} | **d₂:** {d2_mismatches} mismatches {'✅' if d2_match else '❌'}")
     
     # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
     hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
@@ -5104,8 +5224,12 @@ if pdp_detailed is not None:
     gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")
     gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")
     
-    # Determine if we should highlight differences (when threshold < 100%)
-    highlight_diffs = threshold_val < 1.0
+    # Determine if we should highlight differences (when threshold < 100% or max_mismatches > 0)
+    if mode == "Percentage":
+        highlight_diffs = pct_threshold < 1.0
+    else:
+        # In absolute mode, always highlight differences since we're explicitly allowing mismatches
+        highlight_diffs = max_mismatches > 0
     
     with hm_col1:
         st.markdown("**Original d₁**")
