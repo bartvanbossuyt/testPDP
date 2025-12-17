@@ -5039,8 +5039,17 @@ if pdp_detailed is not None:
                     labels.append(f"{obj}{t}")
         return labels
     
-    def create_heatmap_figure(matrix: np.ndarray, title: str) -> Figure:
-        """Create a heat map figure for an inequality matrix."""
+    def create_heatmap_figure(matrix: np.ndarray, title: str, 
+                               comparison_matrix: np.ndarray = None,
+                               highlight_differences: bool = False) -> Figure:
+        """Create a heat map figure for an inequality matrix.
+        
+        Args:
+            matrix: The matrix to display
+            title: Title for the heatmap
+            comparison_matrix: Original matrix to compare against (for highlighting differences)
+            highlight_differences: If True and comparison_matrix provided, highlight differing cells
+        """
         fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
         n = matrix.shape[0]
         
@@ -5049,6 +5058,28 @@ if pdp_detailed is not None:
         
         # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
         im = ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
+        
+        # Highlight differences if requested - subtle style with transparent fill and thin black border
+        if highlight_differences and comparison_matrix is not None:
+            comparison_display = reorder_matrix(comparison_matrix)
+            # Color map for semi-transparent overlays (same colors but with alpha)
+            diff_colors = {
+                0: (0.0, 0.67, 0.0, 0.3),   # green with alpha
+                1: (1.0, 1.0, 0.0, 0.3),     # yellow with alpha
+                2: (1.0, 0.0, 0.0, 0.3),     # red with alpha
+            }
+            # Find cells where values differ
+            for i in range(n):
+                for j in range(n):
+                    if display_matrix[i, j] != comparison_display[i, j]:
+                        # Get the cell's color with transparency
+                        cell_val = int(display_matrix[i, j])
+                        fill_color = diff_colors.get(cell_val, (0.5, 0.5, 0.5, 0.3))
+                        # Draw a rectangle with transparent fill and thin black border
+                        rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+                                            fill=True, facecolor=fill_color,
+                                            edgecolor='black', linewidth=1.5)
+                        ax_hm.add_patch(rect)
         
         # Add axis labels only if 6 or fewer points
         point_labels = get_point_labels(n)
@@ -5073,6 +5104,9 @@ if pdp_detailed is not None:
     gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")
     gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")
     
+    # Determine if we should highlight differences (when threshold < 100%)
+    highlight_diffs = threshold_val < 1.0
+    
     with hm_col1:
         st.markdown("**Original d₁**")
         if orig_d1_matrix is not None:
@@ -5090,19 +5124,26 @@ if pdp_detailed is not None:
     with hm_col3:
         st.markdown("**Generated d₁**")
         if gen_d1_matrix is not None:
-            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d₁ (x)")
+            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d₁ (x)",
+                                           comparison_matrix=orig_d1_matrix,
+                                           highlight_differences=highlight_diffs)
             st.pyplot(fig_hm3)
             plt.close(fig_hm3)
     
     with hm_col4:
         st.markdown("**Generated d₂**")
         if gen_d2_matrix is not None:
-            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d₂ (y)")
+            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d₂ (y)",
+                                           comparison_matrix=orig_d2_matrix,
+                                           highlight_differences=highlight_diffs)
             st.pyplot(fig_hm4)
             plt.close(fig_hm4)
     
     # Legend
-    st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i")
+    if highlight_diffs:
+        st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i | ⬛ Border = differs from original")
+    else:
+        st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i")
     
 else:
     st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
