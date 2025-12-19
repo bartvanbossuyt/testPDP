@@ -684,17 +684,20 @@ if st.session_state.get("_pending_bounds_update", False):
 
 bounds_col1, bounds_col2, bounds_col3, bounds_col4 = st.columns([1, 1, 1, 1], gap="small")
 
-# Use cfg_coord_ widget keys as the source of truth (these are what widgets actually use)
-# Fall back to coord_ keys, then to auto-calculated values
-_coord_min_x_val = st.session_state.get("cfg_coord_min_x", st.session_state.get("coord_min_x", _auto_min_x))
-_coord_max_x_val = st.session_state.get("cfg_coord_max_x", st.session_state.get("coord_max_x", _auto_max_x))
-_coord_min_y_val = st.session_state.get("cfg_coord_min_y", st.session_state.get("coord_min_y", _auto_min_y))
-_coord_max_y_val = st.session_state.get("cfg_coord_max_y", st.session_state.get("coord_max_y", _auto_max_y))
+# Initialize session state for coordinate bounds if not already set
+# This avoids the Streamlit warning about setting both value and session state
+if "cfg_coord_min_x" not in st.session_state:
+    st.session_state["cfg_coord_min_x"] = st.session_state.get("coord_min_x", _auto_min_x)
+if "cfg_coord_max_x" not in st.session_state:
+    st.session_state["cfg_coord_max_x"] = st.session_state.get("coord_max_x", _auto_max_x)
+if "cfg_coord_min_y" not in st.session_state:
+    st.session_state["cfg_coord_min_y"] = st.session_state.get("coord_min_y", _auto_min_y)
+if "cfg_coord_max_y" not in st.session_state:
+    st.session_state["cfg_coord_max_y"] = st.session_state.get("coord_max_y", _auto_max_y)
 
 with bounds_col1:
     coord_min_x = st.number_input(
         "Min X",
-        value=_coord_min_x_val,
         step=10.0,
         key="cfg_coord_min_x",
         help="Minimum X coordinate. Generated points cannot have x < this value."
@@ -702,7 +705,6 @@ with bounds_col1:
 with bounds_col2:
     coord_max_x = st.number_input(
         "Max X",
-        value=_coord_max_x_val,
         step=10.0,
         key="cfg_coord_max_x",
         help="Maximum X coordinate. Generated points cannot have x > this value."
@@ -710,7 +712,6 @@ with bounds_col2:
 with bounds_col3:
     coord_min_y = st.number_input(
         "Min Y",
-        value=_coord_min_y_val,
         step=10.0,
         key="cfg_coord_min_y",
         help="Minimum Y coordinate. Generated points cannot have y < this value."
@@ -718,7 +719,6 @@ with bounds_col3:
 with bounds_col4:
     coord_max_y = st.number_input(
         "Max Y",
-        value=_coord_max_y_val,
         step=10.0,
         key="cfg_coord_max_y",
         help="Maximum Y coordinate. Generated points cannot have y > this value."
@@ -1980,9 +1980,29 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
         coord_min_y = float(st.session_state.get("coord_min_y", -50.0))
         coord_max_y = float(st.session_state.get("coord_max_y", 150.0))
     
+    # Check if buffer variants are active and add extra margin for bounds checking
+    buffer_margin_x = 0.0
+    buffer_margin_y = 0.0
+    try:
+        pdp_variants = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        if any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants):
+            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", 25.0))
+            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", 10.0))
+            # For realistic variant, only x buffer is used
+            if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
+                buffer_margin_y = 0.0
+    except Exception:
+        pass
+    
+    # Adjust bounds to account for buffer transformation
+    check_min_x = coord_min_x + buffer_margin_x
+    check_max_x = coord_max_x - buffer_margin_x
+    check_min_y = coord_min_y + buffer_margin_y
+    check_max_y = coord_max_y - buffer_margin_y
+    
     def point_in_bounds(x: float, y: float) -> bool:
-        """Check if a point is within visualization bounds."""
-        return coord_min_x <= x <= coord_max_x and coord_min_y <= y <= coord_max_y
+        """Check if a point is within visualization bounds (accounting for buffer margin)."""
+        return check_min_x <= x <= check_max_x and check_min_y <= y <= check_max_y
     
     def get_parent_point(idx: int) -> np.ndarray:
         """Get the current parent point position for a given index."""
@@ -2085,6 +2105,9 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
     """
     Apply movement vectors to base points and return new positions.
     Returns dict mapping flat_idx -> new_position (clipped to visualization bounds)
+    
+    When buffer variants are active, clips positions with extra margin so that
+    buffer-transformed points (x ± buffer_x, y ± buffer_y) stay within bounds.
     """
     # Use visualization bounds (XLIM, YLIM) to keep points within the graph
     # These are computed from the actual data and ensure points stay visible
@@ -2096,14 +2119,34 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
         x_min, x_max = COORD_MIN_X, COORD_MAX_X
         y_min, y_max = COORD_MIN_Y, COORD_MAX_Y
     
+    # Check if buffer variants are active and add extra margin for clipping
+    buffer_margin_x = 0.0
+    buffer_margin_y = 0.0
+    try:
+        pdp_variants = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        if any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants):
+            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", 25.0))
+            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", 10.0))
+            # For realistic variant, only x buffer is used
+            if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
+                buffer_margin_y = 0.0
+    except Exception:
+        pass
+    
+    # Adjust clipping bounds to account for buffer transformation
+    clip_x_min = x_min + buffer_margin_x
+    clip_x_max = x_max - buffer_margin_x
+    clip_y_min = y_min + buffer_margin_y
+    clip_y_max = y_max - buffer_margin_y
+    
     new_positions = {}
     for idx, (dx, dy) in vectors.items():
         if 0 <= idx < len(base_points):
             new_x = base_points[idx, 0] + dx
             new_y = base_points[idx, 1] + dy
-            # Clip to visualization bounds to keep points within the graph
-            new_x = np.clip(new_x, x_min, x_max)
-            new_y = np.clip(new_y, y_min, y_max)
+            # Clip to visualization bounds (with buffer margin) to keep points within the graph
+            new_x = np.clip(new_x, clip_x_min, clip_x_max)
+            new_y = np.clip(new_y, clip_y_min, clip_y_max)
             new_positions[idx] = np.array([new_x, new_y])
     return new_positions
 
@@ -2208,7 +2251,10 @@ COORD_MAX_Y = float(st.session_state.get("coord_max_y", 150.0))
 # ============= Compute XLIM/YLIM from ACTUAL plotted data =============
 # This ensures the visualization always shows the actual data points, regardless of bounds settings
 def _compute_viz_bounds_from_data() -> tuple[tuple[float, float], tuple[float, float]]:
-    """Compute visualization bounds from the actual plotted data points."""
+    """Compute visualization bounds from the actual plotted data points.
+    
+    Adds a reasonable margin around the data points.
+    """
     # Gather all points from all objects
     all_pts_arrays = [pts for pts in all_points_plot.values() if pts.shape[0] > 0]
     
@@ -2228,7 +2274,7 @@ def _compute_viz_bounds_from_data() -> tuple[tuple[float, float], tuple[float, f
     data_min_y = float(np.min(all_pts[:, 1]))
     data_max_y = float(np.max(all_pts[:, 1]))
     
-    # Add 10% margin
+    # Add 10% margin (original behavior - no buffer margin at module load)
     data_range_x = data_max_x - data_min_x
     data_range_y = data_max_y - data_min_y
     
@@ -2506,6 +2552,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
                     rough_x: float = 0.0,
                     rough_y: float = 0.0,
                     match_threshold: float = 1.0,
+                    max_mismatches: int | None = None,
                     debug: bool = False) -> tuple[bool, bool]:
     """
     Check if generated configuration matches original using PDP inequality matrices.
@@ -2532,6 +2579,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
         rough_x: Roughness tolerance in x-direction (for rough/bufferrough variants)
         rough_y: Roughness tolerance in y-direction (for rough/bufferrough/realistic variants)
         match_threshold: Minimum match percentage required (0.0 to 1.0), default 1.0 = 100%
+        max_mismatches: If not None, use absolute mismatch mode instead of percentage
         debug: If True, print debug information
     
     Returns:
@@ -2570,7 +2618,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     if debug:
         n_orig = len(orig_pts)
         n_gen = len(gen_pts)
-        print(f"[DEBUG check_pdp_match] variant={pdp_variant}, points={n_orig}, roughness=({roughness_x}, {roughness_y}), threshold={match_threshold}")
+        print(f"[DEBUG check_pdp_match] variant={pdp_variant}, points={n_orig}, roughness=({roughness_x}, {roughness_y}), threshold={match_threshold}, max_mismatches={max_mismatches}")
     
     # Compute inequality matrices for both dimensions
     original_x_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
@@ -2583,13 +2631,30 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     _, d1_percentage = compare_inequality_matrices_with_threshold(original_x_matrix, generated_x_matrix, 1.0)
     _, d2_percentage = compare_inequality_matrices_with_threshold(original_y_matrix, generated_y_matrix, 1.0)
     
-    # For threshold < 1.0 (relaxed matching), use AVERAGE of d1 and d2 percentages
-    # For threshold == 1.0 (strict matching), both must be exactly 100%
-    if match_threshold < 1.0:
+    # Determine match based on mode
+    if max_mismatches is not None:
+        # Absolute mismatch mode: count mismatches and compare to threshold
+        n = original_x_matrix.shape[0]
+        d1_mismatches = 0
+        d2_mismatches = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                if original_x_matrix[i, j] != generated_x_matrix[i, j]:
+                    d1_mismatches += 1
+                if original_y_matrix[i, j] != generated_y_matrix[i, j]:
+                    d2_mismatches += 1
+        total_mismatches = d1_mismatches + d2_mismatches
+        d1_match = total_mismatches <= max_mismatches
+        d2_match = total_mismatches <= max_mismatches
+        if debug or pdp_variant in ["buffer", "rough", "bufferrough", "realistic"]:
+            print(f"[DEBUG {pdp_variant.upper()}] Mismatch count: d1={d1_mismatches}, d2={d2_mismatches}, total={total_mismatches}, max={max_mismatches}, match={d1_match}")
+    elif match_threshold < 1.0:
+        # Relaxed percentage matching: use AVERAGE of d1 and d2 percentages
         avg_percentage = (d1_percentage + d2_percentage) / 2.0
         d1_match = avg_percentage >= match_threshold
         d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
     else:
+        # Strict matching: both must be exactly 100%
         d1_match = d1_percentage >= match_threshold
         d2_match = d2_percentage >= match_threshold
     
@@ -2604,9 +2669,19 @@ def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.n
                               buffer_y: float = 10.0,
                               rough_x: float = 0.0,
                               rough_y: float = 0.0,
-                              match_threshold: float = 1.0) -> dict:
+                              match_threshold: float = 1.0,
+                              max_mismatches: int | None = None) -> dict:
     """
     Extended version of check_pdp_match that returns detailed results for heat map visualization.
+    
+    Args:
+        original_points: Original point positions
+        generated_points: Generated point positions
+        pdp_variant: PDP variant to use
+        buffer_x, buffer_y: Buffer distances
+        rough_x, rough_y: Roughness values
+        match_threshold: Percentage threshold (0.0-1.0)
+        max_mismatches: If not None, use absolute mismatch mode instead of percentage
     
     Returns:
         Dictionary with:
@@ -2670,13 +2745,19 @@ def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.n
             if original_d2_matrix[i, j] != generated_d2_matrix[i, j]:
                 d2_mismatches += 1
     
-    # For threshold < 1.0 (relaxed matching), use AVERAGE of d1 and d2 percentages
-    # For threshold == 1.0 (strict matching), both must be exactly 100%
-    if match_threshold < 1.0:
+    # Determine match based on mode
+    if max_mismatches is not None:
+        # Absolute mismatch mode: total mismatches must be <= max_mismatches
+        total_mismatch_count = d1_mismatches + d2_mismatches
+        d1_match = total_mismatch_count <= max_mismatches
+        d2_match = total_mismatch_count <= max_mismatches
+    elif match_threshold < 1.0:
+        # Relaxed percentage matching: use AVERAGE of d1 and d2 percentages
         avg_percentage = (d1_percentage + d2_percentage) / 2.0
         d1_match = avg_percentage >= match_threshold
         d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
     else:
+        # Strict matching: both must be exactly 100%
         d1_match = d1_percentage >= match_threshold
         d2_match = d2_percentage >= match_threshold
     
@@ -2775,7 +2856,9 @@ def update_order_match_flags() -> None:
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
     # Get match threshold from session_state
-    match_threshold = get_match_threshold()
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    match_threshold = pct_threshold if mode == "Percentage" else 1.0
+    max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
     
     # Use detailed PDP check to get matrices for heat maps
     detailed_results = check_pdp_match_detailed(
@@ -2786,7 +2869,8 @@ def update_order_match_flags() -> None:
         buffer_y=buffer_y,
         rough_x=rough_x,
         rough_y=rough_y,
-        match_threshold=match_threshold
+        match_threshold=match_threshold,
+        max_mismatches=max_mismatches_param
     )
     
     st.session_state["order_match_d1"] = detailed_results["d1_match"]
@@ -2814,8 +2898,22 @@ def get_match_threshold() -> float:
     if mode == "Percentage":
         return pct
     else:
-        # For absolute mode, return 0.0 to indicate "use absolute matching"
-        return 0.0
+        # For absolute mode, return 1.0 (strict) - use max_mismatches for actual checking
+        return 1.0
+
+def get_threshold_params() -> tuple[float, int | None]:
+    """Get both threshold parameters for check_pdp_match.
+    
+    Returns:
+        tuple of (match_threshold, max_mismatches)
+        - For percentage mode: (percentage, None)
+        - For absolute mode: (1.0, max_mismatches_value)
+    """
+    mode, pct, abs_val = get_threshold_settings()
+    if mode == "Percentage":
+        return pct, None
+    else:
+        return 1.0, abs_val
 
 def check_threshold_match(d1_pct: float, d2_pct: float, total_cells: int, d1_mismatches: int = 0, d2_mismatches: int = 0) -> tuple[bool, bool]:
     """Check if the match meets the threshold criteria.
@@ -2852,6 +2950,7 @@ def run_binary_iteration(
     rough_x: float,
     rough_y: float,
     match_threshold: float = 1.0,
+    max_mismatches: int | None = None,
     max_binary_steps: int = 7
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
@@ -2942,7 +3041,8 @@ def run_binary_iteration(
             buffer_y=buffer_y,
             rough_x=rough_x,
             rough_y=rough_y,
-            match_threshold=match_threshold
+            match_threshold=match_threshold,
+            max_mismatches=max_mismatches
         )
         
         # Record diagnostic row
@@ -2960,10 +3060,10 @@ def run_binary_iteration(
             had_full_match = True
             for idx in selected_indices:
                 ok_points[idx] = candidate_positions[idx].copy()
-            # Stop early if using a relaxed threshold (< 100%)
+            # Stop early if using a relaxed threshold (< 100%) or absolute mismatch mode
             # This ensures the algorithm stops at the first valid configuration
             # rather than continuing to search for a "better" match
-            if match_threshold < 1.0:
+            if match_threshold < 1.0 or max_mismatches is not None:
                 break
         else:
             # No match: halve delta (binary search narrowing)
@@ -3022,6 +3122,11 @@ def generate_binary_multipoint() -> None:
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
+    # Get threshold settings
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    match_threshold = pct_threshold if mode == "Percentage" else 1.0
+    max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
+    
     all_configs: list = []
     current_points = all_pts_flat.copy()
     
@@ -3054,7 +3159,8 @@ def generate_binary_multipoint() -> None:
                     buffer_y=buffer_y,
                     rough_x=rough_x,
                     rough_y=rough_y,
-                    match_threshold=get_match_threshold()
+                    match_threshold=match_threshold,
+                    max_mismatches=max_mismatches_param
                 )
             
             # Store this configuration
@@ -3156,6 +3262,8 @@ def run_multipoint_iteration(
         # Build config with candidate positions and check PDP
         test_config = build_current_config(candidate_positions)
         
+        # Get both threshold parameters
+        _thresh, _max_mm = get_threshold_params()
         same_d1, same_d2 = check_pdp_match(
             all_pts_flat,
             test_config,
@@ -3164,7 +3272,8 @@ def run_multipoint_iteration(
             buffer_y=buffer_y,
             rough_x=rough_x,
             rough_y=rough_y,
-            match_threshold=get_match_threshold()
+            match_threshold=_thresh,
+            max_mismatches=_max_mm
         )
         
         if same_d1 and same_d2:
@@ -3366,6 +3475,8 @@ def generate_exp() -> None:
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         
         # Use PDP inequality matrix comparison with selected variant
+        # Get both threshold parameters
+        _thresh, _max_mm = get_threshold_params()
         same_d1, same_d2 = check_pdp_match(
             all_pts_flat,
             generated_points,
@@ -3374,7 +3485,8 @@ def generate_exp() -> None:
             buffer_y=buffer_y,
             rough_x=rough_x,
             rough_y=rough_y,
-            match_threshold=get_match_threshold()
+            match_threshold=_thresh,
+            max_mismatches=_max_mm
         )
 
         completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
@@ -5071,6 +5183,10 @@ if n_total_points > 0 and should_update_heatmaps:
         if flat_idx in latest_generated:
             generated_points[flat_idx] = latest_generated[flat_idx]
     
+    # Get threshold settings to pass to detailed check
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
+    
     # Compute detailed results with the current configuration
     pdp_detailed = check_pdp_match_detailed(
         all_pts_flat,
@@ -5080,7 +5196,8 @@ if n_total_points > 0 and should_update_heatmaps:
         buffer_y=buffer_y,
         rough_x=rough_x,
         rough_y=rough_y,
-        match_threshold=match_threshold
+        match_threshold=match_threshold,
+        max_mismatches=max_mismatches_param
     )
     # Store for later use
     st.session_state["pdp_detailed_results"] = pdp_detailed
@@ -5444,6 +5561,8 @@ if _should_process_animation:
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
     # Use PDP inequality matrix comparison with selected variant
+    # Get both threshold parameters
+    _thresh, _max_mm = get_threshold_params()
     same_d1, same_d2 = check_pdp_match(
         all_pts_flat,
         generated_points_arr,
@@ -5452,7 +5571,8 @@ if _should_process_animation:
         buffer_y=buffer_y,
         rough_x=rough_x,
         rough_y=rough_y,
-        match_threshold=get_match_threshold()
+        match_threshold=_thresh,
+        max_mismatches=_max_mm
     )
 
     completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
@@ -5800,6 +5920,8 @@ if _should_process_animation:
                     return positions
                 
                 # Helper to check PDP match for a set of positions
+                # Get threshold parameters once outside the helper
+                _thresh_bin, _max_mm_bin = get_threshold_params()
                 def _check_match_for_positions(positions: dict[int, np.ndarray]) -> bool:
                     test_points = all_pts_flat.copy()
                     for idx, pt in positions.items():
@@ -5808,7 +5930,7 @@ if _should_process_animation:
                     match_d1, match_d2 = check_pdp_match(
                         all_pts_flat, test_points,
                         pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_bin, max_mismatches=_max_mm_bin
                     )
                     return match_d1 and match_d2
                 
@@ -6093,6 +6215,8 @@ if _should_process_animation:
                     return positions
                 
                 # Helper to check PDP match for a set of positions
+                # Get threshold parameters once outside the helper
+                _thresh_lin, _max_mm_lin = get_threshold_params()
                 def _check_linear_match(positions: dict[int, np.ndarray]) -> bool:
                     test_points = all_pts_flat.copy()
                     for idx, pt in positions.items():
@@ -6101,7 +6225,7 @@ if _should_process_animation:
                     match_d1, match_d2 = check_pdp_match(
                         all_pts_flat, test_points,
                         pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_lin, max_mismatches=_max_mm_lin
                     )
                     return match_d1 and match_d2
                 
@@ -6320,6 +6444,8 @@ if _should_process_animation:
             # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining exponential steps at once
             if _skip_wait_intervals:
                 # Helper to check PDP match for a set of positions
+                # Get threshold parameters once outside the helper
+                _thresh_exp, _max_mm_exp = get_threshold_params()
                 def _check_exp_match(positions: dict[int, np.ndarray]) -> bool:
                     test_points = all_pts_flat.copy()
                     for idx, pt in positions.items():
@@ -6328,7 +6454,7 @@ if _should_process_animation:
                     match_d1, match_d2 = check_pdp_match(
                         all_pts_flat, test_points,
                         pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=get_match_threshold()
+                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_exp, max_mismatches=_max_mm_exp
                     )
                     return match_d1 and match_d2
                 
