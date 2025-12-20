@@ -1008,6 +1008,41 @@ with st.expander("⚙️ Advanced Point Selection", expanded=False):
 • **Random directions**: Each point gets its own random angle and distance (independent movement)"""
         )
     
+    # Damping factor settings
+    st.markdown("**Damping Factor (per iteration)**")
+    damp_col1, damp_col2, damp_col3 = st.columns([1, 1, 1], gap="small")
+    with damp_col1:
+        use_damping = st.checkbox(
+            "Enable damping",
+            value=False,
+            key="cfg_use_damping",
+            help="When enabled, the final distance from parent to child point is multiplied by a random damping factor, making the child point closer to the parent."
+        )
+    with damp_col2:
+        damping_min = st.number_input(
+            "Min damping",
+            min_value=0.00,
+            max_value=1.00,
+            value=0.00,
+            step=0.05,
+            format="%.2f",
+            key="cfg_damping_min",
+            disabled=not use_damping,
+            help="Minimum value for the random damping factor (0.00 = point at parent, 1.00 = no damping)"
+        )
+    with damp_col3:
+        damping_max = st.number_input(
+            "Max damping",
+            min_value=0.00,
+            max_value=1.00,
+            value=1.00,
+            step=0.05,
+            format="%.2f",
+            key="cfg_damping_max",
+            disabled=not use_damping,
+            help="Maximum value for the random damping factor (0.00 = point at parent, 1.00 = no damping)"
+        )
+    
     # Show additional inputs based on selection mode
     if point_selection_mode == "Multiple random points":
         num_random_points = st.number_input(
@@ -2101,6 +2136,42 @@ def scale_movement_vectors(vectors: dict[int, tuple[float, float]], scale: float
     """Scale all movement vectors by a factor (e.g., 0.5 to halve distances)."""
     return {int(idx): (dx * scale, dy * scale) for idx, (dx, dy) in vectors.items()}
 
+def apply_damping_factor(parent_pt: np.ndarray, child_pt: np.ndarray) -> np.ndarray:
+    """
+    Apply a random damping factor to reduce the distance between parent and child point.
+    
+    The damping factor is randomized for each call (per iteration).
+    When damping is disabled, returns the original child_pt unchanged.
+    
+    Args:
+        parent_pt: Coordinates of the parent/mother point
+        child_pt: Coordinates of the child/daughter point (before damping)
+    
+    Returns:
+        New child point coordinates, with distance reduced by the damping factor
+    """
+    use_damping = st.session_state.get("cfg_use_damping", False)
+    if not use_damping:
+        return child_pt
+    
+    damping_min = float(st.session_state.get("cfg_damping_min", 0.0))
+    damping_max = float(st.session_state.get("cfg_damping_max", 1.0))
+    
+    # Ensure min <= max
+    if damping_min > damping_max:
+        damping_min, damping_max = damping_max, damping_min
+    
+    # Generate random damping factor for this iteration
+    damping_factor = float(np.random.uniform(damping_min, damping_max))
+    
+    # Calculate the vector from parent to child
+    direction = child_pt - parent_pt
+    
+    # Apply damping: new_child = parent + direction * damping_factor
+    damped_child = parent_pt + direction * damping_factor
+    
+    return damped_child
+
 def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[float, float]]) -> dict[int, np.ndarray]:
     """
     Apply movement vectors to base points and return new positions.
@@ -3074,13 +3145,15 @@ def run_binary_iteration(
     st.session_state["diag_rows"] = diag_rows
     st.session_state["anim_had_full_match"] = had_full_match
     
-    # Final placement: use the last ok_points
+    # Final placement: use the last ok_points, with damping applied
     iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
     for idx in selected_indices:
         final_pt = ok_points[idx]
         parent_pt = get_parent_position(idx)
+        # Apply random damping factor to reduce distance from parent
+        damped_pt = apply_damping_factor(parent_pt, final_pt)
         sp: SuccessfulPoint = {
-            "point": final_pt,
+            "point": damped_pt,
             "parent_idx": idx,
             "parent_point": parent_pt,
             "original_parent_idx": idx,
@@ -3277,12 +3350,14 @@ def run_multipoint_iteration(
         )
         
         if same_d1 and same_d2:
-            # Success! Add all candidate points to successful_points
+            # Success! Add all candidate points to successful_points (with damping applied)
             iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
             for idx, new_pt in candidate_positions.items():
                 parent_pt = parent_positions[idx]
+                # Apply random damping factor to reduce distance from parent
+                damped_pt = apply_damping_factor(parent_pt, new_pt)
                 sp: SuccessfulPoint = {
-                    "point": new_pt,
+                    "point": damped_pt,
                     "parent_idx": idx,  # Original index used as parent
                     "parent_point": parent_pt,
                     "original_parent_idx": idx,
@@ -3318,10 +3393,12 @@ def run_multipoint_iteration(
         new_x = np.clip(parent_pt[0] + dx, COORD_MIN_X, COORD_MAX_X)
         new_y = np.clip(parent_pt[1] + dy, COORD_MIN_Y, COORD_MAX_Y)
         new_pt = np.array([new_x, new_y])
+        # Apply random damping factor to reduce distance from parent
+        damped_pt = apply_damping_factor(parent_pt, new_pt)
         
         iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
         sp: SuccessfulPoint = {
-            "point": new_pt,
+            "point": damped_pt,
             "parent_idx": idx,
             "parent_point": parent_pt,
             "original_parent_idx": idx,
@@ -4388,6 +4465,393 @@ OBJECT_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
 OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
                         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
 # Note: OBJECT_LABELS is defined at the top of the file
+
+# ============= Lane Drawing Configuration =============
+# Define lane configurations for specific c-values
+# Each configuration specifies lane type ("straight" or "curved") and lane parameters
+LANE_CONFIGURATIONS = {
+    # c=12: Single car on 3-lane road (left to right)
+    12: {
+        "type": "straight",
+        "direction": "horizontal",
+        "lanes": 3,
+        "lane_width": 30,
+        "center_y": 100,
+        "x_range": (0, 500),
+        "description": "3-lane road (horizontal)"
+    },
+    # c=13: Overtaking maneuver with 2 cars on 3-lane road
+    13: {
+        "type": "straight",
+        "direction": "horizontal",
+        "lanes": 3,
+        "lane_width": 30,
+        "center_y": 100,
+        "x_range": (0, 300),
+        "description": "3-lane road for overtaking (2 cars)"
+    },
+    # c=14: Overtaking maneuver with 3 cars on 3-lane road
+    14: {
+        "type": "straight",
+        "direction": "horizontal",
+        "lanes": 3,
+        "lane_width": 30,
+        "center_y": 100,
+        "x_range": (0, 270),
+        "description": "3-lane road for overtaking (3 cars)"
+    },
+    # c=15: Car around a ◝ curve (right-turning bend)
+    15: {
+        "type": "curved",
+        "curve_type": "quarter_circle_top_right",
+        "lanes": 2,
+        "lane_width": 25,
+        "center": (100, 180),  # Center of the curve arc
+        "radius": 80,  # Inner radius
+        "start_angle": 180,  # Start from left (180°)
+        "end_angle": 270,  # End at bottom (270°)
+        "description": "Curved 2-lane road (◝ bend)"
+    },
+    # c=16: Intersection scenario with 2 cars
+    16: {
+        "type": "intersection",
+        "lanes_horizontal": 2,
+        "lanes_vertical": 2,
+        "lane_width": 25,
+        "center": (100, 100),
+        "road_length": 100,
+        "description": "Intersection (2 cars crossing)"
+    },
+}
+
+def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple, ylim: tuple) -> go.Figure:
+    """
+    Add lane markings to a Plotly figure based on the configuration (c-value).
+    
+    Args:
+        fig: The Plotly figure to add lane markings to
+        c_value: The configuration number (c-value from CSV)
+        xlim: (x_min, x_max) tuple for the plot bounds
+        ylim: (y_min, y_max) tuple for the plot bounds
+    
+    Returns:
+        The figure with lane markings added
+    """
+    if c_value not in LANE_CONFIGURATIONS:
+        return fig
+    
+    config = LANE_CONFIGURATIONS[c_value]
+    lane_color = "rgba(128, 128, 128, 0.4)"  # Gray with transparency
+    line_color = "rgba(255, 255, 255, 0.9)"  # White lane lines
+    dashed_color = "rgba(255, 255, 0, 0.7)"  # Yellow dashed center line
+    
+    if config["type"] == "straight":
+        fig = _add_straight_lanes(fig, config, lane_color, line_color, dashed_color)
+    elif config["type"] == "curved":
+        fig = _add_curved_lanes(fig, config, lane_color, line_color, dashed_color)
+    elif config["type"] == "intersection":
+        fig = _add_intersection_lanes(fig, config, lane_color, line_color, dashed_color)
+    
+    return fig
+
+def _add_straight_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
+    """Add straight lane markings (horizontal or vertical roads)."""
+    lanes = config["lanes"]
+    lane_width = config["lane_width"]
+    center_y = config["center_y"]
+    x_min, x_max = config["x_range"]
+    
+    total_width = lanes * lane_width
+    y_bottom = center_y - total_width / 2
+    y_top = center_y + total_width / 2
+    
+    # Draw road background (dark gray)
+    fig.add_shape(
+        type="rect",
+        x0=x_min, y0=y_bottom,
+        x1=x_max, y1=y_top,
+        fillcolor="rgba(64, 64, 64, 0.5)",
+        line=dict(color="rgba(64, 64, 64, 0.8)", width=2),
+        layer="below"
+    )
+    
+    # Draw lane dividers
+    for i in range(1, lanes):
+        y_line = y_bottom + i * lane_width
+        # Use dashed line for center, solid for others
+        if i == lanes // 2 and lanes > 1:
+            # Center line - dashed yellow
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[y_line, y_line],
+                mode='lines',
+                line=dict(color=dashed_color, width=2, dash='dash'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        else:
+            # Regular lane divider - white
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[y_line, y_line],
+                mode='lines',
+                line=dict(color=line_color, width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    
+    # Draw edge lines (solid white)
+    fig.add_trace(go.Scatter(
+        x=[x_min, x_max],
+        y=[y_bottom, y_bottom],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[x_min, x_max],
+        y=[y_top, y_top],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    return fig
+
+def _add_curved_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
+    """Add curved lane markings for bends/curves."""
+    lanes = config["lanes"]
+    lane_width = config["lane_width"]
+    cx, cy = config["center"]
+    inner_radius = config["radius"]
+    start_angle = config["start_angle"]
+    end_angle = config["end_angle"]
+    
+    # Generate points along the curve
+    n_points = 50
+    angles = np.linspace(np.radians(start_angle), np.radians(end_angle), n_points)
+    
+    # Draw road surface (filled area between inner and outer edge)
+    outer_radius = inner_radius + lanes * lane_width
+    
+    # Inner edge coordinates
+    inner_x = cx + inner_radius * np.cos(angles)
+    inner_y = cy + inner_radius * np.sin(angles)
+    
+    # Outer edge coordinates (reversed for proper polygon)
+    outer_x = cx + outer_radius * np.cos(angles[::-1])
+    outer_y = cy + outer_radius * np.sin(angles[::-1])
+    
+    # Create polygon for road surface
+    road_x = np.concatenate([inner_x, outer_x, [inner_x[0]]])
+    road_y = np.concatenate([inner_y, outer_y, [inner_y[0]]])
+    
+    fig.add_trace(go.Scatter(
+        x=road_x,
+        y=road_y,
+        fill='toself',
+        fillcolor="rgba(64, 64, 64, 0.5)",
+        line=dict(color="rgba(64, 64, 64, 0)", width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    # Draw lane dividers
+    for i in range(lanes + 1):
+        radius = inner_radius + i * lane_width
+        x_curve = cx + radius * np.cos(angles)
+        y_curve = cy + radius * np.sin(angles)
+        
+        if i == 0 or i == lanes:
+            # Edge lines - solid white, thicker
+            fig.add_trace(go.Scatter(
+                x=x_curve,
+                y=y_curve,
+                mode='lines',
+                line=dict(color=line_color, width=2),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        elif i == lanes // 2 and lanes > 1:
+            # Center line - dashed yellow
+            fig.add_trace(go.Scatter(
+                x=x_curve,
+                y=y_curve,
+                mode='lines',
+                line=dict(color=dashed_color, width=2, dash='dash'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        else:
+            # Regular lane divider - white
+            fig.add_trace(go.Scatter(
+                x=x_curve,
+                y=y_curve,
+                mode='lines',
+                line=dict(color=line_color, width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    
+    return fig
+
+def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
+    """Add intersection lane markings (crossing roads)."""
+    lanes_h = config["lanes_horizontal"]
+    lanes_v = config["lanes_vertical"]
+    lane_width = config["lane_width"]
+    cx, cy = config["center"]
+    road_length = config["road_length"]
+    
+    # Horizontal road
+    h_width = lanes_h * lane_width
+    h_y_bottom = cy - h_width / 2
+    h_y_top = cy + h_width / 2
+    
+    # Vertical road
+    v_width = lanes_v * lane_width
+    v_x_left = cx - v_width / 2
+    v_x_right = cx + v_width / 2
+    
+    # Draw horizontal road
+    fig.add_shape(
+        type="rect",
+        x0=cx - road_length, y0=h_y_bottom,
+        x1=cx + road_length, y1=h_y_top,
+        fillcolor="rgba(64, 64, 64, 0.5)",
+        line=dict(color="rgba(64, 64, 64, 0)", width=0),
+        layer="below"
+    )
+    
+    # Draw vertical road
+    fig.add_shape(
+        type="rect",
+        x0=v_x_left, y0=cy - road_length,
+        x1=v_x_right, y1=cy + road_length,
+        fillcolor="rgba(64, 64, 64, 0.5)",
+        line=dict(color="rgba(64, 64, 64, 0)", width=0),
+        layer="below"
+    )
+    
+    # Draw horizontal lane dividers (outside intersection box)
+    for i in range(1, lanes_h):
+        y_line = h_y_bottom + i * lane_width
+        dash_style = 'dash' if i == lanes_h // 2 else None
+        color = dashed_color if i == lanes_h // 2 else line_color
+        # Left segment
+        fig.add_trace(go.Scatter(
+            x=[cx - road_length, v_x_left],
+            y=[y_line, y_line],
+            mode='lines',
+            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        # Right segment
+        fig.add_trace(go.Scatter(
+            x=[v_x_right, cx + road_length],
+            y=[y_line, y_line],
+            mode='lines',
+            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+    
+    # Draw vertical lane dividers (outside intersection box)
+    for i in range(1, lanes_v):
+        x_line = v_x_left + i * lane_width
+        dash_style = 'dash' if i == lanes_v // 2 else None
+        color = dashed_color if i == lanes_v // 2 else line_color
+        # Bottom segment
+        fig.add_trace(go.Scatter(
+            x=[x_line, x_line],
+            y=[cy - road_length, h_y_bottom],
+            mode='lines',
+            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        # Top segment
+        fig.add_trace(go.Scatter(
+            x=[x_line, x_line],
+            y=[h_y_top, cy + road_length],
+            mode='lines',
+            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+    
+    # Draw edge lines for horizontal road
+    fig.add_trace(go.Scatter(
+        x=[cx - road_length, v_x_left],
+        y=[h_y_bottom, h_y_bottom],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[v_x_right, cx + road_length],
+        y=[h_y_bottom, h_y_bottom],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[cx - road_length, v_x_left],
+        y=[h_y_top, h_y_top],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[v_x_right, cx + road_length],
+        y=[h_y_top, h_y_top],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    # Draw edge lines for vertical road
+    fig.add_trace(go.Scatter(
+        x=[v_x_left, v_x_left],
+        y=[cy - road_length, h_y_bottom],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[v_x_left, v_x_left],
+        y=[h_y_top, cy + road_length],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[v_x_right, v_x_right],
+        y=[cy - road_length, h_y_bottom],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    fig.add_trace(go.Scatter(
+        x=[v_x_right, v_x_right],
+        y=[h_y_top, cy + road_length],
+        mode='lines',
+        line=dict(color=line_color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    return fig
 
 def annotate_points(
     ax: matplotlib.axes.Axes,
@@ -5637,7 +6101,7 @@ if _should_process_animation:
         anim_generated_points = st.session_state.get("anim_generated_points", {})
         selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
         
-        # For each selected point, add to successful_points
+        # For each selected point, add to successful_points (with damping applied)
         for idx in selected_indices:
             # Get parent point and original parent index
             if idx < n_total_points:
@@ -5655,9 +6119,11 @@ if _should_process_animation:
             
             # Get the final generated point for this index
             final_pt = anim_generated_points.get(idx, gen_pt if idx == parent_idx else np.array([0.0, 0.0]))
+            # Apply random damping factor to reduce distance from parent
+            damped_pt = apply_damping_factor(parent_point_val, np.array(final_pt, dtype=float))
             
             sp: SuccessfulPoint = {
-                "point": np.array(final_pt, dtype=float),
+                "point": damped_pt,
                 "parent_idx": idx,
                 "parent_point": parent_point_val,
                 "original_parent_idx": original_parent_idx_val,
@@ -6678,6 +7144,9 @@ if all_configs_list or current_successful_points:
     )
     
     fig = go.Figure()
+    
+    # Add lane markings for traffic configurations (if applicable)
+    fig = add_lane_markings_to_figure(fig, selected_c_int, XLIM, YLIM)
 
     # 1. Add Original Configuration - loop through ALL objects (only if selected)
     if "Original" in selected_configs:
