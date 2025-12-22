@@ -23,128 +23,17 @@ import matplotlib.pyplot as plt
 
 import plotly.graph_objects as go
 
-# ============= Coordinate Precision Settings =============
-# Change these values to adjust coordinate display precision throughout the app
-COORD_DISPLAY_PRECISION = 2   # Decimal places for UI display (hover text, status messages)
-COORD_CSV_PRECISION = 3       # Decimal places for CSV export (3 digits after decimal point)
-
-# ============= Object Labels for Display =============
-OBJECT_LABELS = ["k", "l", "m", "n", "p", "q", "r", "s", "u", "v"]
-
-# Type definition for successful point data in the search process
-class SuccessfulPoint(TypedDict):
-    point: np.ndarray              # Coordinates of the generated point
-    parent_idx: int                # Index in all_pts (may be a generated point)
-    parent_point: np.ndarray       # Actual coordinates of the parent point
-    original_parent_idx: int       # Index of the ORIGINAL point (k0, k1, k2, l0, l1, l2)
-    iteration: int                 # Iteration number when this point was accepted
-
-# ============= PDP Core Functions (from N_PDP.py) =============
-def compute_inequality_matrix(points: np.ndarray, dimension: int, roughness: float = 0.0) -> np.ndarray:
-    """
-    Compute PDP inequality matrix for a set of points along one dimension.
-    
-    This follows the exact logic from N_PDP.py:
-    - Value 0: point j > point i (beyond roughness)
-    - Value 1: |point j - point i| <= roughness (equal within tolerance)
-    - Value 2: point j < point i (beyond roughness)
-    
-    Args:
-        points: (N, 2) array of (x, y) coordinates
-        dimension: 0 for x, 1 for y
-        roughness: tolerance for equality (default 0.0)
-    
-    Returns:
-        (N, N) inequality matrix
-    """
-    n = len(points)
-    inequality_matrix = np.zeros((n, n))
-    
-    values = points[:, dimension]
-    
-    for i in range(n):
-        for j in range(n):
-            diff = values[j] - values[i]
-            if abs(diff) <= roughness:
-                inequality_matrix[i, j] = 1  # Equal (within roughness)
-            elif diff > roughness:
-                inequality_matrix[i, j] = 0  # Greater than
-            else:
-                inequality_matrix[i, j] = 2  # Less than
-    
-    return inequality_matrix
-
-def compare_inequality_matrices(matrix1: np.ndarray, matrix2: np.ndarray) -> bool:
-    """
-    Compare two inequality matrices for equality.
-    
-    Returns True if matrices are identical (same PDP pattern).
-    """
-    return np.array_equal(matrix1, matrix2)
-
-def compare_inequality_matrices_with_threshold(matrix1: np.ndarray, matrix2: np.ndarray, threshold: float = 1.0) -> tuple[bool, float]:
-    """
-    Compare two inequality matrices with a percentage threshold.
-    
-    Args:
-        matrix1: First inequality matrix
-        matrix2: Second inequality matrix
-        threshold: Minimum required match percentage (0.0 to 1.0), default 1.0 = 100%
-    
-    Returns:
-        (is_match, match_percentage): Tuple of boolean match result and actual match percentage
-    """
-    if matrix1.shape != matrix2.shape:
-        return False, 0.0
-    
-    total_elements = matrix1.size
-    if total_elements == 0:
-        return True, 1.0
-    
-    matching_elements = np.sum(matrix1 == matrix2)
-    match_percentage = matching_elements / total_elements
-    is_match = match_percentage >= threshold
-    
-    return is_match, match_percentage
-
-def apply_buffer_transformation(points: np.ndarray, buffer_x: float, buffer_y: float) -> np.ndarray:
-    """
-    Apply buffer transformation to a set of points.
-    
-    This creates 5 variants of each point:
-    - Original point * 5 + 0: x - buffer_x
-    - Original point * 5 + 1: x + buffer_x
-    - Original point * 5 + 2: no buffer in x (original x)
-    - Original point * 5 + 3: y - buffer_y
-    - Original point * 5 + 4: y + buffer_y
-    
-    The point index is expanded by 5x to accommodate all buffer variants.
-    
-    Args:
-        points: (N, 2) array of (x, y) coordinates
-        buffer_x: buffer distance in x-direction
-        buffer_y: buffer distance in y-direction
-    
-    Returns:
-        (5*N, 2) array with buffered points
-    """
-    n = len(points)
-    buffered = np.zeros((5 * n, 2))
-    
-    for i, (x, y) in enumerate(points):
-        base_idx = i * 5
-        # Variant 0: x - buffer_x
-        buffered[base_idx + 0] = [x - buffer_x, y]
-        # Variant 1: x + buffer_x
-        buffered[base_idx + 1] = [x + buffer_x, y]
-        # Variant 2: no buffer in x
-        buffered[base_idx + 2] = [x, y]
-        # Variant 3: y - buffer_y
-        buffered[base_idx + 3] = [x, y - buffer_y]
-        # Variant 4: y + buffer_y
-        buffered[base_idx + 4] = [x, y + buffer_y]
-    
-    return buffered
+from pdp_utils.core import (
+    COORD_DISPLAY_PRECISION,
+    COORD_CSV_PRECISION,
+    OBJECT_LABELS,
+    SuccessfulPoint,
+    compute_inequality_matrix,
+    compare_inequality_matrices,
+    compare_inequality_matrices_with_threshold,
+    apply_buffer_transformation
+)
+from pdp_utils.config import LANE_CONFIGURATIONS, DEFAULT_LANE_SETUP
 
 # ============= Page configuration =============
 st.set_page_config(
@@ -4545,33 +4434,7 @@ OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
 # Note: OBJECT_LABELS is defined at the top of the file
 
 # ============= Lane Drawing Configuration =============
-DEFAULT_LANE_SETUP = {"mode": "data_path", "lanes": 3, "lane_width": 3.0}
-
-LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 11)}
-# Apply offset to Config 1 to center cars in lanes (shift road up by half lane width)
-LANE_CONFIGURATIONS[1]["offset"] = 1.25
-# Config 4 also needs this offset
-LANE_CONFIGURATIONS[4] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
-# Also add Config 11 with the same offset, as it's often used as default
-LANE_CONFIGURATIONS[11] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
-
-LANE_CONFIGURATIONS[12] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (-5, 5)}, "description": "3-lane road (horizontal)"}
-LANE_CONFIGURATIONS[13] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (55, 145)}, "description": "3-lane road for overtaking (2 cars)"}
-LANE_CONFIGURATIONS[14] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 160), "y": (90, 110)}, "description": "3-lane road for overtaking (3 cars)"}
-LANE_CONFIGURATIONS[15] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (40, 210), "y": (90, 260)}, "description": "Curved road with approach and exit"}
-LANE_CONFIGURATIONS[16] = {
-    "mode": "intersection",
-    "lanes_horizontal": 3,
-    "lanes_vertical": 3,
-    "lane_width": 3.0,
-    "center": (200, 100),
-    "horizontal_range": (20, 470),
-    "vertical_range": (20, 320),
-    "bounds": {"x": (20, 470), "y": (20, 320)},
-    "description": "Intersection (2 cars crossing)",
-    "offset_horizontal": 3.0,
-    "offset_vertical": -3.0,
-}
+# Imported from pdp_utils.config
 
 def _remove_duplicate_points(points: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:
     if points.size == 0:
