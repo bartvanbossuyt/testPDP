@@ -750,10 +750,31 @@ def _auto_detect_bounds_logic() -> bool:
     _detect_k = int(st.session_state.get("cfg_k", 3))  # Number of timestamps
     _detect_start_t = st.session_state.get("cfg_start_t", None)
     
-    # Get time values for the selected configuration
-    _detect_t_k = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 0)]["t"].unique().tolist())
-    _detect_t_l = sorted(_df_all[(_df_all["c"] == _detect_c) & (_df_all["o"] == 1)]["t"].unique().tolist())
-    _detect_t_common = [t for t in _detect_t_k if t in _detect_t_l]
+    config_df = _df_all[_df_all["c"] == _detect_c]
+    if config_df.empty:
+        return False
+
+    object_ids = sorted(config_df["o"].unique().tolist())
+    time_values_by_object: dict[int, list[float]] = {
+        o_id: sorted(config_df[config_df["o"] == o_id]["t"].unique().tolist())
+        for o_id in object_ids
+    }
+
+    _detect_t_k = time_values_by_object.get(0, [])
+    comparison_obj = next((o_id for o_id in object_ids if o_id != 0), None)
+    if comparison_obj is not None:
+        _detect_t_l = time_values_by_object.get(comparison_obj, [])
+        _detect_t_common = [t for t in _detect_t_k if t in _detect_t_l]
+    else:
+        _detect_t_l = []
+        _detect_t_common = list(_detect_t_k)
+
+    if not _detect_t_common:
+        # Fallback to union of timestamps across all objects
+        union_times = sorted({t for times in time_values_by_object.values() for t in times})
+        _detect_t_common = union_times
+    if not _detect_t_common:
+        return False
     
     # Determine the timestamp window
     if _detect_start_t is not None and _detect_start_t in _detect_t_common:
@@ -761,13 +782,16 @@ def _auto_detect_bounds_logic() -> bool:
     else:
         _detect_start_idx = 0
     _detect_end_idx = min(_detect_start_idx + _detect_k, len(_detect_t_common))
+    if _detect_end_idx <= _detect_start_idx:
+        _detect_end_idx = min(len(_detect_t_common), _detect_start_idx + 1)
     _detect_ts_window = _detect_t_common[_detect_start_idx:_detect_end_idx]
+    if not _detect_ts_window:
+        _detect_ts_window = _detect_t_common[:max(1, _detect_k)]
     
     # Filter dataframe to selected configuration and timestamp window
-    _df_filtered = _df_all[
-        (_df_all["c"] == _detect_c) & 
-        (_df_all["t"].isin(_detect_ts_window))
-    ]
+    _df_filtered = config_df[config_df["t"].isin(_detect_ts_window)]
+    if _df_filtered.empty:
+        _df_filtered = config_df
     
     if len(_df_filtered) > 0:
         # Calculate bounds from filtered data
@@ -775,6 +799,30 @@ def _auto_detect_bounds_logic() -> bool:
         _new_max_x = float(_df_filtered["x"].max())
         _new_min_y = float(_df_filtered["y"].min())
         _new_max_y = float(_df_filtered["y"].max())
+
+        # Include lane bounds if available
+        lane_cfg = LANE_CONFIGURATIONS.get(_detect_c)
+        if lane_cfg:
+            lane_bounds = lane_cfg.get("bounds", {})
+            x_bounds = lane_bounds.get("x")
+            y_bounds = lane_bounds.get("y")
+            if x_bounds:
+                _new_min_x = min(_new_min_x, float(x_bounds[0]))
+                _new_max_x = max(_new_max_x, float(x_bounds[1]))
+            if y_bounds:
+                _new_min_y = min(_new_min_y, float(y_bounds[0]))
+                _new_max_y = max(_new_max_y, float(y_bounds[1]))
+
+            if lane_cfg.get("mode", "data_path") == "data_path":
+                lane_width = float(lane_cfg.get("lane_width", 3.0))
+                lane_count = int(lane_cfg.get("lanes", 3))
+                lane_polylines = _build_lane_polylines_from_data(_detect_c, lane_width, lane_count)
+                poly_bounds = _lane_polylines_bounds(lane_polylines) if lane_polylines else None
+                if poly_bounds:
+                    _new_min_x = min(_new_min_x, poly_bounds[0])
+                    _new_max_x = max(_new_max_x, poly_bounds[1])
+                    _new_min_y = min(_new_min_y, poly_bounds[2])
+                    _new_max_y = max(_new_max_y, poly_bounds[3])
         
         # Add 10% margin (or minimum margin for very small ranges)
         _new_range_x = _new_max_x - _new_min_x
@@ -806,6 +854,9 @@ def _auto_detect_bounds_logic() -> bool:
             else:
                 return float(np.ceil(val / 10) * 10)
         
+        _new_range_x = _new_max_x - _new_min_x
+        _new_range_y = _new_max_y - _new_min_y
+
         _new_min_x = smart_round_min(_new_min_x, _new_range_x)
         _new_max_x = smart_round_max(_new_max_x, _new_range_x)
         _new_min_y = smart_round_min(_new_min_y, _new_range_y)
@@ -864,12 +915,33 @@ with sc1:
         st.markdown(f"**Configuration:** {selected_c}")
 selected_c_int: int = int(selected_c) if selected_c is not None else int(available_configs[0])
 
-# Time values for k and l in the selected configuration
-_t_k = sorted(_df_all[(_df_all["c"] == selected_c_int) & (_df_all["o"] == 0)]["t"].unique().tolist())  # type: ignore
-_t_l = sorted(_df_all[(_df_all["c"] == selected_c_int) & (_df_all["o"] == 1)]["t"].unique().tolist())  # type: ignore
-_t_common = [t for t in _t_k if t in _t_l]
+# Gather data for the selected configuration
+config_df = _df_all[_df_all["c"] == selected_c_int]
+all_object_ids = sorted(config_df["o"].unique().tolist())
+
+# Time values per object (supports single-object configurations)
+time_values_by_object: dict[int, list[float]] = {
+    o_id: sorted(config_df[config_df["o"] == o_id]["t"].unique().tolist())
+    for o_id in all_object_ids
+}
+
+_t_k = time_values_by_object.get(0, [])
+comparison_obj = next((o_id for o_id in all_object_ids if o_id != 0), None)
+if comparison_obj is not None:
+    _t_l = time_values_by_object.get(comparison_obj, [])
+    _t_common = [t for t in _t_k if t in _t_l]
+    if not _t_common:
+        st.error(f"No overlapping t-values for c={selected_c} between o=0 and o={comparison_obj}.")
+        st.stop()
+else:
+    _t_l: list[float] = []
+    _t_common = list(_t_k)
+
 if not _t_common:
-    st.error(f"No overlapping t-values for c={selected_c} between o=0 and o=1.")
+    # fallback to union of all timestamps if intersection is empty (e.g., single-object data)
+    _t_common = sorted({t for times in time_values_by_object.values() for t in times})
+if not _t_common:
+    st.error(f"No timestamps found for configuration c={selected_c}.")
     st.stop()
 
 n_timepoints = len(_t_common)
@@ -1804,9 +1876,6 @@ def extract_points_from_df(df: pd.DataFrame, o_val: int, c_val: int) -> tuple[np
     pts = sel[["x", "y"]].values.astype(float)
     ts = sel["t"].values.astype(float)
     return pts, ts
-
-# Get all unique object IDs in the selected configuration
-all_object_ids = sorted(_df_all[_df_all["c"] == selected_c_int]["o"].unique().tolist())
 
 # Extract points for all objects into a unified structure
 all_objects_points: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -4369,59 +4438,68 @@ if generate_btn:
 # ============= Drawing (without gridlines) ============
 
 def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
-    """
-    Draw traffic lane markings for traffic configurations.
-    
-    There are 3 lanes, each 3 meters wide (total road width: 9 meters).
-    Lane boundaries are drawn as subtle gray lines extending across the visible x-range.
-    Only draws lanes for traffic configurations 0-10 (NOT for configuration 11).
-    
-    Lane layout (right-hand traffic, rightmost lane = slowest):
-    - Lane 1 (right/slow):  y = -6.0 to -3.0 (center at -4.5)
-    - Lane 2 (middle):      y = -3.0 to  0.0 (center at -1.5)
-    - Lane 3 (left/fast):   y =  0.0 to +3.0 (center at +1.5)
-    """
-    # Only draw lanes for traffic configurations 0-10 (exclude 11)
-    current_config = st.session_state.get("cfg_c", 0)
-    if current_config is None or int(current_config) > 10:
+    """Draw traffic lanes that follow the trajectory of the active configuration."""
+    current_config_raw = st.session_state.get("cfg_c", 0)
+    try:
+        current_config = int(current_config_raw)
+    except (TypeError, ValueError):
         return
-    
-    # Fixed lane configuration: 3 lanes, each 3m wide
-    # Bottom of road at y = -6.0, top at y = +3.0
-    LANE_WIDTH = 3.0  # meters
-    NUM_LANES = 3
-    ROAD_BOTTOM = -6.0  # Bottom edge of the road (right side in right-hand traffic)
-    
-    # Lane boundaries (y-coordinates)
-    lane_boundaries = [ROAD_BOTTOM + i * LANE_WIDTH for i in range(NUM_LANES + 1)]
-    # This gives: [-6.0, -3.0, 0.0, 3.0]
-    
-    # Style for lane markings (subtle, realistic)
-    center_line_color = '#C0C0C0'  # Gray for center lines between lanes
-    edge_line_color = '#A0A0A0'    # Darker gray for road edges
-    lane_line_width = 1.0
-    
-    # Draw edge lines (solid) at the outer boundaries of the road
-    # Bottom edge (y = -6.0)
-    bottom_edge_y = lane_boundaries[0]
-    if bottom_edge_y >= ylim[0] and bottom_edge_y <= ylim[1]:
-        ax.axhline(y=bottom_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.5, 
-                  linestyle='-', alpha=0.6, zorder=0)
-    
-    # Top edge (y = +3.0)
-    top_edge_y = lane_boundaries[-1]
-    if top_edge_y >= ylim[0] and top_edge_y <= ylim[1]:
-        ax.axhline(y=top_edge_y, color=edge_line_color, linewidth=lane_line_width * 1.5, 
-                  linestyle='-', alpha=0.6, zorder=0)
-    
-    # Draw dashed center lines between lanes
-    # Between lane 1 and 2 (y = -3.0)
-    # Between lane 2 and 3 (y = 0.0)
-    for i in range(1, NUM_LANES):
-        boundary_y = lane_boundaries[i]
-        if boundary_y >= ylim[0] and boundary_y <= ylim[1]:
-            ax.axhline(y=boundary_y, color=center_line_color, linewidth=lane_line_width, 
-                      linestyle='--', dashes=(10, 5), alpha=0.5, zorder=0)
+
+    lane_cfg = LANE_CONFIGURATIONS.get(current_config)
+    if not lane_cfg:
+        return
+
+    mode = lane_cfg.get("mode", "data_path")
+    if mode == "intersection":
+        _draw_intersection_lanes_matplotlib(ax, lane_cfg, xlim, ylim)
+        return
+
+    lane_width = float(lane_cfg.get("lane_width", 3.0))
+    lane_count = int(lane_cfg.get("lanes", 3))
+    offset = float(lane_cfg.get("offset", 0.0))
+
+    # Dynamic offset for single-object configurations: force object to rightmost (bottom) lane
+    if _df_all is not None:
+        config_df = _df_all[_df_all["c"] == current_config]
+        if not config_df.empty:
+            unique_objects = config_df["o"].unique()
+            if len(unique_objects) == 1:
+                # Calculate offset to center the road such that y=0 corresponds to the bottom lane center
+                # Formula: offset = (lane_width * (lane_count - 1)) / 2.0
+                offset = (lane_width * (lane_count - 1)) / 2.0
+
+    lane_polylines = _build_lane_polylines_from_data(current_config, lane_width, lane_count, xlim, offset)
+    if not lane_polylines:
+        return
+
+    road_color = "none"
+    edge_line_color = "black"
+    center_line_color = "black"
+    lane_line_width = 0.8
+
+    boundaries = lane_polylines.get("boundaries", [])
+    center_lines = lane_polylines.get("center_lines", [])
+
+    if len(boundaries) >= 2:
+        left_edge = boundaries[0]
+        right_edge = boundaries[-1]
+        polygon_points = np.vstack([left_edge, right_edge[::-1]])
+        ax.fill(polygon_points[:, 0], polygon_points[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+
+        for edge in (left_edge, right_edge):
+            ax.plot(edge[:, 0], edge[:, 1], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+
+    for dashed_line in center_lines:
+        ax.plot(
+            dashed_line[:, 0],
+            dashed_line[:, 1],
+            color=center_line_color,
+            linewidth=lane_line_width,
+            linestyle="--",
+            dashes=(10, 10),
+            alpha=1.0,
+            zorder=1,
+        )
 
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """Configure axes to be square, with simple ticks and labels d₁, d₂."""
@@ -4467,250 +4545,415 @@ OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
 # Note: OBJECT_LABELS is defined at the top of the file
 
 # ============= Lane Drawing Configuration =============
-# Define lane configurations for specific c-values
-# Each configuration specifies lane type ("straight" or "curved") and lane parameters
-LANE_CONFIGURATIONS = {
-    # c=12: Single car on 3-lane road (left to right)
-    12: {
-        "type": "straight",
-        "direction": "horizontal",
-        "lanes": 3,
-        "lane_width": 30,
-        "center_y": 100,
-        "x_range": (0, 500),
-        "description": "3-lane road (horizontal)"
-    },
-    # c=13: Overtaking maneuver with 2 cars on 3-lane road
-    13: {
-        "type": "straight",
-        "direction": "horizontal",
-        "lanes": 3,
-        "lane_width": 30,
-        "center_y": 100,
-        "x_range": (0, 300),
-        "description": "3-lane road for overtaking (2 cars)"
-    },
-    # c=14: Overtaking maneuver with 3 cars on 3-lane road
-    14: {
-        "type": "straight",
-        "direction": "horizontal",
-        "lanes": 3,
-        "lane_width": 30,
-        "center_y": 100,
-        "x_range": (0, 270),
-        "description": "3-lane road for overtaking (3 cars)"
-    },
-    # c=15: Car around a ◝ curve (right-turning bend)
-    15: {
-        "type": "curved",
-        "curve_type": "quarter_circle_top_right",
-        "lanes": 2,
-        "lane_width": 25,
-        "center": (100, 180),  # Center of the curve arc
-        "radius": 80,  # Inner radius
-        "start_angle": 180,  # Start from left (180°)
-        "end_angle": 270,  # End at bottom (270°)
-        "description": "Curved 2-lane road (◝ bend)"
-    },
-    # c=16: Intersection scenario with 2 cars
-    16: {
-        "type": "intersection",
-        "lanes_horizontal": 2,
-        "lanes_vertical": 2,
-        "lane_width": 25,
-        "center": (100, 100),
-        "road_length": 100,
-        "description": "Intersection (2 cars crossing)"
-    },
+DEFAULT_LANE_SETUP = {"mode": "data_path", "lanes": 3, "lane_width": 3.0}
+
+LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 11)}
+# Apply offset to Config 1 to center cars in lanes (shift road up by half lane width)
+LANE_CONFIGURATIONS[1]["offset"] = 1.25
+# Config 4 also needs this offset
+LANE_CONFIGURATIONS[4] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
+# Also add Config 11 with the same offset, as it's often used as default
+LANE_CONFIGURATIONS[11] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
+
+LANE_CONFIGURATIONS[12] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (-5, 5)}, "description": "3-lane road (horizontal)"}
+LANE_CONFIGURATIONS[13] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (55, 145)}, "description": "3-lane road for overtaking (2 cars)"}
+LANE_CONFIGURATIONS[14] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 160), "y": (90, 110)}, "description": "3-lane road for overtaking (3 cars)"}
+LANE_CONFIGURATIONS[15] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (40, 210), "y": (90, 260)}, "description": "Curved road with approach and exit"}
+LANE_CONFIGURATIONS[16] = {
+    "mode": "intersection",
+    "lanes_horizontal": 3,
+    "lanes_vertical": 3,
+    "lane_width": 3.0,
+    "center": (200, 100),
+    "horizontal_range": (20, 470),
+    "vertical_range": (20, 320),
+    "bounds": {"x": (20, 470), "y": (20, 320)},
+    "description": "Intersection (2 cars crossing)",
+    "offset_horizontal": 3.0,
+    "offset_vertical": -3.0,
 }
 
-def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple, ylim: tuple) -> go.Figure:
-    """
-    Add lane markings to a Plotly figure based on the configuration (c-value).
-    
-    Args:
-        fig: The Plotly figure to add lane markings to
-        c_value: The configuration number (c-value from CSV)
-        xlim: (x_min, x_max) tuple for the plot bounds
-        ylim: (y_min, y_max) tuple for the plot bounds
-    
-    Returns:
-        The figure with lane markings added
-    """
-    if c_value not in LANE_CONFIGURATIONS:
-        return fig
-    
-    config = LANE_CONFIGURATIONS[c_value]
-    lane_color = "rgba(128, 128, 128, 0.4)"  # Gray with transparency
-    line_color = "rgba(255, 255, 255, 0.9)"  # White lane lines
-    dashed_color = "rgba(255, 255, 0, 0.7)"  # Yellow dashed center line
-    
-    if config["type"] == "straight":
-        fig = _add_straight_lanes(fig, config, lane_color, line_color, dashed_color)
-    elif config["type"] == "curved":
-        fig = _add_curved_lanes(fig, config, lane_color, line_color, dashed_color)
-    elif config["type"] == "intersection":
-        fig = _add_intersection_lanes(fig, config, lane_color, line_color, dashed_color)
-    
-    return fig
+def _remove_duplicate_points(points: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:
+    if points.size == 0:
+        return points
+    filtered = [points[0]]
+    for pt in points[1:]:
+        if np.linalg.norm(pt - filtered[-1]) > tolerance:
+            filtered.append(pt)
+    return np.array(filtered, dtype=float)
 
-def _add_straight_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
-    """Add straight lane markings (horizontal or vertical roads)."""
-    lanes = config["lanes"]
-    lane_width = config["lane_width"]
-    center_y = config["center_y"]
-    x_min, x_max = config["x_range"]
-    
-    total_width = lanes * lane_width
-    y_bottom = center_y - total_width / 2
-    y_top = center_y + total_width / 2
-    
-    # Draw road background (dark gray)
-    fig.add_shape(
-        type="rect",
-        x0=x_min, y0=y_bottom,
-        x1=x_max, y1=y_top,
-        fillcolor="rgba(64, 64, 64, 0.5)",
-        line=dict(color="rgba(64, 64, 64, 0.8)", width=2),
-        layer="below"
+def _extract_longest_object_path(config_df: pd.DataFrame):
+    best_pts = None
+    best_score = -np.inf
+    for obj_id, obj_df in config_df.groupby("o"):
+        obj_sorted = obj_df.sort_values("t")
+        pts = obj_sorted[["x", "y"]].to_numpy(dtype=float)
+        pts = _remove_duplicate_points(pts)
+        if pts.shape[0] < 2:
+            continue
+        segment_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total_length = float(segment_lengths.sum())
+        score = total_length + (10.0 if obj_id == 0 else 0.0)
+        if score > best_score:
+            best_score = score
+            best_pts = pts
+    return best_pts
+
+def _extract_centerline_from_data(c_value: int):
+    if _df_all is None:
+        return None
+    config_df = _df_all[_df_all["c"] == c_value]
+    if config_df.empty:
+        return None
+
+    center_samples: list[tuple[float, float, float]] = []
+    for t_val, group in config_df.groupby("t"):
+        center_samples.append((float(t_val), float(group["x"].mean()), float(group["y"].mean())))
+
+    center_samples.sort(key=lambda item: item[0])
+
+    if center_samples:
+        centerline = np.array([[row[1], row[2]] for row in center_samples], dtype=float)
+        centerline = _remove_duplicate_points(centerline)
+    else:
+        centerline = np.empty((0, 2), dtype=float)
+
+    if centerline.shape[0] < 2:
+        return _extract_longest_object_path(config_df)
+
+    # Check if the path is roughly straight
+    if centerline.shape[0] >= 3:
+        p_start = centerline[0]
+        p_end = centerline[-1]
+        vec = p_end - p_start
+        norm = np.linalg.norm(vec)
+        if norm > 1e-6:
+            # Calculate distance of all points to the line segment
+            unit_vec = vec / norm
+            vecs = centerline - p_start
+            # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
+            cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
+            max_deviation = np.max(np.abs(cross_products))
+            
+            # If deviation is small (e.g. < 0.5m), simplify to straight line
+            if max_deviation < 0.5:
+                centerline = np.array([centerline[0], centerline[-1]])
+    elif centerline.shape[0] == 2:
+        pass # Already straight
+
+    return centerline
+
+def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
+    if points.shape[0] < 2:
+        return points.copy()
+
+    tangents = np.zeros_like(points)
+    tangents[1:-1] = points[2:] - points[:-2]
+    tangents[0] = points[1] - points[0]
+    tangents[-1] = points[-1] - points[-2]
+
+    norms = np.linalg.norm(tangents, axis=1)
+    norms[norms == 0] = 1.0
+    normalized = tangents / norms[:, np.newaxis]
+    normals = np.column_stack((-normalized[:, 1], normalized[:, 0]))
+
+    return points + offset * normals
+
+def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, offset: float = 0.0):
+    if lane_count < 1:
+        return None
+
+    centerline = _extract_centerline_from_data(c_value)
+    if centerline is None or centerline.shape[0] < 2:
+        return None
+
+    # Extend centerline to xlim if provided, ONLY if it's a straight line
+    if xlim is not None and centerline.shape[0] == 2:
+        p1 = centerline[0]
+        p2 = centerline[-1]
+        direction = p2 - p1
+        norm = np.linalg.norm(direction)
+        if norm > 1e-6:
+            unit_dir = direction / norm
+            
+            if abs(unit_dir[0]) > 1e-6:
+                t1 = (xlim[0] - p1[0]) / unit_dir[0]
+                t2 = (xlim[1] - p1[0]) / unit_dir[0]
+                
+                # Extend start
+                new_p1 = p1 + min(t1, t2) * unit_dir
+                # Extend end
+                new_p2 = p1 + max(t1, t2) * unit_dir
+                
+                centerline = np.array([new_p1, new_p2])
+            else:
+                centerline = np.array([p1 - unit_dir * 1000, p2 + unit_dir * 1000])
+
+    # Apply vertical offset to centerline
+    centerline[:, 1] += offset
+
+    half_width = (lane_width * lane_count) / 2.0
+    boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
+    boundaries = [_offset_polyline(centerline, offset) for offset in boundary_offsets]
+
+    interior_count = max(0, lane_count - 1)
+    center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
+    center_lines = [_offset_polyline(centerline, offset) for offset in center_offsets]
+
+    return {"boundaries": boundaries, "center_lines": center_lines, "centerline": centerline}
+
+def _lane_polylines_bounds(lane_polylines):
+    if not lane_polylines:
+        return None
+
+    arrays: list[np.ndarray] = []
+    boundaries = lane_polylines.get("boundaries") if isinstance(lane_polylines, dict) else None
+    if boundaries:
+        arrays.extend(boundaries)
+
+    centerline = lane_polylines.get("centerline") if isinstance(lane_polylines, dict) else None
+    if centerline is not None and centerline.size:
+        arrays.append(centerline)
+
+    if not arrays:
+        return None
+
+    stacked = np.vstack(arrays)
+    return (
+        float(np.min(stacked[:, 0])),
+        float(np.max(stacked[:, 0])),
+        float(np.min(stacked[:, 1])),
+        float(np.max(stacked[:, 1])),
     )
-    
-    # Draw lane dividers
-    for i in range(1, lanes):
-        y_line = y_bottom + i * lane_width
-        # Use dashed line for center, solid for others
-        if i == lanes // 2 and lanes > 1:
-            # Center line - dashed yellow
-            fig.add_trace(go.Scatter(
-                x=[x_min, x_max],
-                y=[y_line, y_line],
-                mode='lines',
-                line=dict(color=dashed_color, width=2, dash='dash'),
+
+def _add_lane_polylines_plotly(
+    fig: go.Figure,
+    lane_polylines: dict,
+    lane_color: str,
+    edge_color: str,
+    dashed_color: str,
+) -> go.Figure:
+    boundaries = lane_polylines.get("boundaries", [])
+    center_lines = lane_polylines.get("center_lines", [])
+
+    if len(boundaries) >= 2:
+        left_edge = boundaries[0]
+        right_edge = boundaries[-1]
+        polygon_x = np.concatenate([left_edge[:, 0], right_edge[::-1, 0], [left_edge[0, 0]]])
+        polygon_y = np.concatenate([left_edge[:, 1], right_edge[::-1, 1], [left_edge[0, 1]]])
+
+        fig.add_trace(
+            go.Scatter(
+                x=polygon_x,
+                y=polygon_y,
+                fill="toself",
+                fillcolor=lane_color,
+                line=dict(color="rgba(0, 0, 0, 0)", width=0),
+                hoverinfo="skip",
                 showlegend=False,
-                hoverinfo='skip'
-            ))
-        else:
-            # Regular lane divider - white
-            fig.add_trace(go.Scatter(
-                x=[x_min, x_max],
-                y=[y_line, y_line],
-                mode='lines',
-                line=dict(color=line_color, width=1),
+            )
+        )
+
+        for edge in (left_edge, right_edge):
+            fig.add_trace(
+                go.Scatter(
+                    x=edge[:, 0],
+                    y=edge[:, 1],
+                    mode="lines",
+                    line=dict(color=edge_color, width=1),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+    for dashed_line in center_lines:
+        fig.add_trace(
+            go.Scatter(
+                x=dashed_line[:, 0],
+                y=dashed_line[:, 1],
+                mode="lines",
+                line=dict(color=dashed_color, width=1, dash="dash"),
+                hoverinfo="skip",
                 showlegend=False,
-                hoverinfo='skip'
-            ))
-    
-    # Draw edge lines (solid white)
-    fig.add_trace(go.Scatter(
-        x=[x_min, x_max],
-        y=[y_bottom, y_bottom],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(go.Scatter(
-        x=[x_min, x_max],
-        y=[y_top, y_top],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    
+            )
+        )
+
     return fig
 
-def _add_curved_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
-    """Add curved lane markings for bends/curves."""
-    lanes = config["lanes"]
-    lane_width = config["lane_width"]
-    cx, cy = config["center"]
-    inner_radius = config["radius"]
-    start_angle = config["start_angle"]
-    end_angle = config["end_angle"]
+def _draw_intersection_lanes_matplotlib(
+    ax: matplotlib.axes.Axes,
+    config: dict,
+    xlim: Tuple[float, float],
+    ylim: Tuple[float, float],
+) -> None:
+    lane_width = float(config.get("lane_width", 3.0))
+    lanes_h = int(config.get("lanes_horizontal", 3))
+    lanes_v = int(config.get("lanes_vertical", 3))
+    center_x, center_y = config.get("center", (0.0, 0.0))
     
-    # Generate points along the curve
-    n_points = 50
-    angles = np.linspace(np.radians(start_angle), np.radians(end_angle), n_points)
-    
-    # Draw road surface (filled area between inner and outer edge)
-    outer_radius = inner_radius + lanes * lane_width
-    
-    # Inner edge coordinates
-    inner_x = cx + inner_radius * np.cos(angles)
-    inner_y = cy + inner_radius * np.sin(angles)
-    
-    # Outer edge coordinates (reversed for proper polygon)
-    outer_x = cx + outer_radius * np.cos(angles[::-1])
-    outer_y = cy + outer_radius * np.sin(angles[::-1])
-    
-    # Create polygon for road surface
-    road_x = np.concatenate([inner_x, outer_x, [inner_x[0]]])
-    road_y = np.concatenate([inner_y, outer_y, [inner_y[0]]])
-    
-    fig.add_trace(go.Scatter(
-        x=road_x,
-        y=road_y,
-        fill='toself',
-        fillcolor="rgba(64, 64, 64, 0.5)",
-        line=dict(color="rgba(64, 64, 64, 0)", width=0),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    
-    # Draw lane dividers
-    for i in range(lanes + 1):
-        radius = inner_radius + i * lane_width
-        x_curve = cx + radius * np.cos(angles)
-        y_curve = cy + radius * np.sin(angles)
-        
-        if i == 0 or i == lanes:
-            # Edge lines - solid white, thicker
-            fig.add_trace(go.Scatter(
-                x=x_curve,
-                y=y_curve,
-                mode='lines',
-                line=dict(color=line_color, width=2),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-        elif i == lanes // 2 and lanes > 1:
-            # Center line - dashed yellow
-            fig.add_trace(go.Scatter(
-                x=x_curve,
-                y=y_curve,
-                mode='lines',
-                line=dict(color=dashed_color, width=2, dash='dash'),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-        else:
-            # Regular lane divider - white
-            fig.add_trace(go.Scatter(
-                x=x_curve,
-                y=y_curve,
-                mode='lines',
-                line=dict(color=line_color, width=1),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    
-    return fig
+    # Apply offsets if present
+    off_h = float(config.get("offset_horizontal", 0.0))
+    off_v = float(config.get("offset_vertical", 0.0))
+    center_y += off_h
+    center_x += off_v
 
-def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str) -> go.Figure:
+    # Use xlim/ylim if provided, otherwise fallback to config
+    h_x_min = xlim[0] if xlim else config.get("horizontal_range", (xlim[0], xlim[1]))[0]
+    h_x_max = xlim[1] if xlim else config.get("horizontal_range", (xlim[0], xlim[1]))[1]
+    v_y_min = ylim[0] if ylim else config.get("vertical_range", (ylim[0], ylim[1]))[0]
+    v_y_max = ylim[1] if ylim else config.get("vertical_range", (ylim[0], ylim[1]))[1]
+
+    road_color = "none"
+    edge_line_color = "black"
+    center_line_color = "black"
+    lane_line_width = 0.8
+
+    h_half = lane_width * lanes_h / 2.0
+    v_half = lane_width * lanes_v / 2.0
+
+    # Horizontal road fill
+    h_poly = np.array([
+        [h_x_min, center_y - h_half],
+        [h_x_max, center_y - h_half],
+        [h_x_max, center_y + h_half],
+        [h_x_min, center_y + h_half],
+    ])
+    ax.fill(h_poly[:, 0], h_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+
+    # Vertical road fill
+    v_poly = np.array([
+        [center_x - v_half, v_y_min],
+        [center_x + v_half, v_y_min],
+        [center_x + v_half, v_y_max],
+        [center_x - v_half, v_y_max],
+    ])
+    ax.fill(v_poly[:, 0], v_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+
+    # Horizontal road edges (skip intersection)
+    # Bottom edge
+    ax.plot([h_x_min, center_x - v_half], [center_y - h_half, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    ax.plot([center_x + v_half, h_x_max], [center_y - h_half, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    # Top edge
+    ax.plot([h_x_min, center_x - v_half], [center_y + h_half, center_y + h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    ax.plot([center_x + v_half, h_x_max], [center_y + h_half, center_y + h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+
+    # Vertical road edges (skip intersection)
+    # Left edge
+    ax.plot([center_x - v_half, center_x - v_half], [v_y_min, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    ax.plot([center_x - v_half, center_x - v_half], [center_y + h_half, v_y_max], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    # Right edge
+    ax.plot([center_x + v_half, center_x + v_half], [v_y_min, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+    ax.plot([center_x + v_half, center_x + v_half], [center_y + h_half, v_y_max], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+
+    # Horizontal dashed lines (skip intersection)
+    for i in range(1, lanes_h):
+        y_val = center_y - h_half + i * lane_width
+        # Left segment
+        ax.plot(
+            [h_x_min, center_x - v_half],
+            [y_val, y_val],
+            color=center_line_color,
+            linewidth=lane_line_width,
+            linestyle="--",
+            dashes=(10, 10),
+            alpha=1.0,
+            zorder=1,
+        )
+        # Right segment
+        ax.plot(
+            [center_x + v_half, h_x_max],
+            [y_val, y_val],
+            color=center_line_color,
+            linewidth=lane_line_width,
+            linestyle="--",
+            dashes=(10, 10),
+            alpha=1.0,
+            zorder=1,
+        )
+
+    # Vertical dashed lines (skip intersection)
+    for i in range(1, lanes_v):
+        x_val = center_x - v_half + i * lane_width
+        # Bottom segment
+        ax.plot(
+            [x_val, x_val],
+            [v_y_min, center_y - h_half],
+            color=center_line_color,
+            linewidth=lane_line_width,
+            linestyle="--",
+            dashes=(10, 10),
+            alpha=1.0,
+            zorder=1,
+        )
+        # Top segment
+        ax.plot(
+            [x_val, x_val],
+            [center_y + h_half, v_y_max],
+            color=center_line_color,
+            linewidth=lane_line_width,
+            linestyle="--",
+            dashes=(10, 10),
+            alpha=1.0,
+            zorder=1,
+        )
+
+def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple, ylim: tuple) -> go.Figure:
+    lane_cfg = LANE_CONFIGURATIONS.get(c_value)
+    if not lane_cfg:
+        return fig
+
+    lane_color = "rgba(0, 0, 0, 0)"
+    edge_color = "rgba(0, 0, 0, 1)"
+    dashed_color = "rgba(0, 0, 0, 1)"
+
+    mode = lane_cfg.get("mode", "data_path")
+    if mode == "intersection":
+        return _add_intersection_lanes(fig, lane_cfg, lane_color, edge_color, dashed_color, xlim, ylim)
+
+    lane_width = float(lane_cfg.get("lane_width", 3.0))
+    lane_count = int(lane_cfg.get("lanes", 3))
+    offset = float(lane_cfg.get("offset", 0.0))
+
+    # Dynamic offset for single-object configurations: force object to rightmost (bottom) lane
+    if _df_all is not None:
+        config_df = _df_all[_df_all["c"] == c_value]
+        if not config_df.empty:
+            unique_objects = config_df["o"].unique()
+            if len(unique_objects) == 1:
+                # Calculate offset to center the road such that y=0 corresponds to the bottom lane center
+                offset = (lane_width * (lane_count - 1)) / 2.0
+
+    lane_polylines = _build_lane_polylines_from_data(c_value, lane_width, lane_count, xlim, offset)
+    if not lane_polylines:
+        return fig
+
+    return _add_lane_polylines_plotly(fig, lane_polylines, lane_color, edge_color, dashed_color)
+
+def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_color: str, dashed_color: str, xlim: tuple = None, ylim: tuple = None) -> go.Figure:
     """Add intersection lane markings (crossing roads)."""
     lanes_h = config["lanes_horizontal"]
     lanes_v = config["lanes_vertical"]
     lane_width = config["lane_width"]
     cx, cy = config["center"]
-    road_length = config["road_length"]
     
-    # Horizontal road
+    # Apply offsets if present
+    off_h = float(config.get("offset_horizontal", 0.0))
+    off_v = float(config.get("offset_vertical", 0.0))
+    cy += off_h
+    cx += off_v
+    
+    # Get road ranges - use xlim/ylim if provided
+    h_x_min = xlim[0] if xlim else config.get("horizontal_range", (cx - 100, cx + 100))[0]
+    h_x_max = xlim[1] if xlim else config.get("horizontal_range", (cx - 100, cx + 100))[1]
+    v_y_min = ylim[0] if ylim else config.get("vertical_range", (cy - 100, cy + 100))[0]
+    v_y_max = ylim[1] if ylim else config.get("vertical_range", (cy - 100, cy + 100))[1]
+    
+    # Horizontal road dimensions
     h_width = lanes_h * lane_width
     h_y_bottom = cy - h_width / 2
     h_y_top = cy + h_width / 2
     
-    # Vertical road
+    # Vertical road dimensions
     v_width = lanes_v * lane_width
     v_x_left = cx - v_width / 2
     v_x_right = cx + v_width / 2
@@ -4718,43 +4961,41 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     # Draw horizontal road
     fig.add_shape(
         type="rect",
-        x0=cx - road_length, y0=h_y_bottom,
-        x1=cx + road_length, y1=h_y_top,
-        fillcolor="rgba(64, 64, 64, 0.5)",
-        line=dict(color="rgba(64, 64, 64, 0)", width=0),
+        x0=h_x_min, y0=h_y_bottom,
+        x1=h_x_max, y1=h_y_top,
+        fillcolor=lane_color,
+        line=dict(color="rgba(0, 0, 0, 0)", width=0),
         layer="below"
     )
     
     # Draw vertical road
     fig.add_shape(
         type="rect",
-        x0=v_x_left, y0=cy - road_length,
-        x1=v_x_right, y1=cy + road_length,
-        fillcolor="rgba(64, 64, 64, 0.5)",
-        line=dict(color="rgba(64, 64, 64, 0)", width=0),
+        x0=v_x_left, y0=v_y_min,
+        x1=v_x_right, y1=v_y_max,
+        fillcolor=lane_color,
+        line=dict(color="rgba(0, 0, 0, 0)", width=0),
         layer="below"
     )
     
     # Draw horizontal lane dividers (outside intersection box)
     for i in range(1, lanes_h):
         y_line = h_y_bottom + i * lane_width
-        dash_style = 'dash' if i == lanes_h // 2 else None
-        color = dashed_color if i == lanes_h // 2 else line_color
         # Left segment
         fig.add_trace(go.Scatter(
-            x=[cx - road_length, v_x_left],
+            x=[h_x_min, v_x_left],
             y=[y_line, y_line],
             mode='lines',
-            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            line=dict(color=dashed_color, width=1.5, dash='dash'),
             showlegend=False,
             hoverinfo='skip'
         ))
         # Right segment
         fig.add_trace(go.Scatter(
-            x=[v_x_right, cx + road_length],
+            x=[v_x_right, h_x_max],
             y=[y_line, y_line],
             mode='lines',
-            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            line=dict(color=dashed_color, width=1.5, dash='dash'),
             showlegend=False,
             hoverinfo='skip'
         ))
@@ -4762,30 +5003,28 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     # Draw vertical lane dividers (outside intersection box)
     for i in range(1, lanes_v):
         x_line = v_x_left + i * lane_width
-        dash_style = 'dash' if i == lanes_v // 2 else None
-        color = dashed_color if i == lanes_v // 2 else line_color
         # Bottom segment
         fig.add_trace(go.Scatter(
             x=[x_line, x_line],
-            y=[cy - road_length, h_y_bottom],
+            y=[v_y_min, h_y_bottom],
             mode='lines',
-            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            line=dict(color=dashed_color, width=1.5, dash='dash'),
             showlegend=False,
             hoverinfo='skip'
         ))
         # Top segment
         fig.add_trace(go.Scatter(
             x=[x_line, x_line],
-            y=[h_y_top, cy + road_length],
+            y=[h_y_top, v_y_max],
             mode='lines',
-            line=dict(color=color, width=1 if dash_style is None else 2, dash=dash_style),
+            line=dict(color=dashed_color, width=1.5, dash='dash'),
             showlegend=False,
             hoverinfo='skip'
         ))
     
     # Draw edge lines for horizontal road
     fig.add_trace(go.Scatter(
-        x=[cx - road_length, v_x_left],
+        x=[h_x_min, v_x_left],
         y=[h_y_bottom, h_y_bottom],
         mode='lines',
         line=dict(color=line_color, width=2),
@@ -4793,7 +5032,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
         hoverinfo='skip'
     ))
     fig.add_trace(go.Scatter(
-        x=[v_x_right, cx + road_length],
+        x=[v_x_right, h_x_max],
         y=[h_y_bottom, h_y_bottom],
         mode='lines',
         line=dict(color=line_color, width=2),
@@ -4801,7 +5040,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
         hoverinfo='skip'
     ))
     fig.add_trace(go.Scatter(
-        x=[cx - road_length, v_x_left],
+        x=[h_x_min, v_x_left],
         y=[h_y_top, h_y_top],
         mode='lines',
         line=dict(color=line_color, width=2),
@@ -4809,7 +5048,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
         hoverinfo='skip'
     ))
     fig.add_trace(go.Scatter(
-        x=[v_x_right, cx + road_length],
+        x=[v_x_right, h_x_max],
         y=[h_y_top, h_y_top],
         mode='lines',
         line=dict(color=line_color, width=2),
@@ -4820,7 +5059,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     # Draw edge lines for vertical road
     fig.add_trace(go.Scatter(
         x=[v_x_left, v_x_left],
-        y=[cy - road_length, h_y_bottom],
+        y=[v_y_min, h_y_bottom],
         mode='lines',
         line=dict(color=line_color, width=2),
         showlegend=False,
@@ -4828,7 +5067,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     ))
     fig.add_trace(go.Scatter(
         x=[v_x_left, v_x_left],
-        y=[h_y_top, cy + road_length],
+        y=[h_y_top, v_y_max],
         mode='lines',
         line=dict(color=line_color, width=2),
         showlegend=False,
@@ -4836,7 +5075,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     ))
     fig.add_trace(go.Scatter(
         x=[v_x_right, v_x_right],
-        y=[cy - road_length, h_y_bottom],
+        y=[v_y_min, h_y_bottom],
         mode='lines',
         line=dict(color=line_color, width=2),
         showlegend=False,
@@ -4844,7 +5083,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict, lane_color: str, line_
     ))
     fig.add_trace(go.Scatter(
         x=[v_x_right, v_x_right],
-        y=[h_y_top, cy + road_length],
+        y=[h_y_top, v_y_max],
         mode='lines',
         line=dict(color=line_color, width=2),
         showlegend=False,
