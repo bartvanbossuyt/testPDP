@@ -17,9 +17,9 @@ LANE_CONFIGURATIONS[4] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
 LANE_CONFIGURATIONS[11] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
 
 LANE_CONFIGURATIONS[12] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (-5, 5)}, "description": "3-lane road (horizontal)"}
-LANE_CONFIGURATIONS[13] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (55, 145)}, "description": "3-lane road for overtaking (2 cars)"}
+LANE_CONFIGURATIONS[13] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 470), "y": (55, 145)}, "offset": 1.5, "description": "3-lane road for overtaking (2 cars)"}
 LANE_CONFIGURATIONS[14] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (20, 160), "y": (90, 110)}, "description": "3-lane road for overtaking (3 cars)"}
-LANE_CONFIGURATIONS[15] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (40, 210), "y": (90, 260)}, "description": "Curved road with approach and exit"}
+LANE_CONFIGURATIONS[15] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (40, 180), "y": (140, 200)}, "description": "Curved road with 3 cars"}
 LANE_CONFIGURATIONS[16] = {
     "mode": "intersection",
     "lanes_horizontal": 3,

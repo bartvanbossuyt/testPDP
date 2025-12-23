@@ -4469,6 +4469,11 @@ def _extract_centerline_from_data(c_value: int):
     if config_df.empty:
         return None
 
+    # For curved road configs with different speeds, use only the middle lane car (object 1)
+    # to get correct centerline that follows the actual road curve
+    if c_value in [15] and 1 in config_df['o'].values:
+        config_df = config_df[config_df['o'] == 1]
+
     center_samples: list[tuple[float, float, float]] = []
     for t_val, group in config_df.groupby("t"):
         center_samples.append((float(t_val), float(group["x"].mean()), float(group["y"].mean())))
@@ -4484,23 +4489,34 @@ def _extract_centerline_from_data(c_value: int):
     if centerline.shape[0] < 2:
         return _extract_longest_object_path(config_df)
 
-    # Check if the path is roughly straight
-    if centerline.shape[0] >= 3:
+    # Check if the path is roughly straight (skip for curved configs)
+    if c_value not in [15] and centerline.shape[0] >= 3:
         p_start = centerline[0]
         p_end = centerline[-1]
         vec = p_end - p_start
         norm = np.linalg.norm(vec)
         if norm > 1e-6:
-            # Calculate distance of all points to the line segment
-            unit_vec = vec / norm
-            vecs = centerline - p_start
-            # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
-            cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
-            max_deviation = np.max(np.abs(cross_products))
+            # Check if road is primarily horizontal (x changes much more than y)
+            x_range = np.max(centerline[:, 0]) - np.min(centerline[:, 0])
+            y_range = np.max(centerline[:, 1]) - np.min(centerline[:, 1])
             
-            # If deviation is small (e.g. < 0.5m), simplify to straight line
-            if max_deviation < 0.5:
-                centerline = np.array([centerline[0], centerline[-1]])
+            # If road is mostly horizontal (x changes > 5x more than y), force horizontal
+            if x_range > 5 * y_range and y_range < 10:
+                # Use mean y for a perfectly horizontal road
+                mean_y = np.mean(centerline[:, 1])
+                centerline = np.array([[centerline[0, 0], mean_y], [centerline[-1, 0], mean_y]])
+            else:
+                # Calculate distance of all points to the line segment
+                unit_vec = vec / norm
+                vecs = centerline - p_start
+                # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
+                cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
+                max_deviation = np.max(np.abs(cross_products))
+                
+                # If deviation is small (e.g. < 5.0m), simplify to straight line
+                # Higher threshold to handle lane changes that shift the average
+                if max_deviation < 5.0:
+                    centerline = np.array([centerline[0], centerline[-1]])
     elif centerline.shape[0] == 2:
         pass # Already straight
 
@@ -4530,27 +4546,55 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     if centerline is None or centerline.shape[0] < 2:
         return None
 
-    # Extend centerline to xlim if provided, ONLY if it's a straight line
-    if xlim is not None and centerline.shape[0] == 2:
+    # Extend centerline to xlim if provided
+    if xlim is not None:
         p1 = centerline[0]
         p2 = centerline[-1]
-        direction = p2 - p1
-        norm = np.linalg.norm(direction)
-        if norm > 1e-6:
-            unit_dir = direction / norm
-            
-            if abs(unit_dir[0]) > 1e-6:
-                t1 = (xlim[0] - p1[0]) / unit_dir[0]
-                t2 = (xlim[1] - p1[0]) / unit_dir[0]
-                
-                # Extend start
-                new_p1 = p1 + min(t1, t2) * unit_dir
-                # Extend end
-                new_p2 = p1 + max(t1, t2) * unit_dir
-                
-                centerline = np.array([new_p1, new_p2])
+        
+        # For curved lines (>2 points), use LOCAL tangent at endpoints for extension
+        if centerline.shape[0] > 2:
+            # Tangent at start: direction from point 0 to point 1
+            start_tangent = centerline[1] - centerline[0]
+            start_norm = np.linalg.norm(start_tangent)
+            if start_norm > 1e-6:
+                start_unit = start_tangent / start_norm
             else:
-                centerline = np.array([p1 - unit_dir * 1000, p2 + unit_dir * 1000])
+                start_unit = np.array([1.0, 0.0])
+            
+            # Tangent at end: direction from second-to-last to last point
+            end_tangent = centerline[-1] - centerline[-2]
+            end_norm = np.linalg.norm(end_tangent)
+            if end_norm > 1e-6:
+                end_unit = end_tangent / end_norm
+            else:
+                end_unit = np.array([1.0, 0.0])
+            
+            # Extend start if needed (using start tangent, going backwards)
+            if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
+                t_start = (xlim[0] - p1[0]) / start_unit[0]
+                new_start = p1 + t_start * start_unit
+                centerline = np.vstack([[new_start], centerline])
+            
+            # Extend end if needed (using end tangent, going forwards)
+            if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
+                t_end = (xlim[1] - p2[0]) / end_unit[0]
+                new_end = p2 + t_end * end_unit
+                centerline = np.vstack([centerline, [new_end]])
+        else:
+            # For straight lines (2 points), use overall direction
+            direction = p2 - p1
+            norm = np.linalg.norm(direction)
+            if norm > 1e-6:
+                unit_dir = direction / norm
+                if abs(unit_dir[0]) > 1e-6:
+                    t_start = (xlim[0] - p1[0]) / unit_dir[0]
+                    t_end = (xlim[1] - p1[0]) / unit_dir[0]
+                    if t_start > t_end:
+                        t_start, t_end = t_end, t_start
+                    new_start = p1 + t_start * unit_dir
+                    new_end = p1 + t_end * unit_dir
+                    centerline = np.array([new_start, new_end])
+
 
     # Apply vertical offset to centerline
     centerline[:, 1] += offset
