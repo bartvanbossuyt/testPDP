@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*- 
+﻿# -*- coding: utf-8 -*- 
 # inverse.py
 # Streamlit app with an academic look, two columns with strictly square axes.
-# Left: line + points from CSV (c=11, t∈{0,1,2}, o=0). Right: identical axes, initially empty.
-# CSV may start with literally: "header: c,t,o,x,y" → that line is skipped.
-# Axis labels: d₁ and d₂; point labels: k₀, k₁, k₂ (blue, smaller).
+# Left: line + points from CSV (c=11, tâˆˆ{0,1,2}, o=0). Right: identical axes, initially empty.
+# CSV may start with literally: "header: c,t,o,x,y" â†’ that line is skipped.
+# Axis labels: d1 and d2; point labels: k0, k1, k2 (blue, smaller).
 # maxdist = max(||k0-k1||, ||k1-k2||); axes get at least maxdist margin to every border.
 
 from pathlib import Path
@@ -34,11 +34,18 @@ from pdp_utils.core import (
     apply_buffer_transformation
 )
 from pdp_utils.config import LANE_CONFIGURATIONS, DEFAULT_LANE_SETUP
+from pdp_utils.data_loading import to_numeric_series, extract_points_from_df
+from pdp_utils.order_comparison import (
+    strip_primes,
+    extract_order_string,
+    check_pdp_match,
+    check_pdp_match_detailed,
+)
 
 # ============= Page configuration =============
 st.set_page_config(
     page_title="pdp inverse",
-    page_icon="📐",
+    page_icon="ðŸ“",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -70,7 +77,7 @@ def check_password():
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
-        st.error("😕 Password incorrect")
+        st.error("ðŸ˜• Password incorrect")
         return False
     else:
         # Password correct.
@@ -124,13 +131,7 @@ hr { border:none; border-top:1px solid #ddd; margin:.4rem 0 1rem 0; }
 st.markdown("<h1 class='headline'>pdp inverse</h1>", unsafe_allow_html=True)
 st.markdown("<hr />", unsafe_allow_html=True)
 
-# ---------- Wrapper: Series -> Series ----------
-def to_numeric_series(s: pd.Series) -> pd.Series:
-    """Convert a pandas Series to numeric, coercing bad values to NaN (Pylance-friendly)."""
-    out = pd.to_numeric(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        s, errors="coerce"
-    )
-    return out
+# ---------- to_numeric_series imported from pdp_utils.data_loading ----------
 
 # ============= Load CSV (recognizes 'header: c,t,o,x,y') ============
 def load_points(csv_name: str = "voorbeeld.csv", o_val: int = 0, c_val: int = 11) -> tuple[np.ndarray, np.ndarray]:
@@ -227,11 +228,11 @@ data_source = st.radio(
     key="data_source",
     help="""Choose how to load the reference configuration:
 
-• **Preset configurations**: Load from the built-in 'voorbeeld.csv' file containing 11 predefined configurations.
+â€¢ **Preset configurations**: Load from the built-in 'voorbeeld.csv' file containing 11 predefined configurations.
 
-• **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=k, 1=l), x/y=coordinates.
+â€¢ **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=k, 1=l), x/y=coordinates.
 
-• **Create random configuration**: Generate a random configuration with specified number of points and timestamps. You can then interactively edit the coordinates."""
+â€¢ **Create random configuration**: Generate a random configuration with specified number of points and timestamps. You can then interactively edit the coordinates."""
 )
 
 # Initialize variables that will be set based on data source
@@ -768,7 +769,7 @@ def _auto_detect_bounds_logic() -> bool:
 if data_source != "Create random configuration":
     # Only show Auto Detect button when using preset or uploaded data
     st.markdown('<div class="auto-detect-bounds-wrapper" style="margin-top:0.5rem;">', unsafe_allow_html=True)
-    if st.button("🔍 Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
+    if st.button("Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
                  help="Recalculate axis bounds based on currently selected configuration (c) and timestamp window. Use this when parent points fall outside the visible area after changing settings."):
         # Use the shared auto-detect logic
         _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
@@ -937,7 +938,7 @@ with sc7:
         )
 
 # Advanced Settings in collapsible expander
-with st.expander("⚙️ Advanced Point Selection", expanded=False):
+with st.expander("Advanced Point Selection", expanded=False):
     st.markdown("**Point Selection (per iteration)**")
     
     ps_col1, ps_col2 = st.columns([1, 1], gap="small")
@@ -949,11 +950,11 @@ with st.expander("⚙️ Advanced Point Selection", expanded=False):
             key="cfg_point_selection_mode",
             help="""How to select points to move in each iteration:
             
-• **Single point**: Move 1 random point per iteration (default, current behavior)
+â€¢ **Single point**: Move 1 random point per iteration (default, current behavior)
 
-• **Multiple random points**: Move N randomly selected points together
+â€¢ **Multiple random points**: Move N randomly selected points together
 
-• **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
+â€¢ **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
         )
     
     with ps_col2:
@@ -964,9 +965,9 @@ with st.expander("⚙️ Advanced Point Selection", expanded=False):
             key="cfg_movement_direction",
             help="""How selected points move together:
             
-• **Same direction**: All points move with the same angle and distance (coherent movement)
+â€¢ **Same direction**: All points move with the same angle and distance (coherent movement)
 
-• **Random directions**: Each point gets its own random angle and distance (independent movement)"""
+â€¢ **Random directions**: Each point gets its own random angle and distance (independent movement)"""
         )
     
     # Damping factor settings
@@ -1070,7 +1071,7 @@ with st.expander("⚙️ Advanced Point Selection", expanded=False):
             )
 
 # PDP Variant Selection (Multiple variants) - in expander for compactness
-with st.expander("🔬 PDP Variant Configuration", expanded=False):
+with st.expander("PDP Variant Configuration", expanded=False):
     # Multi-select for PDP variants
     pdp_variants_selected = st.multiselect(
         "PDP Variants to calculate",
@@ -1079,15 +1080,15 @@ with st.expander("🔬 PDP Variant Configuration", expanded=False):
         key="cfg_pdp_variants",
         help="""Select PDP variants for configuration generation:
 
-• **fundamental**: Basic PDP with N×N inequality matrix. Two configurations match if ALL pairwise orderings are identical.
+â€¢ **fundamental**: Basic PDP with NÃ—N inequality matrix. Two configurations match if ALL pairwise orderings are identical.
 
-• **buffer**: Expands each point to 5 variants (±buffer in x and y directions). Creates 5N×5N matrix. More restrictive - requires all buffer variants to match.
+â€¢ **buffer**: Expands each point to 5 variants (Â±buffer in x and y directions). Creates 5NÃ—5N matrix. More restrictive - requires all buffer variants to match.
 
-• **rough**: Adds equality tolerance. Points within roughness distance are considered EQUAL (matrix value 1). More permissive - allows small variations.
+â€¢ **rough**: Adds equality tolerance. Points within roughness distance are considered EQUAL (matrix value 1). More permissive - allows small variations.
 
-• **bufferrough**: Combines buffer expansion AND roughness tolerance. 5N×5N matrix with fuzzy equality.
+â€¢ **bufferrough**: Combines buffer expansion AND roughness tolerance. 5NÃ—5N matrix with fuzzy equality.
 
-• **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d₁ (x-axis, driving direction) and roughness ONLY on d₂ (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
+â€¢ **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d1 (x-axis, driving direction) and roughness ONLY on d2 (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
     )
     
     # Show parameter inputs if any variant needs them
@@ -1105,30 +1106,30 @@ with st.expander("🔬 PDP Variant Configuration", expanded=False):
                 # Show buffer_x for all buffer variants including realistic
                 buffer_x_default = 10.0 if needs_realistic else 25.0
                 buffer_x = st.number_input(
-                    "Buffer X (d₁)",
+                    "Buffer X (d1)",
                     min_value=0.0,
                     max_value=100.0,
                     value=buffer_x_default,
                     step=1.0,
                     key="cfg_buffer_x",
-                    help="Buffer distance in x-direction (d₁, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
+                    help="Buffer distance in x-direction (d1, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
                 )
                 # Only show buffer_y if NOT exclusively using realistic
                 needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
                 if needs_buffer_y:
                     buffer_y = st.number_input(
-                        "Buffer Y (d₂)",
+                        "Buffer Y (d2)",
                         min_value=0.0,
                         max_value=100.0,
                         value=10.0,
                         step=1.0,
                         key="cfg_buffer_y",
-                        help="Buffer distance in y-direction (d₂, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
+                        help="Buffer distance in y-direction (d2, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
                     )
                 else:
                     buffer_y = 0.0
                     if needs_realistic:
-                        st.info("ℹ️ 'realistic' uses roughness on y instead of buffer")
+                        st.info("â„¹ï¸ 'realistic' uses roughness on y instead of buffer")
             else:
                 buffer_x = 0.0
                 buffer_y = 0.0
@@ -1139,29 +1140,29 @@ with st.expander("🔬 PDP Variant Configuration", expanded=False):
                 needs_rough_x = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
                 if needs_rough_x:
                     rough_x = st.number_input(
-                        "Roughness X (d₁)",
+                        "Roughness X (d1)",
                         min_value=0.0,
                         max_value=100.0,
                         value=0.0,
                         step=0.1,
                         key="cfg_rough_x",
-                        help="Equality tolerance in x-direction (d₁). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
+                        help="Equality tolerance in x-direction (d1). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
                     )
                 else:
                     rough_x = 0.0
                     if needs_realistic:
-                        st.info("ℹ️ 'realistic' uses buffer on x instead of roughness")
+                        st.info("â„¹ï¸ 'realistic' uses buffer on x instead of roughness")
                 
                 # Show rough_y for all rough variants including realistic
                 rough_y_default = 1.5 if needs_realistic else 0.0
                 rough_y = st.number_input(
-                    "Roughness Y (d₂)",
+                    "Roughness Y (d2)",
                     min_value=0.0,
                     max_value=100.0,
                     value=rough_y_default,
                     step=0.1,
                     key="cfg_rough_y",
-                    help="Equality tolerance in y-direction (d₂, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
+                    help="Equality tolerance in y-direction (d2, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
                 )
             else:
                 rough_x = 0.0
@@ -1173,7 +1174,7 @@ with st.expander("🔬 PDP Variant Configuration", expanded=False):
         rough_y = 0.0
 
 # External (fixed) reference points - in expander for compactness
-with st.expander("📍 External Reference Points", expanded=False):
+with st.expander("External Reference Points", expanded=False):
     use_external_points = st.checkbox(
         "Use external reference points",
         value=st.session_state.get("use_external_points", False),
@@ -1235,10 +1236,10 @@ with anim_col1:
         key="cfg_anim_mode",
         label_visibility="collapsed",
         help=("Choose how the animation advances:\n"
-              "• **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
-              "• **Manual step-by-step**: Click to advance each search step manually.\n"
-              "• **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
-              "• **Manual config-by-config**: Click to complete one full configuration (all iterations).")
+              "â€¢ **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
+              "â€¢ **Manual step-by-step**: Click to advance each search step manually.\n"
+              "â€¢ **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
+              "â€¢ **Manual config-by-config**: Click to complete one full configuration (all iterations).")
     )
 with anim_col2:
     if anim_mode == "Auto-advance":
@@ -1327,20 +1328,20 @@ if is_any_manual_mode:
     # Determine button labels based on mode
     # Button always shows "Complete iteration/config" - the action either completes new work or redoes previous
     if is_manual_step_mode:
-        prev_label = "◀ Previous step"
-        next_label = "▶ Next step"
+        prev_label = "Previous step"
+        next_label = "Next step"
         prev_help = "Click to go back to the previous animation step."
         next_help = "Click to redo the next step." if has_redo_for_labels else "Click to advance the animation by one step."
         generate_help = "Start generating configurations step-by-step. Click 'Next step' to advance each step manually."
     elif is_manual_iteration_mode:
-        prev_label = "◀ Previous"
-        next_label = "▶ Complete iteration"
+        prev_label = "Previous"
+        next_label = "â–¶ Complete iteration"
         prev_help = "Click to go back to the previous iteration state."
         next_help = "Click to restore the next iteration." if has_redo_for_labels else "Click to complete the current iteration (finish all search steps and place the point)."
         generate_help = "Start generating configurations. Click 'Complete iteration' to finish each iteration."
     else:  # is_manual_config_mode
-        prev_label = "◀ Previous"
-        next_label = "▶ Complete config"
+        prev_label = "Previous"
+        next_label = "â–¶ Complete config"
         prev_help = "Click to go back to the previous configuration state."
         next_help = "Click to restore the next configuration." if has_redo_for_labels else "Click to complete the current configuration (finish all remaining iterations)."
         generate_help = "Start generating configurations. Click 'Complete config' to finish each configuration."
@@ -1478,7 +1479,7 @@ if is_any_manual_mode:
         # Styled with white text on black background via custom CSS wrapper class
         st.markdown('<div class="reset-button-wrapper">', unsafe_allow_html=True)
         reset_btn_manual = st.button(
-            "⟲ Reset",
+            "Reset",
             key="btn_reset_manual",
             disabled=not reset_btn_should_be_enabled,
             help="Halt the animation and reset all graphs to their initial values. Clears all generated points and search state."
@@ -1505,7 +1506,7 @@ else:
         # Styled with white text on black background via custom CSS wrapper class
         st.markdown('<div class="reset-button-wrapper">', unsafe_allow_html=True)
         reset_btn_auto = st.button(
-            "⟲ Reset",
+            "Reset",
             key="btn_reset_auto",
             disabled=not reset_btn_should_be_enabled,
             help="Halt the animation and reset all graphs to their initial values. Clears all generated points and search state."
@@ -1757,14 +1758,7 @@ if _config_changed and data_source != "Create random configuration":
 
 # ============= Data window (select subset of k and l) ============
 # Extract points from _df_all (works for all data sources: preset, uploaded, random)
-def extract_points_from_df(df: pd.DataFrame, o_val: int, c_val: int) -> tuple[np.ndarray, np.ndarray]:
-    """Extract points and t-values from DataFrame for a given object and configuration."""
-    sel = df[(df["c"] == c_val) & (df["o"] == o_val)].sort_values("t").reset_index(drop=True)
-    if sel.empty:
-        return np.array([]).reshape(0, 2), np.array([])
-    pts = sel[["x", "y"]].values.astype(float)
-    ts = sel["t"].values.astype(float)
-    return pts, ts
+# extract_points_from_df imported from pdp_utils.data_loading
 
 # Extract points for all objects into a unified structure
 all_objects_points: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -2136,7 +2130,7 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
     Returns dict mapping flat_idx -> new_position (clipped to visualization bounds)
     
     When buffer variants are active, clips positions with extra margin so that
-    buffer-transformed points (x ± buffer_x, y ± buffer_y) stay within bounds.
+    buffer-transformed points (x Â± buffer_x, y Â± buffer_y) stay within bounds.
     """
     # Use visualization bounds (XLIM, YLIM) to keep points within the graph
     # These are computed from the actual data and ensure points stay visible
@@ -2559,254 +2553,9 @@ def make_d2_order_latex_generated() -> str:
     return r"d_2: " + "".join(out)
 
 # ===== Helpers for order comparison (now using PDP inequality matrices) =====
-def _strip_primes(text: str) -> str:
-    """Remove prime markers and * markers from a LaTeX-like string."""
-    text = re.sub(r"\^\{\*\}", "", text)  # legacy, now not used but harmless
-    text = re.sub(r"[']+", "", text)
-    text = text.replace("*", "")
-    return text
+# ===== Helpers for order comparison imported from pdp_utils.order_comparison =====
+# strip_primes, extract_order_string, check_pdp_match, check_pdp_match_detailed
 
-def _extract_order_string(latex_str: str) -> str:
-    """Strip d_1/d_2 prefixes, prime decorations and braces so only the bare order remains."""
-    core = latex_str.replace("d_1:", "").replace("d_2:", "").strip()
-    core_no_primes = _strip_primes(core)
-    # remove {…} but keep inside, so k_{0} → k_0
-    core_no_braces = re.sub(r"\{([^{}]+)\}", r"\1", core_no_primes)
-    return core_no_braces
-
-def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
-                    pdp_variant: str = "fundamental",
-                    buffer_x: float = 25.0,
-                    buffer_y: float = 10.0,
-                    rough_x: float = 0.0,
-                    rough_y: float = 0.0,
-                    match_threshold: float = 1.0,
-                    max_mismatches: int | None = None,
-                    debug: bool = False) -> tuple[bool, bool]:
-    """
-    Check if generated configuration matches original using PDP inequality matrices.
-    
-    This uses the exact PDP logic from N_PDP.py with support for all five variants:
-    - fundamental: Basic PDP matching with no tolerance (N×N matrix comparison)
-    - buffer: Apply buffer transformation to both configs, compare 5N×5N matrices
-    - rough: Use roughness as equality tolerance in N×N matrix comparison
-    - bufferrough: Apply buffer transformation AND use roughness tolerance
-    - realistic: Buffer ONLY on x (d₁, driving direction), roughness ONLY on y (d₂, lateral/lane position)
-                 Designed for traffic scenarios where lane changes are unrealistic
-    
-    For buffer variants:
-    - Each point is expanded to 5 buffer variants (±buffer_x, ±buffer_y, original)
-    - Both original and generated configurations are expanded
-    - The resulting 5N×5N inequality matrices are compared
-    
-    Args:
-        original_points: All original points (N, 2) - can be any number of points
-        generated_points: All generated points (N, 2) - same count as original
-        pdp_variant: PDP variant to use ("fundamental", "buffer", "rough", "bufferrough", "realistic")
-        buffer_x: Buffer distance in x-direction (for buffer/bufferrough/realistic variants)
-        buffer_y: Buffer distance in y-direction (for buffer/bufferrough variants)
-        rough_x: Roughness tolerance in x-direction (for rough/bufferrough variants)
-        rough_y: Roughness tolerance in y-direction (for rough/bufferrough/realistic variants)
-        match_threshold: Minimum match percentage required (0.0 to 1.0), default 1.0 = 100%
-        max_mismatches: If not None, use absolute mismatch mode instead of percentage
-        debug: If True, print debug information
-    
-    Returns:
-        (d1_match, d2_match): Boolean tuple indicating if x and y dimensions match
-    """
-    # Apply buffer transformation if needed (expands N points to 5N points)
-    orig_pts = original_points.copy()
-    gen_pts = generated_points.copy()
-    
-    if pdp_variant in ["buffer", "bufferrough"]:
-        n_before = len(orig_pts)
-        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, buffer_y)
-        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, buffer_y)
-        print(f"[DEBUG BUFFER] Applied buffer transform: {n_before} -> {len(orig_pts)} points, buffer=({buffer_x}, {buffer_y})")
-    elif pdp_variant == "realistic":
-        # For realistic: buffer ONLY on x (driving direction), no buffer on y (lane position)
-        n_before = len(orig_pts)
-        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, 0.0)
-        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, 0.0)
-        print(f"[DEBUG REALISTIC] Applied x-only buffer transform: {n_before} -> {len(orig_pts)} points, buffer_x={buffer_x}")
-    
-    # Determine roughness values based on variant
-    if pdp_variant in ["rough", "bufferrough"]:
-        roughness_x = rough_x
-        roughness_y = rough_y
-        print(f"[DEBUG ROUGH] Using roughness=({roughness_x}, {roughness_y})")
-    elif pdp_variant == "realistic":
-        # For realistic: roughness ONLY on y (lane position), no roughness on x
-        roughness_x = 0.0
-        roughness_y = rough_y
-        print(f"[DEBUG REALISTIC] Using y-only roughness: rough_y={roughness_y}")
-    else:
-        roughness_x = 0.0
-        roughness_y = 0.0
-    
-    if debug:
-        n_orig = len(orig_pts)
-        n_gen = len(gen_pts)
-        print(f"[DEBUG check_pdp_match] variant={pdp_variant}, points={n_orig}, roughness=({roughness_x}, {roughness_y}), threshold={match_threshold}, max_mismatches={max_mismatches}")
-    
-    # Compute inequality matrices for both dimensions
-    original_x_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
-    original_y_matrix = compute_inequality_matrix(orig_pts, 1, roughness_y)
-    
-    generated_x_matrix = compute_inequality_matrix(gen_pts, 0, roughness_x)
-    generated_y_matrix = compute_inequality_matrix(gen_pts, 1, roughness_y)
-    
-    # Compare matrices and get percentages
-    _, d1_percentage = compare_inequality_matrices_with_threshold(original_x_matrix, generated_x_matrix, 1.0)
-    _, d2_percentage = compare_inequality_matrices_with_threshold(original_y_matrix, generated_y_matrix, 1.0)
-    
-    # Determine match based on mode
-    if max_mismatches is not None:
-        # Absolute mismatch mode: count mismatches and compare to threshold
-        n = original_x_matrix.shape[0]
-        d1_mismatches = 0
-        d2_mismatches = 0
-        for i in range(n):
-            for j in range(i + 1, n):
-                if original_x_matrix[i, j] != generated_x_matrix[i, j]:
-                    d1_mismatches += 1
-                if original_y_matrix[i, j] != generated_y_matrix[i, j]:
-                    d2_mismatches += 1
-        total_mismatches = d1_mismatches + d2_mismatches
-        d1_match = total_mismatches <= max_mismatches
-        d2_match = total_mismatches <= max_mismatches
-        if debug or pdp_variant in ["buffer", "rough", "bufferrough", "realistic"]:
-            print(f"[DEBUG {pdp_variant.upper()}] Mismatch count: d1={d1_mismatches}, d2={d2_mismatches}, total={total_mismatches}, max={max_mismatches}, match={d1_match}")
-    elif match_threshold < 1.0:
-        # Relaxed percentage matching: use AVERAGE of d1 and d2 percentages
-        avg_percentage = (d1_percentage + d2_percentage) / 2.0
-        d1_match = avg_percentage >= match_threshold
-        d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
-    else:
-        # Strict matching: both must be exactly 100%
-        d1_match = d1_percentage >= match_threshold
-        d2_match = d2_percentage >= match_threshold
-    
-    if pdp_variant in ["buffer", "rough", "bufferrough", "realistic"]:
-        print(f"[DEBUG {pdp_variant.upper()}] Match result: d1={d1_match}, d2={d2_match} (threshold={match_threshold})")
-    
-    return d1_match, d2_match
-
-def check_pdp_match_detailed(original_points: np.ndarray, generated_points: np.ndarray,
-                              pdp_variant: str = "fundamental",
-                              buffer_x: float = 25.0,
-                              buffer_y: float = 10.0,
-                              rough_x: float = 0.0,
-                              rough_y: float = 0.0,
-                              match_threshold: float = 1.0,
-                              max_mismatches: int | None = None) -> dict:
-    """
-    Extended version of check_pdp_match that returns detailed results for heat map visualization.
-    
-    Args:
-        original_points: Original point positions
-        generated_points: Generated point positions
-        pdp_variant: PDP variant to use
-        buffer_x, buffer_y: Buffer distances
-        rough_x, rough_y: Roughness values
-        match_threshold: Percentage threshold (0.0-1.0)
-        max_mismatches: If not None, use absolute mismatch mode instead of percentage
-    
-    Returns:
-        Dictionary with:
-        - d1_match: Boolean (True if d1 match >= threshold)
-        - d2_match: Boolean (True if d2 match >= threshold)
-        - d1_percentage: Float (actual d1 match percentage)
-        - d2_percentage: Float (actual d2 match percentage)
-        - original_d1_matrix: N×N inequality matrix for original d1
-        - original_d2_matrix: N×N inequality matrix for original d2
-        - generated_d1_matrix: N×N inequality matrix for generated d1
-        - generated_d2_matrix: N×N inequality matrix for generated d2
-    """
-    # Apply buffer transformation if needed (expands N points to 5N points)
-    orig_pts = original_points.copy()
-    gen_pts = generated_points.copy()
-    
-    if pdp_variant in ["buffer", "bufferrough"]:
-        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, buffer_y)
-        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, buffer_y)
-    elif pdp_variant == "realistic":
-        orig_pts = apply_buffer_transformation(orig_pts, buffer_x, 0.0)
-        gen_pts = apply_buffer_transformation(gen_pts, buffer_x, 0.0)
-    
-    # Determine roughness values based on variant
-    if pdp_variant in ["rough", "bufferrough"]:
-        roughness_x = rough_x
-        roughness_y = rough_y
-    elif pdp_variant == "realistic":
-        roughness_x = 0.0
-        roughness_y = rough_y
-    else:
-        roughness_x = 0.0
-        roughness_y = 0.0
-    
-    # Compute inequality matrices for both dimensions
-    original_d1_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
-    original_d2_matrix = compute_inequality_matrix(orig_pts, 1, roughness_y)
-    
-    generated_d1_matrix = compute_inequality_matrix(gen_pts, 0, roughness_x)
-    generated_d2_matrix = compute_inequality_matrix(gen_pts, 1, roughness_y)
-    
-    # Get percentages (always compare to 1.0 to get actual percentage)
-    _, d1_percentage = compare_inequality_matrices_with_threshold(
-        original_d1_matrix, generated_d1_matrix, 1.0
-    )
-    _, d2_percentage = compare_inequality_matrices_with_threshold(
-        original_d2_matrix, generated_d2_matrix, 1.0
-    )
-    
-    # Count mismatches (cells where matrices differ)
-    # Only count upper triangle (excluding diagonal) to avoid double counting
-    n = original_d1_matrix.shape[0]
-    d1_mismatches = 0
-    d2_mismatches = 0
-    total_cells = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            total_cells += 1
-            if original_d1_matrix[i, j] != generated_d1_matrix[i, j]:
-                d1_mismatches += 1
-            if original_d2_matrix[i, j] != generated_d2_matrix[i, j]:
-                d2_mismatches += 1
-    
-    # Determine match based on mode
-    if max_mismatches is not None:
-        # Absolute mismatch mode: total mismatches must be <= max_mismatches
-        total_mismatch_count = d1_mismatches + d2_mismatches
-        d1_match = total_mismatch_count <= max_mismatches
-        d2_match = total_mismatch_count <= max_mismatches
-    elif match_threshold < 1.0:
-        # Relaxed percentage matching: use AVERAGE of d1 and d2 percentages
-        avg_percentage = (d1_percentage + d2_percentage) / 2.0
-        d1_match = avg_percentage >= match_threshold
-        d2_match = avg_percentage >= match_threshold  # Both set to same value based on average
-    else:
-        # Strict matching: both must be exactly 100%
-        d1_match = d1_percentage >= match_threshold
-        d2_match = d2_percentage >= match_threshold
-    
-    return {
-        "d1_match": d1_match,
-        "d2_match": d2_match,
-        "d1_percentage": d1_percentage,
-        "d2_percentage": d2_percentage,
-        "avg_percentage": (d1_percentage + d2_percentage) / 2.0,
-        "d1_mismatches": d1_mismatches,
-        "d2_mismatches": d2_mismatches,
-        "total_mismatches": d1_mismatches + d2_mismatches,
-        "total_cells": total_cells,
-        "original_d1_matrix": original_d1_matrix,
-        "original_d2_matrix": original_d2_matrix,
-        "generated_d1_matrix": generated_d1_matrix,
-        "generated_d2_matrix": generated_d2_matrix,
-    }
-
-# Legacy wrapper for backward compatibility
 def check_pdp_match_legacy(original_k: np.ndarray, original_l: np.ndarray, 
                           generated_k: np.ndarray, generated_l: np.ndarray,
                           pdp_variant: str = "fundamental",
@@ -2987,8 +2736,8 @@ def run_binary_iteration(
     
     Binary search strategy:
     1. Start with a point at distance maxdist from the parent point
-    2. If PDP matches → save as ok_point, try to go further by adding delta
-    3. If PDP doesn't match → compute midpoint between ok_point and current point
+    2. If PDP matches â†’ save as ok_point, try to go further by adding delta
+    3. If PDP doesn't match â†’ compute midpoint between ok_point and current point
     4. Repeat for 7 steps, halving delta each time
     5. Final placement is at the last ok_point
     
@@ -3981,14 +3730,14 @@ if animate_btn:
         #   a-f: Choose parent(s), randomize direction, place points at maxdist
         #        Test if all points are on graph (within bounds), retry up to 10x
         #   g: correct_order = parent coordinates (for each selected point)
-        #   h: WAIT, then halve to 0.5×maxdist BEFORE first test
+        #   h: WAIT, then halve to 0.5Ã—maxdist BEFORE first test
         #
         # Steps n=1 to 7:
         #   - Test current positions for order match (ALL n points together!)
         #   - WAIT
         #   - If match: correct_order = current positions
-        #               new_distance = current_distance + 0.5^(n+1) × maxdist
-        #   - If no match: new_distance = current_distance - 0.5^(n+1) × maxdist
+        #               new_distance = current_distance + 0.5^(n+1) Ã— maxdist
+        #   - If no match: new_distance = current_distance - 0.5^(n+1) Ã— maxdist
         #   - Move points and circles to new_distance
         #
         # End:
@@ -4103,7 +3852,7 @@ if animate_btn:
         st.session_state["anim_binary_current_distance"] = current_distance  # Current distance from parent
         st.session_state["anim_binary_correct_order"] = correct_order.copy()  # Last good position (first point)
         st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}  # Multi-point
-        st.session_state["anim_binary_initialized"] = False  # Will halve to 0.5×maxdist first
+        st.session_state["anim_binary_initialized"] = False  # Will halve to 0.5Ã—maxdist first
         st.session_state["diag_rows"] = []
         st.session_state["binary_iteration_summary"] = []
         st.session_state["anim_had_full_match"] = False
@@ -4128,7 +3877,7 @@ if animate_btn:
 
     elif strategy == "linear":
         # ============= LINEAR SEARCH STRATEGY INITIALIZATION =============
-        # Same as binary but decreases by 0.1×maxdist per step instead of binary search
+        # Same as binary but decreases by 0.1Ã—maxdist per step instead of binary search
         print(f"[DEBUG INIT LINEAR] strategy={strategy}, setting anim_linear_mode=True")
         num_configs_to_generate = num_anim_configs_val
 
@@ -4391,7 +4140,7 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
         )
 
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
-    """Configure axes to be square, with simple ticks and labels d₁, d₂."""
+    """Configure axes to be square, with simple ticks and labels d1, d2."""
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_aspect("equal", adjustable="box")
@@ -4399,8 +4148,8 @@ def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim:
         sp.set_linewidth(0.9)  # type: ignore
         sp.set_color("#222")
     ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")  # type: ignore
-    ax.set_xlabel("d₁", fontsize=11, labelpad=8)  # type: ignore
-    ax.set_ylabel("d₂", fontsize=11, labelpad=8)  # type: ignore
+    ax.set_xlabel("d1", fontsize=11, labelpad=8)  # type: ignore
+    ax.set_ylabel("d2", fontsize=11, labelpad=8)  # type: ignore
     # Draw inferred lane markings on the background (for traffic configurations 0-10)
     infer_and_draw_lanes(ax, xlim, ylim)
 
@@ -5430,7 +5179,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             # This is the "search radius" for the current iteration step
             circle_radius = float(distance)
             
-            # Calculate red dot position: parent + direction × distance
+            # Calculate red dot position: parent + direction Ã— distance
             # Use the movement vector to get the exact direction, place dot at exact distance
             # EXCEPTION: when distance is ~0 (finalized), use stored generated_points directly
             movement_vecs = st.session_state.get("anim_movement_vectors", {})
@@ -5450,7 +5199,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     direction = mv_arr / mv_mag
                 else:
                     direction = np.array([1.0, 0.0])
-                # Red dot at parent + direction × circle_radius (exact distance, no clipping)
+                # Red dot at parent + direction Ã— circle_radius (exact distance, no clipping)
                 red_dot_pos = sel_parent_pt + direction * circle_radius
                 print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f}")
             elif sel_gen_pt is not None:
@@ -5604,21 +5353,21 @@ with col1:
     if "anim_generated_point" in st.session_state:
         left_d1 = make_d1_order_latex()
         right_d1 = make_d1_order_latex_generated()
-        left_order = _extract_order_string(left_d1)
-        right_order = _extract_order_string(right_d1)
+        left_order = extract_order_string(left_d1)
+        right_order = extract_order_string(right_d1)
         same_d1 = left_order == right_order
         st.caption(f"Left: {left_order}")
         st.caption(f"Right: {right_order}")
-        st.markdown(f"**d₁ order match: {same_d1}**")
+        st.markdown(f"**d1 order match: {same_d1}**")
 
         left_d2 = make_d2_order_latex()
         right_d2 = make_d2_order_latex_generated()
-        left_order_d2 = _extract_order_string(left_d2)
-        right_order_d2 = _extract_order_string(right_d2)
+        left_order_d2 = extract_order_string(left_d2)
+        right_order_d2 = extract_order_string(right_d2)
         same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left d₂: {left_order_d2}")
-        st.caption(f"Right d₂: {right_order_d2}")
-        st.markdown(f"**d₂ order match: {same_d2}**")
+        st.caption(f"Left d2: {left_order_d2}")
+        st.caption(f"Right d2: {right_order_d2}")
+        st.markdown(f"**d2 order match: {same_d2}**")
 
     # Download original plot as PNG - reuse the buffer
     _buf_left.seek(0)
@@ -5642,21 +5391,21 @@ with col2:
     if "anim_generated_point" in st.session_state:
         left_d1 = make_d1_order_latex()
         right_d1 = make_d1_order_latex_generated()
-        left_order = _extract_order_string(left_d1)
-        right_order = _extract_order_string(right_d1)
+        left_order = extract_order_string(left_d1)
+        right_order = extract_order_string(right_d1)
         same_d1 = left_order == right_order
         st.caption(f"Left: {left_order}")
         st.caption(f"Right: {right_order}")
-        st.markdown(f"**d₁ order match: {same_d1}**")
+        st.markdown(f"**d1 order match: {same_d1}**")
 
         left_d2 = make_d2_order_latex()
         right_d2 = make_d2_order_latex_generated()
-        left_order_d2 = _extract_order_string(left_d2)
-        right_order_d2 = _extract_order_string(right_d2)
+        left_order_d2 = extract_order_string(left_d2)
+        right_order_d2 = extract_order_string(right_d2)
         same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left d₂: {left_order_d2}")
-        st.caption(f"Right d₂: {right_order_d2}")
-        st.markdown(f"**d₂ order match: {same_d2}**")
+        st.caption(f"Left d2: {left_order_d2}")
+        st.caption(f"Right d2: {right_order_d2}")
+        st.markdown(f"**d2 order match: {same_d2}**")
 
     # Download generated plot as PNG + navigation buttons on ONE row
     # Reuse the buffer that was already created above
@@ -5838,14 +5587,14 @@ if pdp_detailed is not None:
         threshold_display = f"{int(pct_threshold * 100)}%"
         if pct_threshold < 1.0:
             # Show average for relaxed thresholds
-            st.markdown(f"**Threshold:** {threshold_display} | **d₁:** {d1_pct:.1f}% | **d₂:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'✅' if avg_match else '❌'}")
+            st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_pct:.1f}% | **d2:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
         else:
             # Show individual matches for strict threshold
-            st.markdown(f"**Threshold:** {threshold_display} | **d₁ Match:** {d1_pct:.1f}% {'✅' if d1_match else '❌'} | **d₂ Match:** {d2_pct:.1f}% {'✅' if d2_match else '❌'}")
+            st.markdown(f"**Threshold:** {threshold_display} | **d1 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d2 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
     else:
         # Max mismatches mode
-        threshold_display = f"≤{max_mismatches} mismatches"
-        st.markdown(f"**Threshold:** {threshold_display} | **d₁:** {d1_mismatches} mismatches {'✅' if d1_match else '❌'} | **d₂:** {d2_mismatches} mismatches {'✅' if d2_match else '❌'}")
+        threshold_display = f"â‰¤{max_mismatches} mismatches"
+        st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d2:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
     
     # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
     hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
@@ -5959,32 +5708,32 @@ if pdp_detailed is not None:
         highlight_diffs = max_mismatches > 0
     
     with hm_col1:
-        st.markdown("**Original d₁**")
+        st.markdown("**Original d1**")
         if orig_d1_matrix is not None:
-            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d₁ (x)")
+            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d1 (x)")
             st.pyplot(fig_hm1)
             plt.close(fig_hm1)
     
     with hm_col2:
-        st.markdown("**Original d₂**")
+        st.markdown("**Original d2**")
         if orig_d2_matrix is not None:
-            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d₂ (y)")
+            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d2 (y)")
             st.pyplot(fig_hm2)
             plt.close(fig_hm2)
     
     with hm_col3:
-        st.markdown("**Generated d₁**")
+        st.markdown("**Generated d1**")
         if gen_d1_matrix is not None:
-            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d₁ (x)",
+            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d1 (x)",
                                            comparison_matrix=orig_d1_matrix,
                                            highlight_differences=highlight_diffs)
             st.pyplot(fig_hm3)
             plt.close(fig_hm3)
     
     with hm_col4:
-        st.markdown("**Generated d₂**")
+        st.markdown("**Generated d2**")
         if gen_d2_matrix is not None:
-            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d₂ (y)",
+            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d2 (y)",
                                            comparison_matrix=orig_d2_matrix,
                                            highlight_differences=highlight_diffs)
             st.pyplot(fig_hm4)
@@ -5992,9 +5741,9 @@ if pdp_detailed is not None:
     
     # Legend
     if highlight_diffs:
-        st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i | ⬛ Border = differs from original")
+        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
     else:
-        st.caption("Legend: 🟢 Green (0) = j > i | 🟡 Yellow (1) = j ≈ i (equal) | 🔴 Red (2) = j < i")
+        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
     
 else:
     st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
@@ -6468,11 +6217,11 @@ if _should_process_animation:
             # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
             # Algorithm:
             # - Init: all n points at distance maxdist, correct_orders = parent coords, current_distance = maxdist
-            # - Step 0: halve naar 0.5×maxdist BEFORE testing
+            # - Step 0: halve naar 0.5Ã—maxdist BEFORE testing
             # - Steps 1-7: 
             #   - Test ALL n points for combined PDP order match
-            #   - If ALL match: distance += 0.5^(n+1) × maxdist, correct_orders = current positions
-            #   - If any no match: distance -= 0.5^(n+1) × maxdist
+            #   - If ALL match: distance += 0.5^(n+1) Ã— maxdist, correct_orders = current positions
+            #   - If any no match: distance -= 0.5^(n+1) Ã— maxdist
             # - End: place all n points at their correct_order positions
             
             binary_step = int(st.session_state.get("anim_binary_step", 0))
@@ -6549,7 +6298,7 @@ if _should_process_animation:
                 # Simulate all remaining binary search steps (from current step to 7)
                 print(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
                 
-                # Step 1: halve to 0.5×maxdist if not done yet
+                # Step 1: halve to 0.5Ã—maxdist if not done yet
                 if binary_step == 0:
                     current_distance = 0.5 * maxdist
                     binary_step = 1
@@ -6670,7 +6419,7 @@ if _should_process_animation:
                     else:
                         direction = np.array([1.0, 0.0])  # Fallback direction
                     
-                    # New position: parent + direction × dist
+                    # New position: parent + direction Ã— dist
                     new_pt = parent_pt + direction * dist
                     new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
                     new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
@@ -6712,7 +6461,7 @@ if _should_process_animation:
                 
             elif binary_step == 1:
                 # Step 1: Special case - halve distance FIRST before testing
-                # Current points are at maxdist, halve to 0.5×maxdist
+                # Current points are at maxdist, halve to 0.5Ã—maxdist
                 new_distance = 0.5 * maxdist
                 st.session_state["anim_binary_current_distance"] = new_distance
                 
@@ -6729,8 +6478,8 @@ if _should_process_animation:
                 print(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
             else:
                 # Steps 2-7: Test current position, then apply +/- formula
-                # delta_term = 0.5^(binary_step) × maxdist
-                # (step 2: 0.5², step 3: 0.5³, etc.)
+                # delta_term = 0.5^(binary_step) Ã— maxdist
+                # (step 2: 0.5Â², step 3: 0.5Â³, etc.)
                 delta_term = (0.5 ** binary_step) * maxdist
                 
                 if current_matches:
@@ -6768,7 +6517,7 @@ if _should_process_animation:
         
         elif linear_mode:
             # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
-            # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
+            # Algorithm: Decrease distance by 0.1Ã—maxdist per step until ALL n points have order match
             # Stop when: (1) all points match, or (2) distance <= 0
             
             linear_step = int(st.session_state.get("anim_linear_step", 0))
@@ -7047,7 +6796,7 @@ if _should_process_animation:
                     else:
                         direction = np.array([1.0, 0.0])
                     
-                    # New position: parent + direction × dist
+                    # New position: parent + direction Ã— dist
                     # NO CLIPPING - all points must be at exact same distance from parent
                     new_pt = parent_pt + direction * dist
                     new_positions[idx] = new_pt
@@ -7302,7 +7051,7 @@ if all_configs_list or current_successful_points:
             color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
             label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
             # Build hover text for each point
-            hover_texts = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d₁: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d₂: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+            hover_texts = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                           for j, t in enumerate(vals)]
             fig.add_trace(go.Scatter(
                 x=pts[:, 0],
@@ -7328,7 +7077,7 @@ if all_configs_list or current_successful_points:
                 ext_point_idx = idx % len(external_points_list) if external_points_list else idx
                 hover_texts_ext.append(
                     f"<b>Original</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
-                    f"d₁: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d₂: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
+                    f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
                     f"<i>(Fixed - does not move)</i>"
                 )
                 text_labels_ext.append(f"ext_{ext_point_idx}")
@@ -7371,7 +7120,7 @@ if all_configs_list or current_successful_points:
                 color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
                 label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
                 # Build hover text for each point showing config info
-                hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d₁: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d₂: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                               for j in range(len(pts))]
                 fig.add_trace(go.Scatter(
                     x=pts[:, 0],
@@ -7395,7 +7144,7 @@ if all_configs_list or current_successful_points:
                     ext_point_idx = idx % len(external_points_list) if external_points_list else idx
                     hover_texts_ext.append(
                         f"<b>{config_label}</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
-                        f"d₁: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d₂: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
+                        f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
                         f"<i>(Fixed - does not move)</i>"
                     )
                 
@@ -7419,12 +7168,12 @@ if all_configs_list or current_successful_points:
             scaleratio=1,
             constrain="domain",
             range=[XLIM[0], XLIM[1]],
-            title="d₁"
+            title="d1"
         ),
         yaxis=dict(
             constrain="domain",
             range=[YLIM[0], YLIM[1]],
-            title="d₂"
+            title="d2"
         ),
         legend=dict(
             groupclick="toggleitem" # Clicking a legend item toggles the whole group
@@ -7467,7 +7216,7 @@ if iter_log:
         it = item.get("iteration", 0)
         m1 = item.get("match_d1", False)
         m2 = item.get("match_d2", False)
-        lines.append(f"Config {cnum}, iteration {it}: d₁ match = {m1}, d₂ match = {m2}")
+        lines.append(f"Config {cnum}, iteration {it}: d1 match = {m1}, d2 match = {m2}")
     summary_text = "\n".join(lines)
     st.text_area(
         "Overview of order match after final placement of the point",
@@ -7496,7 +7245,7 @@ def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict
     """
     Build angle series data from points and timestamps.
     Only calculates angles between consecutive timestamps for the SAME object.
-    e.g., k0→k1, k1→k2, l0→l1, l1→l2 (NOT k0→l0 or k0→k2)
+    e.g., k0â†’k1, k1â†’k2, l0â†’l1, l1â†’l2 (NOT k0â†’l0 or k0â†’k2)
     Returns dict of series_name -> {timestamp_label: angle}
     """
     angle_series: dict[str, dict[str, float]] = {}
@@ -7511,7 +7260,7 @@ def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict
             t_from = ts[idx]
             t_to = ts[idx + 1]
             angle = compute_vector_angle(pts[idx], pts[idx + 1])
-            series_name = f"{label}{int(t_from)}→{label}{int(t_to)}"
+            series_name = f"{label}{int(t_from)}â†’{label}{int(t_to)}"
             ts_label = f"t={int(t_from)}"
             if series_name not in angle_series:
                 angle_series[series_name] = {}
@@ -7587,15 +7336,15 @@ if has_generated_data:
                 gen_points_dict, gen_vals_dict, all_timestamps
             )
     
-    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360°)
-    # Each line = one vector pair (e.g., k0→k1), showing its angle across all configurations
+    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360Â°)
+    # Each line = one vector pair (e.g., k0â†’k1), showing its angle across all configurations
     fig_angles = go.Figure()
     
     colors_plotly = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
                      "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
     
     # Get all unique vector pairs from the original angle series
-    # Each series_name is like "k0→k1" or "k0→l0"
+    # Each series_name is like "k0â†’k1" or "k0â†’l0"
     all_vector_pairs = sorted(original_angle_series.keys())
     
     # Get all config numbers and sort them (starting from 1)
@@ -7607,7 +7356,7 @@ if has_generated_data:
     # For each vector pair, collect angles across all configurations
     for idx, vector_pair in enumerate(all_vector_pairs):
         x_vals = []  # Config numbers (1, 2, 3, ...)
-        y_vals = []  # Angles for this vector pair (0-360°)
+        y_vals = []  # Angles for this vector pair (0-360Â°)
         
         # Get angle from each generated configuration
         for config_num in all_config_nums:
@@ -7639,11 +7388,11 @@ if has_generated_data:
         
         # Only add trace if we have data
         if len(x_vals) >= 1:
-            # Show k0→k1 by default, hide others (click legend to show)
-            is_visible = (vector_pair == "k0→k1")
+            # Show k0â†’k1 by default, hide others (click legend to show)
+            is_visible = (vector_pair == "k0â†’k1")
             
             fig_angles.add_trace(go.Scatter(
-                name=f"{vector_pair} (avg={avg_angle:.1f}°, σ={std_angle:.1f}°)",
+                name=f"{vector_pair} (avg={avg_angle:.1f}Â°, Ïƒ={std_angle:.1f}Â°)",
                 x=x_vals,
                 y=y_vals,
                 mode='lines+markers',
@@ -7666,9 +7415,9 @@ if has_generated_data:
     pdp_variants_str = ", ".join(pdp_variants_list) if pdp_variants_list else "fundamental"
     
     fig_angles.update_layout(
-        title=f"Vector Angles (mod 90°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
+        title=f"Vector Angles (mod 90Â°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
         xaxis_title="Configuration",
-        yaxis_title="Angle mod 90° (degrees)",
+        yaxis_title="Angle mod 90Â° (degrees)",
         height=800,  # Twice as high
         showlegend=True,
         legend=dict(
@@ -7700,20 +7449,20 @@ if has_generated_data:
     st.plotly_chart(fig_angles, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
     
     # Display statistics summary
-    st.subheader("📈 Angle Statistics per Vector Pair")
+    st.subheader("ðŸ“ˆ Angle Statistics per Vector Pair")
     stats_data = []
     for vp, stats in sorted(vector_pair_stats.items()):
         stats_data.append({
             "Vector Pair": vp,
-            "Average (°)": f"{stats['avg']:.2f}",
-            "Std Dev (°)": f"{stats['std']:.2f}",
+            "Average (Â°)": f"{stats['avg']:.2f}",
+            "Std Dev (Â°)": f"{stats['std']:.2f}",
             "Count": int(stats['count'])
         })
     if stats_data:
         st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
     
     # Show angle values in expandable table
-    with st.expander("📊 Angle Values (degrees)"):
+    with st.expander("ðŸ“Š Angle Values (degrees)"):
         angle_table_data = []
         # Generated angles per config
         for config_num in sorted(generated_angle_series_all.keys()):
@@ -7725,10 +7474,11 @@ if has_generated_data:
                     angle_table_data.append({
                         "Config": config_num,
                         "Vector": vector_pair,
-                        "Angle (°)": f"{angle:.2f}",
-                        "Mod 90°": f"{angle_mod90:.2f}"
+                        "Angle (Â°)": f"{angle:.2f}",
+                        "Mod 90Â°": f"{angle_mod90:.2f}"
                     })
         if angle_table_data:
             st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
 else:
     st.info("Generate configurations to see angle comparisons between original and generated point configurations.")
+
