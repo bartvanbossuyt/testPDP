@@ -7,7 +7,7 @@
 # maxdist = max(||k0-k1||, ||k1-k2||); axes get at least maxdist margin to every border.
 
 from pathlib import Path
-from typing import Tuple, Callable, IO, TypedDict
+from typing import Tuple, Callable, IO, TypedDict, Optional
 import io
 import re
 import time
@@ -40,7 +40,10 @@ from pdp_utils.order_comparison import (
     extract_order_string,
     check_pdp_match,
     check_pdp_match_detailed,
+    check_pdp_match_frenet,
+    check_pdp_match_frenet_detailed,
 )
+from pdp_utils.frenet_coordinates import FrenetFrame, cartesian_to_frenet
 
 # ============= Page configuration =============
 st.set_page_config(
@@ -1075,27 +1078,40 @@ with st.expander("PDP Variant Configuration", expanded=False):
     # Multi-select for PDP variants
     pdp_variants_selected = st.multiselect(
         "PDP Variants to calculate",
-        options=["fundamental", "buffer", "rough", "bufferrough", "realistic"],
+        options=["fundamental", "buffer", "rough", "bufferrough", "realistic", "frenet"],
         default=["fundamental"],
         key="cfg_pdp_variants",
         help="""Select PDP variants for configuration generation:
 
-â€¢ **fundamental**: Basic PDP with NÃ—N inequality matrix. Two configurations match if ALL pairwise orderings are identical.
+• **fundamental**: Basic PDP with N×N inequality matrix. Two configurations match if ALL pairwise orderings are identical.
 
-â€¢ **buffer**: Expands each point to 5 variants (Â±buffer in x and y directions). Creates 5NÃ—5N matrix. More restrictive - requires all buffer variants to match.
+• **buffer**: Expands each point to 5 variants (±buffer in x and y directions). Creates 5N×5N matrix. More restrictive - requires all buffer variants to match.
 
-â€¢ **rough**: Adds equality tolerance. Points within roughness distance are considered EQUAL (matrix value 1). More permissive - allows small variations.
+• **rough**: Adds equality tolerance. Points within roughness distance are considered EQUAL (matrix value 1). More permissive - allows small variations.
 
-â€¢ **bufferrough**: Combines buffer expansion AND roughness tolerance. 5NÃ—5N matrix with fuzzy equality.
+• **bufferrough**: Combines buffer expansion AND roughness tolerance. 5N×5N matrix with fuzzy equality.
 
-â€¢ **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d1 (x-axis, driving direction) and roughness ONLY on d2 (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
+• **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d1 (x-axis, driving direction) and roughness ONLY on d2 (y-axis, lateral position).
+
+• **frenet** (NEW): Uses road-relative coordinates for curved roads. Instead of global x/y, uses:
+  - **s**: distance along road centerline (longitudinal)
+  - **n**: perpendicular distance from centerline (lateral)
+  This ensures PDP orderings are computed relative to the driving direction, essential for curved roads where x/y axes don't align with traffic flow."""
     )
     
     # Show parameter inputs if any variant needs them
     # "realistic" uses buffer_x AND rough_y (but not buffer_y or rough_x)
-    needs_buffer = any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants_selected)
-    needs_rough = any(v in ["rough", "bufferrough", "realistic"] for v in pdp_variants_selected)
+    # "frenet" uses buffer_s (along road) and rough_n (lateral) with centerline extraction
+    needs_buffer = any(v in ["buffer", "bufferrough", "realistic", "frenet"] for v in pdp_variants_selected)
+    needs_rough = any(v in ["rough", "bufferrough", "realistic", "frenet"] for v in pdp_variants_selected)
     needs_realistic = "realistic" in pdp_variants_selected
+    needs_frenet = "frenet" in pdp_variants_selected
+    
+    # Show info about Frenet coordinate system
+    if needs_frenet:
+        st.info("🛣️ **Frenet mode**: Using road-relative coordinates (s, n) instead of (x, y). "
+                "The centerline is automatically extracted from vehicle trajectories. "
+                "Buffer/roughness parameters apply to road-relative dimensions.")
     
     if needs_buffer or needs_rough:
         st.markdown("**Parameters for selected variants:**")
@@ -2342,16 +2358,71 @@ def _format_t_subscript(tval: float) -> str:
         tnum = float(np.array(tval, dtype=float))
     return str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
 
+def _get_frenet_coordinates_for_ordering() -> Optional[dict]:
+    """
+    Get Frenet coordinates (s, n) for all points if on a curved road config.
+    Returns dict mapping object_id -> (N, 2) array of [s, n] coordinates.
+    Returns None if not a curved road config or if Frenet transform fails.
+    """
+    # Use the global selected_c_int which holds the current config number
+    global selected_c_int
+    current_config = selected_c_int
+    
+    # Only apply Frenet for curved road configs
+    CURVED_CONFIGS = [15, 17]  # S-curve configs
+    if current_config not in CURVED_CONFIGS:
+        return None
+    
+    # Get the centerline
+    try:
+        centerline = _extract_centerline_from_data(current_config)
+        if centerline is None or centerline.shape[0] < 2:
+            print(f"[FRENET] Centerline invalid for config {current_config}")
+            return None
+        
+        # Create Frenet frame
+        frenet_frame = FrenetFrame(centerline)
+        
+        # Convert all points to Frenet coordinates
+        frenet_coords = {}
+        for o_id in all_points_plot.keys():
+            pts = all_points_plot[o_id]
+            if pts.shape[0] > 0:
+                frenet_pts = frenet_frame.to_frenet(pts)
+                frenet_coords[o_id] = frenet_pts
+        
+        print(f"[FRENET] Successfully computed Frenet coords for {len(frenet_coords)} objects in config {current_config}")
+        return frenet_coords
+    except Exception as e:
+        print(f"[FRENET] Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def make_d1_order_latex() -> str:
-    """Return LaTeX describing the ordering in d1 (x-coordinate) for all objects."""
+    """Return LaTeX describing the ordering in d1 (s-coordinate / x-coordinate) for all objects.
+    For curved roads, uses Frenet s (arc length along road).
+    For straight roads, uses Cartesian x-coordinate.
+    """
+    # Try to get Frenet coordinates for curved roads
+    frenet_coords = _get_frenet_coordinates_for_ordering()
+    
     entries: list[tuple[float, str]] = []
     for i, o_id in enumerate(sorted(all_points_plot.keys())):
         pts = all_points_plot[o_id]
         ts = all_vals_plot[o_id]
         label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-        for x, t in zip(pts[:, 0].tolist(), ts.tolist()):
+        
+        # Use Frenet s-coordinate if available, otherwise Cartesian x
+        if frenet_coords is not None and o_id in frenet_coords:
+            coords_d1 = frenet_coords[o_id][:, 0]  # s-coordinate
+        else:
+            coords_d1 = pts[:, 0]  # x-coordinate
+        
+        for val, t in zip(coords_d1.tolist(), ts.tolist()):
             lbl = _format_t_subscript(t)
-            entries.append((float(x), rf"{label}_{lbl}"))
+            entries.append((float(val), rf"{label}_{{{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -2360,22 +2431,36 @@ def make_d1_order_latex() -> str:
     tol = 1e-9
     out = [entries[0][1]]
     for i in range(1, len(entries)):
-        prev_x = entries[i - 1][0]
-        cur_x = entries[i][0]
-        connector = " = " if abs(cur_x - prev_x) <= tol else " < "
+        prev_val = entries[i - 1][0]
+        cur_val = entries[i][0]
+        connector = " = " if abs(cur_val - prev_val) <= tol else " < "
         out.append(connector + entries[i][1])
     return r"d_1: " + "".join(out)
 
+
 def make_d2_order_latex() -> str:
-    """Return LaTeX describing the ordering in d2 (y-coordinate) for all objects."""
+    """Return LaTeX describing the ordering in d2 (n-coordinate / y-coordinate) for all objects.
+    For curved roads, uses Frenet n (lateral offset from centerline).
+    For straight roads, uses Cartesian y-coordinate.
+    """
+    # Try to get Frenet coordinates for curved roads
+    frenet_coords = _get_frenet_coordinates_for_ordering()
+    
     entries: list[tuple[float, str]] = []
     for i, o_id in enumerate(sorted(all_points_plot.keys())):
         pts = all_points_plot[o_id]
         ts = all_vals_plot[o_id]
         label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-        for y, t in zip(pts[:, 1].tolist(), ts.tolist()):
+        
+        # Use Frenet n-coordinate if available, otherwise Cartesian y
+        if frenet_coords is not None and o_id in frenet_coords:
+            coords_d2 = frenet_coords[o_id][:, 1]  # n-coordinate (lateral offset)
+        else:
+            coords_d2 = pts[:, 1]  # y-coordinate
+        
+        for val, t in zip(coords_d2.tolist(), ts.tolist()):
             lbl = _format_t_subscript(t)
-            entries.append((float(y), rf"{label}_{lbl}"))
+            entries.append((float(val), rf"{label}_{{{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -2384,9 +2469,9 @@ def make_d2_order_latex() -> str:
     tol = 1e-9
     out = [entries[0][1]]
     for i in range(1, len(entries)):
-        prev_y = entries[i - 1][0]
-        cur_y = entries[i][0]
-        connector = " = " if abs(cur_y - prev_y) <= tol else " < "
+        prev_val = entries[i - 1][0]
+        cur_val = entries[i][0]
+        connector = " = " if abs(cur_val - prev_val) <= tol else " < "
         out.append(connector + entries[i][1])
     return r"d_2: " + "".join(out)
 
@@ -2437,7 +2522,7 @@ def make_d1_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[0]), rf"{parent_label}{parent_primes}_{lbl_parent}"))
+    entries.append((float(gen_pt[0]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
 
     # Track the latest generated point for each original index
     latest_generated: dict[int, np.ndarray] = {}
@@ -2456,9 +2541,9 @@ def make_d1_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][0]), rf"{label}{primes}_{lbl}"))
+            entries.append((float(latest_generated[flat_idx][0]), rf"{label}{primes}_{{{lbl}}}"))
         else:
-            entries.append((float(pt[0]), rf"{label}{primes}_{lbl}"))
+            entries.append((float(pt[0]), rf"{label}{primes}_{{{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -2517,7 +2602,7 @@ def make_d2_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[1]), rf"{parent_label}{parent_primes}_{lbl_parent}"))
+    entries.append((float(gen_pt[1]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
 
     latest_generated: dict[int, np.ndarray] = {}
     for sp in successful_points:
@@ -2535,9 +2620,9 @@ def make_d2_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][1]), rf"{label}{primes}_{lbl}"))
+            entries.append((float(latest_generated[flat_idx][1]), rf"{label}{primes}_{{{lbl}}}"))
         else:
-            entries.append((float(pt[1]), rf"{label}{primes}_{lbl}"))
+            entries.append((float(pt[1]), rf"{label}{primes}_{{{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -2638,18 +2723,65 @@ def update_order_match_flags() -> None:
     match_threshold = pct_threshold if mode == "Percentage" else 1.0
     max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
     
-    # Use detailed PDP check to get matrices for heat maps
-    detailed_results = check_pdp_match_detailed(
-        all_pts_flat,
-        generated_points,
-        pdp_variant=pdp_variant,
-        buffer_x=buffer_x,
-        buffer_y=buffer_y,
-        rough_x=rough_x,
-        rough_y=rough_y,
-        match_threshold=match_threshold,
-        max_mismatches=max_mismatches_param
-    )
+    # Use detailed PDP check - handle Frenet variant specially
+    if pdp_variant == "frenet":
+        # Get centerline from lane polylines or extract from data
+        centerline = st.session_state.get("frenet_centerline", None)
+        if centerline is None:
+            # Try to extract from lane polylines
+            lane_polylines = st.session_state.get("lane_polylines")
+            if lane_polylines and "centerline" in lane_polylines:
+                centerline = lane_polylines["centerline"]
+            else:
+                # Fallback: extract from current config data
+                centerline = _extract_centerline_from_data(current_config)
+            if centerline is not None:
+                st.session_state["frenet_centerline"] = centerline
+        
+        if centerline is not None and len(centerline) >= 2:
+            detailed_results = check_pdp_match_frenet_detailed(
+                all_pts_flat,
+                generated_points,
+                centerline=centerline,
+                pdp_variant="fundamental",  # Base variant for Frenet
+                buffer_s=buffer_x,  # Use buffer_x as buffer_s
+                buffer_n=buffer_y,  # Use buffer_y as buffer_n
+                rough_s=rough_x,    # Use rough_x as rough_s
+                rough_n=rough_y,    # Use rough_y as rough_n
+                match_threshold=match_threshold,
+                max_mismatches=max_mismatches_param
+            )
+            # Map Frenet results to d1/d2 naming (s->d1, n->d2)
+            detailed_results["d1_match"] = detailed_results.pop("s_match")
+            detailed_results["d2_match"] = detailed_results.pop("n_match")
+            detailed_results["d1_percentage"] = detailed_results.pop("s_percentage")
+            detailed_results["d2_percentage"] = detailed_results.pop("n_percentage")
+            detailed_results["d1_mismatches"] = detailed_results.pop("s_mismatches")
+            detailed_results["d2_mismatches"] = detailed_results.pop("n_mismatches")
+            detailed_results["original_d1_matrix"] = detailed_results.pop("original_s_matrix")
+            detailed_results["original_d2_matrix"] = detailed_results.pop("original_n_matrix")
+            detailed_results["generated_d1_matrix"] = detailed_results.pop("generated_s_matrix")
+            detailed_results["generated_d2_matrix"] = detailed_results.pop("generated_n_matrix")
+        else:
+            # Fallback to fundamental if no centerline
+            detailed_results = check_pdp_match_detailed(
+                all_pts_flat, generated_points,
+                pdp_variant="fundamental",
+                match_threshold=match_threshold,
+                max_mismatches=max_mismatches_param
+            )
+    else:
+        detailed_results = check_pdp_match_detailed(
+            all_pts_flat,
+            generated_points,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y,
+            match_threshold=match_threshold,
+            max_mismatches=max_mismatches_param
+        )
     
     st.session_state["order_match_d1"] = detailed_results["d1_match"]
     st.session_state["order_match_d2"] = detailed_results["d2_match"]
@@ -4139,6 +4271,70 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
             zorder=1,
         )
 
+    # For curved road configs, draw subtle Frenet coordinate axes
+    centerline = lane_polylines.get("centerline")
+    if current_config in [15, 17] and centerline is not None:
+        # Draw the centerline (basiskromme) as a thin colored line
+        ax.plot(centerline[:, 0], centerline[:, 1], 
+                color='#666666', linewidth=1.2, linestyle='-', 
+                alpha=0.6, zorder=1, label='centerline')
+        _draw_frenet_axes(ax, centerline, num_arrows=5)
+
+def _draw_frenet_axes(ax: matplotlib.axes.Axes, centerline: np.ndarray, num_arrows: int = 5) -> None:
+    """Draw subtle Frenet coordinate axes (tangent=d1, normal=d2) along the centerline.
+    
+    Args:
+        ax: Matplotlib axes to draw on
+        centerline: (N, 2) array of centerline points
+        num_arrows: Number of arrow pairs to draw along the path
+    """
+    if centerline is None or len(centerline) < 2:
+        return
+    
+    # Compute tangent and normal vectors
+    tangents = np.zeros_like(centerline)
+    tangents[1:-1] = centerline[2:] - centerline[:-2]
+    tangents[0] = centerline[1] - centerline[0]
+    tangents[-1] = centerline[-1] - centerline[-2]
+    
+    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+    norms[norms < 1e-10] = 1.0
+    tangents = tangents / norms
+    
+    # Normal = rotate tangent 90° counterclockwise
+    normals = np.column_stack([-tangents[:, 1], tangents[:, 0]])
+    
+    # Select evenly spaced points along the centerline
+    indices = np.linspace(0, len(centerline) - 1, num_arrows + 2, dtype=int)[1:-1]
+    
+    # Arrow styling - more visible but still subtle
+    arrow_length = 6.0  # Length of arrows in data units
+    arrow_alpha = 0.7
+    
+    for idx in indices:
+        pos = centerline[idx]
+        T = tangents[idx]
+        N = normals[idx]
+        
+        # Draw tangent arrow (d1 direction) - blue, pointing in driving direction
+        ax.arrow(pos[0], pos[1], T[0] * arrow_length, T[1] * arrow_length,
+                 head_width=1.2, head_length=0.8, fc='#2166ac', ec='#2166ac',
+                 alpha=arrow_alpha, zorder=3, linewidth=0.8)
+        # Small "d1" label
+        label_pos = pos + T * (arrow_length + 2.0)
+        ax.text(label_pos[0], label_pos[1], 'd1', fontsize=7, color='#2166ac', 
+                alpha=arrow_alpha, ha='center', va='center', zorder=3, fontweight='bold')
+        
+        # Draw normal arrow (d2 direction) - red, pointing left (perpendicular)
+        ax.arrow(pos[0], pos[1], N[0] * arrow_length, N[1] * arrow_length,
+                 head_width=1.2, head_length=0.8, fc='#b2182b', ec='#b2182b',
+                 alpha=arrow_alpha, zorder=3, linewidth=0.8)
+        # Small "d2" label
+        label_pos = pos + N * (arrow_length + 2.0)
+        ax.text(label_pos[0], label_pos[1], 'd2', fontsize=7, color='#b2182b', 
+                alpha=arrow_alpha, ha='center', va='center', zorder=3, fontweight='bold')
+
+
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
     """Configure axes to be square, with simple ticks and labels d1, d2."""
     ax.set_xlim(*xlim)
@@ -4218,10 +4414,15 @@ def _extract_centerline_from_data(c_value: int):
     if config_df.empty:
         return None
 
-    # For curved road configs with different speeds, use only the middle lane car (object 1)
-    # to get correct centerline that follows the actual road curve
-    if c_value in [15] and 1 in config_df['o'].values:
-        config_df = config_df[config_df['o'] == 1]
+    # For curved road configs, use the car in the RIGHTMOST lane (lowest y values)
+    # to get correct centerline that follows the actual road curve (not overtaking path)
+    # In config 15: Auto 0 starts with lowest y and follows the right lane through the S-curve
+    if c_value in [15]:
+        # Object 0 follows the right lane (lowest y) through the S-curve
+        if 0 in config_df['o'].values:
+            config_df = config_df[config_df['o'] == 0]
+        elif 1 in config_df['o'].values:
+            config_df = config_df[config_df['o'] == 1]
 
     center_samples: list[tuple[float, float, float]] = []
     for t_val, group in config_df.groupby("t"):
@@ -5273,19 +5474,66 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             min_visible_size = 0.15  # Very thin, similar to axis line thickness
             draw_rough_x = rough_x_val if rough_x_val > 0 else min_visible_size
             draw_rough_y = rough_y_val if rough_y_val > 0 else min_visible_size
-            # Rectangle from (gx - rough_x, gy - rough_y) to (gx + rough_x, gy + rough_y)
-            rect = matplotlib.patches.Rectangle(
-                (gx - draw_rough_x, gy - draw_rough_y),
-                2 * draw_rough_x,  # width
-                2 * draw_rough_y,  # height
-                edgecolor=rough_color,
-                facecolor=rough_color,
-                alpha=rough_alpha,
-                linewidth=1.5,
-                linestyle=':',
-                zorder=3
-            )
-            ax.add_patch(rect)  # type: ignore
+            
+            # For curved roads (config 15, 17), rotate the rough zone to align with local tangent/normal
+            current_config = int(st.session_state.get("c_value", 1))
+            CURVED_CONFIGS = [15, 17]
+            
+            if current_config in CURVED_CONFIGS:
+                # Get centerline and create FrenetFrame
+                centerline = _extract_centerline_from_data(current_config)
+                if centerline is not None and centerline.shape[0] >= 2:
+                    frenet_frame = FrenetFrame(centerline)
+                    # Get Frenet coordinates for the candidate point
+                    frenet_pt = frenet_frame.to_frenet(np.array([[gx, gy]]))[0]
+                    s_val = frenet_pt[0]  # Arc length
+                    # Get tangent and normal at this arc length
+                    tangent = frenet_frame.get_tangent_at_s(s_val)  # d1 direction
+                    normal = frenet_frame.get_normal_at_s(s_val)   # d2 direction
+                    # Calculate rotated rectangle corners:
+                    # Center is at (gx, gy), extend ±rough_x along tangent and ±rough_y along normal
+                    center = np.array([gx, gy])
+                    corners = [
+                        center - draw_rough_x * tangent - draw_rough_y * normal,  # bottom-left in Frenet
+                        center + draw_rough_x * tangent - draw_rough_y * normal,  # bottom-right
+                        center + draw_rough_x * tangent + draw_rough_y * normal,  # top-right
+                        center - draw_rough_x * tangent + draw_rough_y * normal,  # top-left
+                    ]
+                    # Draw rotated polygon
+                    poly = matplotlib.patches.Polygon(
+                        corners,
+                        closed=True,
+                        edgecolor=rough_color,
+                        facecolor=rough_color,
+                        alpha=rough_alpha,
+                        linewidth=1.5,
+                        linestyle=':',
+                        zorder=3
+                    )
+                    ax.add_patch(poly)  # type: ignore
+                else:
+                    # Fallback to axis-aligned rectangle if centerline not available
+                    rect = matplotlib.patches.Rectangle(
+                        (gx - draw_rough_x, gy - draw_rough_y),
+                        2 * draw_rough_x, 2 * draw_rough_y,
+                        edgecolor=rough_color, facecolor=rough_color,
+                        alpha=rough_alpha, linewidth=1.5, linestyle=':', zorder=3
+                    )
+                    ax.add_patch(rect)  # type: ignore
+            else:
+                # Straight roads: axis-aligned rectangle
+                rect = matplotlib.patches.Rectangle(
+                    (gx - draw_rough_x, gy - draw_rough_y),
+                    2 * draw_rough_x,  # width
+                    2 * draw_rough_y,  # height
+                    edgecolor=rough_color,
+                    facecolor=rough_color,
+                    alpha=rough_alpha,
+                    linewidth=1.5,
+                    linestyle=':',
+                    zorder=3
+                )
+                ax.add_patch(rect)  # type: ignore
 
 # ============= Helper: choose which config to display on demand ============
 def _set_display_config(config_num: int) -> None:

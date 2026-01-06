@@ -8,6 +8,7 @@ This package contains utility modules for the PDP inverse application:
 - data_loading: CSV loading and DataFrame processing
 - order_comparison: PDP order matching functions
 - drawing: Matplotlib/Plotly drawing utilities
+- frenet_coordinates: Road-relative coordinate transformations for curved roads
 """
 
 from .core import (
@@ -39,6 +40,20 @@ from .order_comparison import (
     extract_order_string,
     check_pdp_match,
     check_pdp_match_detailed,
+    check_pdp_match_frenet,
+    check_pdp_match_frenet_detailed,
+)
+
+from .frenet_coordinates import (
+    FrenetFrame,
+    compute_centerline_from_trajectory,
+    compute_arc_length,
+    compute_tangent_vectors,
+    compute_normal_vectors,
+    cartesian_to_frenet,
+    frenet_to_cartesian,
+    compute_inequality_matrix_frenet,
+    check_pdp_match_frenet as check_pdp_match_frenet_simple,
 )
 
 from .drawing import (
@@ -57,7 +72,7 @@ from .drawing import (
 __all__ = [
     # core
     "COORD_DISPLAY_PRECISION",
-    "COORD_CSV_PRECISION", 
+    "COORD_CSV_PRECISION",
     "OBJECT_LABELS",
     "SuccessfulPoint",
     "compute_inequality_matrix",
@@ -81,6 +96,18 @@ __all__ = [
     "extract_order_string",
     "check_pdp_match",
     "check_pdp_match_detailed",
+    "check_pdp_match_frenet",
+    "check_pdp_match_frenet_detailed",
+    # frenet_coordinates
+    "FrenetFrame",
+    "compute_centerline_from_trajectory",
+    "compute_arc_length",
+    "compute_tangent_vectors",
+    "compute_normal_vectors",
+    "cartesian_to_frenet",
+    "frenet_to_cartesian",
+    "compute_inequality_matrix_frenet",
+    "check_pdp_match_frenet_simple",
     # drawing
     "BLUE",
     "ORANGE",
