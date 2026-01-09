@@ -1,0 +1,5 @@
+# This file is used internally by FFMPEG.
+file 'file:C:/Users/bartv/PDP/PDP-Analysis-1/scripts/Bart's code/media/videos/manim_sinus/480p15/partial_movie_files/MovingSineWave3D/4291183755_851570258_223132457.mp4'
+file 'file:C:/Users/bartv/PDP/PDP-Analysis-1/scripts/Bart's code/media/videos/manim_sinus/480p15/partial_movie_files/MovingSineWave3D/3771360612_888832445_2880318035.mp4'
+file 'file:C:/Users/bartv/PDP/PDP-Analysis-1/scripts/Bart's code/media/videos/manim_sinus/480p15/partial_movie_files/MovingSineWave3D/1332752681_1965291197_45545325.mp4'
+file 'file:C:/Users/bartv/PDP/PDP-Analysis-1/scripts/Bart's code/media/videos/manim_sinus/480p15/partial_movie_files/MovingSineWave3D/3635411043_3515533520_3056826923.mp4'

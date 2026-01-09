@@ -3,7 +3,7 @@
 # Streamlit app with an academic look, two columns with strictly square axes.
 # Left: line + points from CSV (c=11, tâˆˆ{0,1,2}, o=0). Right: identical axes, initially empty.
 # CSV may start with literally: "header: c,t,o,x,y" â†’ that line is skipped.
-# Axis labels: dâ‚ and dâ‚‚; point labels: kâ‚€, kâ‚, kâ‚‚ (blue, smaller).
+# Axis labels: d1 and d2; point labels: k0, k1, k2 (blue, smaller).
 # maxdist = max(||k0-k1||, ||k1-k2||); axes get at least maxdist margin to every border.
 
 from pathlib import Path
@@ -768,7 +768,7 @@ def _auto_detect_bounds_logic() -> bool:
 if data_source != "Create random configuration":
     # Only show Auto Detect button when using preset or uploaded data
     st.markdown('<div class="auto-detect-bounds-wrapper" style="margin-top:0.5rem;">', unsafe_allow_html=True)
-    if st.button("ðŸ” Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
+    if st.button("Auto Detect Coordinate Bounds", key="btn_auto_detect_bounds", 
                  help="Recalculate axis bounds based on currently selected configuration (c) and timestamp window. Use this when parent points fall outside the visible area after changing settings."):
         # Use the shared auto-detect logic
         _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
@@ -937,7 +937,7 @@ with sc7:
         )
 
 # Advanced Settings in collapsible expander
-with st.expander("âš™ï¸ Advanced Point Selection", expanded=False):
+with st.expander("Advanced Point Selection", expanded=False):
     st.markdown("**Point Selection (per iteration)**")
     
     ps_col1, ps_col2 = st.columns([1, 1], gap="small")
@@ -1070,7 +1070,7 @@ with st.expander("âš™ï¸ Advanced Point Selection", expanded=False):
             )
 
 # PDP Variant Selection (Multiple variants) - in expander for compactness
-with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
+with st.expander("PDP Variant Configuration", expanded=False):
     # Multi-select for PDP variants
     pdp_variants_selected = st.multiselect(
         "PDP Variants to calculate",
@@ -1087,7 +1087,7 @@ with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
 
 â€¢ **bufferrough**: Combines buffer expansion AND roughness tolerance. 5NÃ—5N matrix with fuzzy equality.
 
-â€¢ **realistic**: Designed for traffic scenarios. Uses buffer ONLY on dâ‚ (x-axis, driving direction) and roughness ONLY on dâ‚‚ (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
+â€¢ **realistic**: Designed for traffic scenarios. Uses buffer ONLY on d1 (x-axis, driving direction) and roughness ONLY on d2 (y-axis, lateral position). This ensures generated points stay within the same lane (y roughly constant) while allowing variation in driving position (x can vary). Ideal for traffic data where lane changes are not realistic."""
     )
     
     # Show parameter inputs if any variant needs them
@@ -1105,25 +1105,25 @@ with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
                 # Show buffer_x for all buffer variants including realistic
                 buffer_x_default = 10.0 if needs_realistic else 25.0
                 buffer_x = st.number_input(
-                    "Buffer X (dâ‚)",
+                    "Buffer X (d1)",
                     min_value=0.0,
                     max_value=100.0,
                     value=buffer_x_default,
                     step=1.0,
                     key="cfg_buffer_x",
-                    help="Buffer distance in x-direction (dâ‚, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
+                    help="Buffer distance in x-direction (d1, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
                 )
                 # Only show buffer_y if NOT exclusively using realistic
                 needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
                 if needs_buffer_y:
                     buffer_y = st.number_input(
-                        "Buffer Y (dâ‚‚)",
+                        "Buffer Y (d2)",
                         min_value=0.0,
                         max_value=100.0,
                         value=10.0,
                         step=1.0,
                         key="cfg_buffer_y",
-                        help="Buffer distance in y-direction (dâ‚‚, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
+                        help="Buffer distance in y-direction (d2, lateral position). Used by: buffer, bufferrough. NOT used by 'realistic' (which uses roughness on y instead)."
                     )
                 else:
                     buffer_y = 0.0
@@ -1139,13 +1139,13 @@ with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
                 needs_rough_x = any(v in ["rough", "bufferrough"] for v in pdp_variants_selected)
                 if needs_rough_x:
                     rough_x = st.number_input(
-                        "Roughness X (dâ‚)",
+                        "Roughness X (d1)",
                         min_value=0.0,
                         max_value=100.0,
                         value=0.0,
                         step=0.1,
                         key="cfg_rough_x",
-                        help="Equality tolerance in x-direction (dâ‚). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
+                        help="Equality tolerance in x-direction (d1). Used by: rough, bufferrough. NOT used by 'realistic' (which uses buffer on x instead)."
                     )
                 else:
                     rough_x = 0.0
@@ -1155,13 +1155,13 @@ with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
                 # Show rough_y for all rough variants including realistic
                 rough_y_default = 1.5 if needs_realistic else 0.0
                 rough_y = st.number_input(
-                    "Roughness Y (dâ‚‚)",
+                    "Roughness Y (d2)",
                     min_value=0.0,
                     max_value=100.0,
                     value=rough_y_default,
                     step=0.1,
                     key="cfg_rough_y",
-                    help="Equality tolerance in y-direction (dâ‚‚, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
+                    help="Equality tolerance in y-direction (d2, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
                 )
             else:
                 rough_x = 0.0
@@ -1173,7 +1173,7 @@ with st.expander("ðŸ”¬ PDP Variant Configuration", expanded=False):
         rough_y = 0.0
 
 # External (fixed) reference points - in expander for compactness
-with st.expander("ðŸ“ External Reference Points", expanded=False):
+with st.expander("External Reference Points", expanded=False):
     use_external_points = st.checkbox(
         "Use external reference points",
         value=st.session_state.get("use_external_points", False),
@@ -1327,19 +1327,19 @@ if is_any_manual_mode:
     # Determine button labels based on mode
     # Button always shows "Complete iteration/config" - the action either completes new work or redoes previous
     if is_manual_step_mode:
-        prev_label = "â—€ Previous step"
-        next_label = "â–¶ Next step"
+        prev_label = "Previous step"
+        next_label = "Next step"
         prev_help = "Click to go back to the previous animation step."
         next_help = "Click to redo the next step." if has_redo_for_labels else "Click to advance the animation by one step."
         generate_help = "Start generating configurations step-by-step. Click 'Next step' to advance each step manually."
     elif is_manual_iteration_mode:
-        prev_label = "â—€ Previous"
+        prev_label = "Previous"
         next_label = "â–¶ Complete iteration"
         prev_help = "Click to go back to the previous iteration state."
         next_help = "Click to restore the next iteration." if has_redo_for_labels else "Click to complete the current iteration (finish all search steps and place the point)."
         generate_help = "Start generating configurations. Click 'Complete iteration' to finish each iteration."
     else:  # is_manual_config_mode
-        prev_label = "â—€ Previous"
+        prev_label = "Previous"
         next_label = "â–¶ Complete config"
         prev_help = "Click to go back to the previous configuration state."
         next_help = "Click to restore the next configuration." if has_redo_for_labels else "Click to complete the current configuration (finish all remaining iterations)."
@@ -1478,7 +1478,7 @@ if is_any_manual_mode:
         # Styled with white text on black background via custom CSS wrapper class
         st.markdown('<div class="reset-button-wrapper">', unsafe_allow_html=True)
         reset_btn_manual = st.button(
-            "âŸ² Reset",
+            "Reset",
             key="btn_reset_manual",
             disabled=not reset_btn_should_be_enabled,
             help="Halt the animation and reset all graphs to their initial values. Clears all generated points and search state."
@@ -1505,7 +1505,7 @@ else:
         # Styled with white text on black background via custom CSS wrapper class
         st.markdown('<div class="reset-button-wrapper">', unsafe_allow_html=True)
         reset_btn_auto = st.button(
-            "âŸ² Reset",
+            "Reset",
             key="btn_reset_auto",
             disabled=not reset_btn_should_be_enabled,
             help="Halt the animation and reset all graphs to their initial values. Clears all generated points and search state."
@@ -2591,7 +2591,7 @@ def check_pdp_match(original_points: np.ndarray, generated_points: np.ndarray,
     - buffer: Apply buffer transformation to both configs, compare 5NÃ—5N matrices
     - rough: Use roughness as equality tolerance in NÃ—N matrix comparison
     - bufferrough: Apply buffer transformation AND use roughness tolerance
-    - realistic: Buffer ONLY on x (dâ‚, driving direction), roughness ONLY on y (dâ‚‚, lateral/lane position)
+    - realistic: Buffer ONLY on x (d1, driving direction), roughness ONLY on y (d2, lateral/lane position)
                  Designed for traffic scenarios where lane changes are unrealistic
     
     For buffer variants:
@@ -4391,7 +4391,7 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
         )
 
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
-    """Configure axes to be square, with simple ticks and labels dâ‚, dâ‚‚."""
+    """Configure axes to be square, with simple ticks and labels d1, d2."""
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_aspect("equal", adjustable="box")
@@ -4399,8 +4399,8 @@ def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim:
         sp.set_linewidth(0.9)  # type: ignore
         sp.set_color("#222")
     ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")  # type: ignore
-    ax.set_xlabel("dâ‚", fontsize=11, labelpad=8)  # type: ignore
-    ax.set_ylabel("dâ‚‚", fontsize=11, labelpad=8)  # type: ignore
+    ax.set_xlabel("d1", fontsize=11, labelpad=8)  # type: ignore
+    ax.set_ylabel("d2", fontsize=11, labelpad=8)  # type: ignore
     # Draw inferred lane markings on the background (for traffic configurations 0-10)
     infer_and_draw_lanes(ax, xlim, ylim)
 
@@ -5609,16 +5609,16 @@ with col1:
         same_d1 = left_order == right_order
         st.caption(f"Left: {left_order}")
         st.caption(f"Right: {right_order}")
-        st.markdown(f"**dâ‚ order match: {same_d1}**")
+        st.markdown(f"**d1 order match: {same_d1}**")
 
         left_d2 = make_d2_order_latex()
         right_d2 = make_d2_order_latex_generated()
         left_order_d2 = _extract_order_string(left_d2)
         right_order_d2 = _extract_order_string(right_d2)
         same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left dâ‚‚: {left_order_d2}")
-        st.caption(f"Right dâ‚‚: {right_order_d2}")
-        st.markdown(f"**dâ‚‚ order match: {same_d2}**")
+        st.caption(f"Left d2: {left_order_d2}")
+        st.caption(f"Right d2: {right_order_d2}")
+        st.markdown(f"**d2 order match: {same_d2}**")
 
     # Download original plot as PNG - reuse the buffer
     _buf_left.seek(0)
@@ -5647,16 +5647,16 @@ with col2:
         same_d1 = left_order == right_order
         st.caption(f"Left: {left_order}")
         st.caption(f"Right: {right_order}")
-        st.markdown(f"**dâ‚ order match: {same_d1}**")
+        st.markdown(f"**d1 order match: {same_d1}**")
 
         left_d2 = make_d2_order_latex()
         right_d2 = make_d2_order_latex_generated()
         left_order_d2 = _extract_order_string(left_d2)
         right_order_d2 = _extract_order_string(right_d2)
         same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left dâ‚‚: {left_order_d2}")
-        st.caption(f"Right dâ‚‚: {right_order_d2}")
-        st.markdown(f"**dâ‚‚ order match: {same_d2}**")
+        st.caption(f"Left d2: {left_order_d2}")
+        st.caption(f"Right d2: {right_order_d2}")
+        st.markdown(f"**d2 order match: {same_d2}**")
 
     # Download generated plot as PNG + navigation buttons on ONE row
     # Reuse the buffer that was already created above
@@ -5838,14 +5838,14 @@ if pdp_detailed is not None:
         threshold_display = f"{int(pct_threshold * 100)}%"
         if pct_threshold < 1.0:
             # Show average for relaxed thresholds
-            st.markdown(f"**Threshold:** {threshold_display} | **dâ‚:** {d1_pct:.1f}% | **dâ‚‚:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'âœ…' if avg_match else 'âŒ'}")
+            st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_pct:.1f}% | **d2:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
         else:
             # Show individual matches for strict threshold
-            st.markdown(f"**Threshold:** {threshold_display} | **dâ‚ Match:** {d1_pct:.1f}% {'âœ…' if d1_match else 'âŒ'} | **dâ‚‚ Match:** {d2_pct:.1f}% {'âœ…' if d2_match else 'âŒ'}")
+            st.markdown(f"**Threshold:** {threshold_display} | **d1 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d2 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
     else:
         # Max mismatches mode
         threshold_display = f"â‰¤{max_mismatches} mismatches"
-        st.markdown(f"**Threshold:** {threshold_display} | **dâ‚:** {d1_mismatches} mismatches {'âœ…' if d1_match else 'âŒ'} | **dâ‚‚:** {d2_mismatches} mismatches {'âœ…' if d2_match else 'âŒ'}")
+        st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d2:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
     
     # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
     hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
@@ -5959,32 +5959,32 @@ if pdp_detailed is not None:
         highlight_diffs = max_mismatches > 0
     
     with hm_col1:
-        st.markdown("**Original dâ‚**")
+        st.markdown("**Original d1**")
         if orig_d1_matrix is not None:
-            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original dâ‚ (x)")
+            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d1 (x)")
             st.pyplot(fig_hm1)
             plt.close(fig_hm1)
     
     with hm_col2:
-        st.markdown("**Original dâ‚‚**")
+        st.markdown("**Original d2**")
         if orig_d2_matrix is not None:
-            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original dâ‚‚ (y)")
+            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d2 (y)")
             st.pyplot(fig_hm2)
             plt.close(fig_hm2)
     
     with hm_col3:
-        st.markdown("**Generated dâ‚**")
+        st.markdown("**Generated d1**")
         if gen_d1_matrix is not None:
-            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated dâ‚ (x)",
+            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d1 (x)",
                                            comparison_matrix=orig_d1_matrix,
                                            highlight_differences=highlight_diffs)
             st.pyplot(fig_hm3)
             plt.close(fig_hm3)
     
     with hm_col4:
-        st.markdown("**Generated dâ‚‚**")
+        st.markdown("**Generated d2**")
         if gen_d2_matrix is not None:
-            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated dâ‚‚ (y)",
+            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d2 (y)",
                                            comparison_matrix=orig_d2_matrix,
                                            highlight_differences=highlight_diffs)
             st.pyplot(fig_hm4)
@@ -5992,9 +5992,9 @@ if pdp_detailed is not None:
     
     # Legend
     if highlight_diffs:
-        st.caption("Legend: ðŸŸ¢ Green (0) = j > i | ðŸŸ¡ Yellow (1) = j â‰ˆ i (equal) | ðŸ”´ Red (2) = j < i | â¬› Border = differs from original")
+        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
     else:
-        st.caption("Legend: ðŸŸ¢ Green (0) = j > i | ðŸŸ¡ Yellow (1) = j â‰ˆ i (equal) | ðŸ”´ Red (2) = j < i")
+        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
     
 else:
     st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
@@ -7302,7 +7302,7 @@ if all_configs_list or current_successful_points:
             color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
             label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
             # Build hover text for each point
-            hover_texts = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>dâ‚: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>dâ‚‚: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+            hover_texts = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                           for j, t in enumerate(vals)]
             fig.add_trace(go.Scatter(
                 x=pts[:, 0],
@@ -7328,7 +7328,7 @@ if all_configs_list or current_successful_points:
                 ext_point_idx = idx % len(external_points_list) if external_points_list else idx
                 hover_texts_ext.append(
                     f"<b>Original</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
-                    f"dâ‚: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>dâ‚‚: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
+                    f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
                     f"<i>(Fixed - does not move)</i>"
                 )
                 text_labels_ext.append(f"ext_{ext_point_idx}")
@@ -7371,7 +7371,7 @@ if all_configs_list or current_successful_points:
                 color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
                 label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
                 # Build hover text for each point showing config info
-                hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>dâ‚: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>dâ‚‚: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                               for j in range(len(pts))]
                 fig.add_trace(go.Scatter(
                     x=pts[:, 0],
@@ -7395,7 +7395,7 @@ if all_configs_list or current_successful_points:
                     ext_point_idx = idx % len(external_points_list) if external_points_list else idx
                     hover_texts_ext.append(
                         f"<b>{config_label}</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
-                        f"dâ‚: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>dâ‚‚: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
+                        f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
                         f"<i>(Fixed - does not move)</i>"
                     )
                 
@@ -7419,12 +7419,12 @@ if all_configs_list or current_successful_points:
             scaleratio=1,
             constrain="domain",
             range=[XLIM[0], XLIM[1]],
-            title="dâ‚"
+            title="d1"
         ),
         yaxis=dict(
             constrain="domain",
             range=[YLIM[0], YLIM[1]],
-            title="dâ‚‚"
+            title="d2"
         ),
         legend=dict(
             groupclick="toggleitem" # Clicking a legend item toggles the whole group
@@ -7467,7 +7467,7 @@ if iter_log:
         it = item.get("iteration", 0)
         m1 = item.get("match_d1", False)
         m2 = item.get("match_d2", False)
-        lines.append(f"Config {cnum}, iteration {it}: dâ‚ match = {m1}, dâ‚‚ match = {m2}")
+        lines.append(f"Config {cnum}, iteration {it}: d1 match = {m1}, d2 match = {m2}")
     summary_text = "\n".join(lines)
     st.text_area(
         "Overview of order match after final placement of the point",

@@ -629,6 +629,203 @@ if coord_min_x >= coord_max_x:
 if coord_min_y >= coord_max_y:
     st.warning("Min Y must be less than Max Y")
 
+# ============= Lane Drawing Helper Functions =============
+# These functions are needed by _auto_detect_bounds_logic for data_path mode
+# They must be defined BEFORE _auto_detect_bounds_logic
+
+def _remove_duplicate_points(points: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:
+    if points.size == 0:
+        return points
+    filtered = [points[0]]
+    for pt in points[1:]:
+        if np.linalg.norm(pt - filtered[-1]) > tolerance:
+            filtered.append(pt)
+    return np.array(filtered, dtype=float)
+
+def _extract_longest_object_path(config_df: pd.DataFrame):
+    best_pts = None
+    best_score = -np.inf
+    for obj_id, obj_df in config_df.groupby("o"):
+        obj_sorted = obj_df.sort_values("t")
+        pts = obj_sorted[["x", "y"]].to_numpy(dtype=float)
+        pts = _remove_duplicate_points(pts)
+        if pts.shape[0] < 2:
+            continue
+        segment_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total_length = float(segment_lengths.sum())
+        score = total_length + (10.0 if obj_id == 0 else 0.0)
+        if score > best_score:
+            best_score = score
+            best_pts = pts
+    return best_pts
+
+def _extract_centerline_from_data(c_value: int):
+    if _df_all is None:
+        return None
+    config_df = _df_all[_df_all["c"] == c_value]
+    if config_df.empty:
+        return None
+
+    # For curved road configs, use the car in the RIGHTMOST lane (lowest y values)
+    # to get correct centerline that follows the actual road curve (not overtaking path)
+    # In config 15: Auto 0 starts with lowest y and follows the right lane through the S-curve
+    if c_value in [15]:
+        # Object 0 follows the right lane (lowest y) through the S-curve
+        if 0 in config_df['o'].values:
+            config_df = config_df[config_df['o'] == 0]
+        elif 1 in config_df['o'].values:
+            config_df = config_df[config_df['o'] == 1]
+
+    center_samples: list[tuple[float, float, float]] = []
+    for t_val, group in config_df.groupby("t"):
+        center_samples.append((float(t_val), float(group["x"].mean()), float(group["y"].mean())))
+
+    center_samples.sort(key=lambda item: item[0])
+
+    if center_samples:
+        centerline = np.array([[row[1], row[2]] for row in center_samples], dtype=float)
+        centerline = _remove_duplicate_points(centerline)
+    else:
+        centerline = np.empty((0, 2), dtype=float)
+
+    if centerline.shape[0] < 2:
+        return _extract_longest_object_path(config_df)
+
+    # Check if the path is roughly straight (skip for curved configs)
+    # IMPORTANT: Always preserve the original slope angle from start to end point!
+    if c_value not in [15] and centerline.shape[0] >= 3:
+        p_start = centerline[0]
+        p_end = centerline[-1]
+        vec = p_end - p_start
+        norm = np.linalg.norm(vec)
+        if norm > 1e-6:
+            # Calculate distance of all points to the line segment
+            unit_vec = vec / norm
+            vecs = centerline - p_start
+            # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
+            cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
+            max_deviation = np.max(np.abs(cross_products))
+            
+            # If deviation is small (e.g. < 5.0m), simplify to straight line
+            # Keep original start/end points to preserve the slope angle!
+            if max_deviation < 5.0:
+                centerline = np.array([p_start, p_end])
+    elif centerline.shape[0] == 2:
+        pass # Already straight
+
+    return centerline
+
+def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
+    if points.shape[0] < 2:
+        return points.copy()
+
+    tangents = np.zeros_like(points)
+    tangents[1:-1] = points[2:] - points[:-2]
+    tangents[0] = points[1] - points[0]
+    tangents[-1] = points[-1] - points[-2]
+
+    norms = np.linalg.norm(tangents, axis=1)
+    norms[norms == 0] = 1.0
+    normalized = tangents / norms[:, np.newaxis]
+    normals = np.column_stack((-normalized[:, 1], normalized[:, 0]))
+
+    return points + offset * normals
+
+def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, offset: float = 0.0):
+    if lane_count < 1:
+        return None
+
+    centerline = _extract_centerline_from_data(c_value)
+    if centerline is None or centerline.shape[0] < 2:
+        return None
+
+    # Extend centerline to xlim if provided
+    if xlim is not None:
+        p1 = centerline[0]
+        p2 = centerline[-1]
+        
+        # For curved lines (>2 points), use LOCAL tangent at endpoints for extension
+        if centerline.shape[0] > 2:
+            # Tangent at start: direction from point 0 to point 1
+            start_tangent = centerline[1] - centerline[0]
+            start_norm = np.linalg.norm(start_tangent)
+            if start_norm > 1e-6:
+                start_unit = start_tangent / start_norm
+            else:
+                start_unit = np.array([1.0, 0.0])
+            
+            # Tangent at end: direction from second-to-last to last point
+            end_tangent = centerline[-1] - centerline[-2]
+            end_norm = np.linalg.norm(end_tangent)
+            if end_norm > 1e-6:
+                end_unit = end_tangent / end_norm
+            else:
+                end_unit = np.array([1.0, 0.0])
+            
+            # Extend start if needed (using start tangent, going backwards)
+            if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
+                t_start = (xlim[0] - p1[0]) / start_unit[0]
+                new_start = p1 + t_start * start_unit
+                centerline = np.vstack([[new_start], centerline])
+            
+            # Extend end if needed (using end tangent, going forwards)
+            if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
+                t_end = (xlim[1] - p2[0]) / end_unit[0]
+                new_end = p2 + t_end * end_unit
+                centerline = np.vstack([centerline, [new_end]])
+        else:
+            # For straight lines (2 points), use overall direction
+            direction = p2 - p1
+            norm = np.linalg.norm(direction)
+            if norm > 1e-6:
+                unit_dir = direction / norm
+                if abs(unit_dir[0]) > 1e-6:
+                    t_start = (xlim[0] - p1[0]) / unit_dir[0]
+                    t_end = (xlim[1] - p1[0]) / unit_dir[0]
+                    if t_start > t_end:
+                        t_start, t_end = t_end, t_start
+                    new_start = p1 + t_start * unit_dir
+                    new_end = p1 + t_end * unit_dir
+                    centerline = np.array([new_start, new_end])
+
+
+    # Apply vertical offset to centerline
+    centerline[:, 1] += offset
+
+    half_width = (lane_width * lane_count) / 2.0
+    boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
+    boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
+
+    interior_count = max(0, lane_count - 1)
+    center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
+    center_lines = [_offset_polyline(centerline, off) for off in center_offsets]
+
+    return {"boundaries": boundaries, "center_lines": center_lines, "centerline": centerline}
+
+def _lane_polylines_bounds(lane_polylines):
+    if not lane_polylines:
+        return None
+
+    arrays: list[np.ndarray] = []
+    boundaries = lane_polylines.get("boundaries") if isinstance(lane_polylines, dict) else None
+    if boundaries:
+        arrays.extend(boundaries)
+
+    centerline = lane_polylines.get("centerline") if isinstance(lane_polylines, dict) else None
+    if centerline is not None and centerline.size:
+        arrays.append(centerline)
+
+    if not arrays:
+        return None
+
+    stacked = np.vstack(arrays)
+    return (
+        float(np.min(stacked[:, 0])),
+        float(np.max(stacked[:, 0])),
+        float(np.min(stacked[:, 1])),
+        float(np.max(stacked[:, 1])),
+    )
+
 # ============= Auto Detect Coordinate Bounds =============
 # This logic recalculates the coordinate bounds based on the currently selected
 # configuration (c) and timestamp window. Useful when switching between configurations
@@ -4440,33 +4637,24 @@ def _extract_centerline_from_data(c_value: int):
         return _extract_longest_object_path(config_df)
 
     # Check if the path is roughly straight (skip for curved configs)
+    # IMPORTANT: Always preserve the original slope angle from start to end point!
     if c_value not in [15] and centerline.shape[0] >= 3:
         p_start = centerline[0]
         p_end = centerline[-1]
         vec = p_end - p_start
         norm = np.linalg.norm(vec)
         if norm > 1e-6:
-            # Check if road is primarily horizontal (x changes much more than y)
-            x_range = np.max(centerline[:, 0]) - np.min(centerline[:, 0])
-            y_range = np.max(centerline[:, 1]) - np.min(centerline[:, 1])
+            # Calculate distance of all points to the line segment
+            unit_vec = vec / norm
+            vecs = centerline - p_start
+            # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
+            cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
+            max_deviation = np.max(np.abs(cross_products))
             
-            # If road is mostly horizontal (x changes > 5x more than y), force horizontal
-            if x_range > 5 * y_range and y_range < 10:
-                # Use mean y for a perfectly horizontal road
-                mean_y = np.mean(centerline[:, 1])
-                centerline = np.array([[centerline[0, 0], mean_y], [centerline[-1, 0], mean_y]])
-            else:
-                # Calculate distance of all points to the line segment
-                unit_vec = vec / norm
-                vecs = centerline - p_start
-                # 2D cross product: x1*y2 - x2*y1 gives signed distance * norm
-                cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
-                max_deviation = np.max(np.abs(cross_products))
-                
-                # If deviation is small (e.g. < 5.0m), simplify to straight line
-                # Higher threshold to handle lane changes that shift the average
-                if max_deviation < 5.0:
-                    centerline = np.array([centerline[0], centerline[-1]])
+            # If deviation is small (e.g. < 5.0m), simplify to straight line
+            # Keep original start/end points to preserve the slope angle!
+            if max_deviation < 5.0:
+                centerline = np.array([p_start, p_end])
     elif centerline.shape[0] == 2:
         pass # Already straight
 
@@ -5446,23 +5634,86 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             buffer_color = 'purple'
             buffer_alpha = 0.5
             gx, gy = gen_pt[0], gen_pt[1]
-            # 5 buffer variants: x-buf, x+buf, original, y-buf, y+buf
-            buffer_pts = [
-                (gx - buffer_x_val, gy),  # x - buffer_x
-                (gx + buffer_x_val, gy),  # x + buffer_x
-                (gx, gy),                  # original (already drawn as red)
-                (gx, gy - buffer_y_val),  # y - buffer_y
-                (gx, gy + buffer_y_val),  # y + buffer_y
-            ]
-            # Draw buffer points (skip the center one at index 2, it's the main point)
-            for idx, (bx, by) in enumerate(buffer_pts):
-                if idx != 2:  # Skip the center point
-                    ax.scatter([bx], [by], s=18, zorder=5, color=buffer_color, alpha=buffer_alpha, marker='x')
-            # Draw lines connecting buffer points to show the buffer cross
-            ax.plot([gx - buffer_x_val, gx + buffer_x_val], [gy, gy], 
-                    color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
-            ax.plot([gx, gx], [gy - buffer_y_val, gy + buffer_y_val], 
-                    color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
+            center = np.array([gx, gy])
+            
+            # Compute the centerline from all_points_plot (the actual plotted points in the window)
+            # This gives us the correct road direction for the current view
+            try:
+                # Collect all points from all objects, sorted by time
+                all_window_pts = []
+                for o_id in sorted(all_points_plot.keys()):
+                    pts = all_points_plot[o_id]
+                    ts = all_vals_plot[o_id]
+                    for pt, t in zip(pts, ts):
+                        all_window_pts.append((float(t), float(pt[0]), float(pt[1])))
+                
+                # Group by time and compute mean position (centerline)
+                from collections import defaultdict
+                by_time = defaultdict(list)
+                for t, x, y in all_window_pts:
+                    by_time[t].append((x, y))
+                
+                center_samples = []
+                for t in sorted(by_time.keys()):
+                    pts_at_t = by_time[t]
+                    mean_x = np.mean([p[0] for p in pts_at_t])
+                    mean_y = np.mean([p[1] for p in pts_at_t])
+                    center_samples.append((mean_x, mean_y))
+                
+                if len(center_samples) >= 2:
+                    centerline_window = np.array(center_samples, dtype=float)
+                    
+                    # Compute tangent from start to end of centerline
+                    p_start = centerline_window[0]
+                    p_end = centerline_window[-1]
+                    vec = p_end - p_start
+                    norm = np.linalg.norm(vec)
+                    
+                    if norm > 1e-6:
+                        # Tangent direction (along road)
+                        tangent = vec / norm
+                        # Normal direction (perpendicular, 90° counter-clockwise)
+                        normal = np.array([-tangent[1], tangent[0]])
+                        
+                        # Buffer points along tangent (d1) and normal (d2) directions
+                        buffer_pts_arr = [
+                            center - buffer_x_val * tangent,  # -d1
+                            center + buffer_x_val * tangent,  # +d1
+                            center,                            # center (already drawn as red)
+                            center - buffer_y_val * normal,   # -d2
+                            center + buffer_y_val * normal,   # +d2
+                        ]
+                        # Draw buffer points (skip the center one at index 2)
+                        for idx, pt in enumerate(buffer_pts_arr):
+                            if idx != 2:  # Skip the center point
+                                ax.scatter([pt[0]], [pt[1]], s=18, zorder=5, color=buffer_color, alpha=buffer_alpha, marker='x')
+                        # Draw rotated buffer cross lines
+                        # d1 direction line (tangent)
+                        ax.plot([buffer_pts_arr[0][0], buffer_pts_arr[1][0]], [buffer_pts_arr[0][1], buffer_pts_arr[1][1]], 
+                                color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
+                        # d2 direction line (normal)
+                        ax.plot([buffer_pts_arr[3][0], buffer_pts_arr[4][0]], [buffer_pts_arr[3][1], buffer_pts_arr[4][1]], 
+                                color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
+                    else:
+                        raise ValueError("Centerline too short")
+                else:
+                    raise ValueError("Not enough centerline points")
+            except Exception:
+                # Fallback: axis-aligned buffer cross (no centerline available)
+                buffer_pts = [
+                    (gx - buffer_x_val, gy),  # x - buffer_x
+                    (gx + buffer_x_val, gy),  # x + buffer_x
+                    (gx, gy),                  # original (already drawn as red)
+                    (gx, gy - buffer_y_val),  # y - buffer_y
+                    (gx, gy + buffer_y_val),  # y + buffer_y
+                ]
+                for idx, (bx, by) in enumerate(buffer_pts):
+                    if idx != 2:
+                        ax.scatter([bx], [by], s=18, zorder=5, color=buffer_color, alpha=buffer_alpha, marker='x')
+                ax.plot([gx - buffer_x_val, gx + buffer_x_val], [gy, gy], 
+                        color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
+                ax.plot([gx, gx], [gy - buffer_y_val, gy + buffer_y_val], 
+                        color=buffer_color, alpha=buffer_alpha, linewidth=1, linestyle='--', zorder=4)
         
         # Draw rough zone if rough variant is active
         if current_variant in ["rough", "bufferrough"] and (rough_x_val > 0 or rough_y_val > 0):
@@ -5475,63 +5726,77 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             draw_rough_x = rough_x_val if rough_x_val > 0 else min_visible_size
             draw_rough_y = rough_y_val if rough_y_val > 0 else min_visible_size
             
-            # For curved roads (config 15, 17), rotate the rough zone to align with local tangent/normal
-            current_config = int(st.session_state.get("c_value", 1))
-            CURVED_CONFIGS = [15, 17]
-            
-            if current_config in CURVED_CONFIGS:
-                # Get centerline and create FrenetFrame
-                centerline = _extract_centerline_from_data(current_config)
-                if centerline is not None and centerline.shape[0] >= 2:
-                    frenet_frame = FrenetFrame(centerline)
-                    # Get Frenet coordinates for the candidate point
-                    frenet_pt = frenet_frame.to_frenet(np.array([[gx, gy]]))[0]
-                    s_val = frenet_pt[0]  # Arc length
-                    # Get tangent and normal at this arc length
-                    tangent = frenet_frame.get_tangent_at_s(s_val)  # d1 direction
-                    normal = frenet_frame.get_normal_at_s(s_val)   # d2 direction
-                    # Calculate rotated rectangle corners:
-                    # Center is at (gx, gy), extend ±rough_x along tangent and ±rough_y along normal
-                    center = np.array([gx, gy])
-                    corners = [
-                        center - draw_rough_x * tangent - draw_rough_y * normal,  # bottom-left in Frenet
-                        center + draw_rough_x * tangent - draw_rough_y * normal,  # bottom-right
-                        center + draw_rough_x * tangent + draw_rough_y * normal,  # top-right
-                        center - draw_rough_x * tangent + draw_rough_y * normal,  # top-left
-                    ]
-                    # Draw rotated polygon
-                    poly = matplotlib.patches.Polygon(
-                        corners,
-                        closed=True,
-                        edgecolor=rough_color,
-                        facecolor=rough_color,
-                        alpha=rough_alpha,
-                        linewidth=1.5,
-                        linestyle=':',
-                        zorder=3
-                    )
-                    ax.add_patch(poly)  # type: ignore
+            # Compute the centerline from all_points_plot (the actual plotted points in the window)
+            # This gives us the correct road direction for the current view
+            try:
+                # Collect all points from all objects, sorted by time
+                all_window_pts = []
+                for o_id in sorted(all_points_plot.keys()):
+                    pts = all_points_plot[o_id]
+                    ts = all_vals_plot[o_id]
+                    for pt, t in zip(pts, ts):
+                        all_window_pts.append((float(t), float(pt[0]), float(pt[1])))
+                
+                # Group by time and compute mean position (centerline)
+                from collections import defaultdict
+                by_time = defaultdict(list)
+                for t, x, y in all_window_pts:
+                    by_time[t].append((x, y))
+                
+                center_samples = []
+                for t in sorted(by_time.keys()):
+                    pts_at_t = by_time[t]
+                    mean_x = np.mean([p[0] for p in pts_at_t])
+                    mean_y = np.mean([p[1] for p in pts_at_t])
+                    center_samples.append((mean_x, mean_y))
+                
+                if len(center_samples) >= 2:
+                    centerline_window = np.array(center_samples, dtype=float)
+                    
+                    # Compute tangent from start to end of centerline
+                    p_start = centerline_window[0]
+                    p_end = centerline_window[-1]
+                    vec = p_end - p_start
+                    norm = np.linalg.norm(vec)
+                    
+                    if norm > 1e-6:
+                        # Tangent direction (along road)
+                        tangent = vec / norm
+                        # Normal direction (perpendicular, 90° counter-clockwise)
+                        normal = np.array([-tangent[1], tangent[0]])
+                        
+                        # Calculate rotated rectangle corners:
+                        # Center is at (gx, gy), extend ±rough_x along tangent and ±rough_y along normal
+                        center = np.array([gx, gy])
+                        corners = [
+                            center - draw_rough_x * tangent - draw_rough_y * normal,  # bottom-left
+                            center + draw_rough_x * tangent - draw_rough_y * normal,  # bottom-right
+                            center + draw_rough_x * tangent + draw_rough_y * normal,  # top-right
+                            center - draw_rough_x * tangent + draw_rough_y * normal,  # top-left
+                        ]
+                        # Draw rotated polygon
+                        poly = matplotlib.patches.Polygon(
+                            corners,
+                            closed=True,
+                            edgecolor=rough_color,
+                            facecolor=rough_color,
+                            alpha=rough_alpha,
+                            linewidth=1.5,
+                            linestyle=':',
+                            zorder=3
+                        )
+                        ax.add_patch(poly)  # type: ignore
+                    else:
+                        raise ValueError("Centerline too short")
                 else:
-                    # Fallback to axis-aligned rectangle if centerline not available
-                    rect = matplotlib.patches.Rectangle(
-                        (gx - draw_rough_x, gy - draw_rough_y),
-                        2 * draw_rough_x, 2 * draw_rough_y,
-                        edgecolor=rough_color, facecolor=rough_color,
-                        alpha=rough_alpha, linewidth=1.5, linestyle=':', zorder=3
-                    )
-                    ax.add_patch(rect)  # type: ignore
-            else:
-                # Straight roads: axis-aligned rectangle
+                    raise ValueError("Not enough centerline points")
+            except Exception:
+                # Fallback to axis-aligned rectangle if centerline computation fails
                 rect = matplotlib.patches.Rectangle(
                     (gx - draw_rough_x, gy - draw_rough_y),
-                    2 * draw_rough_x,  # width
-                    2 * draw_rough_y,  # height
-                    edgecolor=rough_color,
-                    facecolor=rough_color,
-                    alpha=rough_alpha,
-                    linewidth=1.5,
-                    linestyle=':',
-                    zorder=3
+                    2 * draw_rough_x, 2 * draw_rough_y,
+                    edgecolor=rough_color, facecolor=rough_color,
+                    alpha=rough_alpha, linewidth=1.5, linestyle=':', zorder=3
                 )
                 ax.add_patch(rect)  # type: ignore
 
