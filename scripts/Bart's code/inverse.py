@@ -893,9 +893,13 @@ def _auto_detect_bounds_logic() -> bool:
         # Include lane bounds if available
         lane_cfg = LANE_CONFIGURATIONS.get(_detect_c)
         if lane_cfg:
-            lane_bounds = lane_cfg.get("bounds", {})
-            x_bounds = lane_bounds.get("x")
-            y_bounds = lane_bounds.get("y")
+            lane_bounds = lane_cfg.get("bounds")
+            if lane_bounds:
+                x_bounds = lane_bounds.get("x")
+                y_bounds = lane_bounds.get("y")
+            else:
+                x_bounds = None
+                y_bounds = None
             if x_bounds:
                 _new_min_x = min(_new_min_x, float(x_bounds[0]))
                 _new_max_x = max(_new_max_x, float(x_bounds[1]))
@@ -1039,7 +1043,7 @@ default_window = min(3, n_timepoints)
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
-        timestamp_options = list(range(1, n_timepoints + 1))
+        timestamp_options = list(range(2, n_timepoints + 1))
         default_idx = timestamp_options.index(default_window) if default_window in timestamp_options else 0
         num_timestamps = st.selectbox(
             "Number of timestamps",
@@ -2968,20 +2972,48 @@ def update_order_match_flags() -> None:
                 max_mismatches=max_mismatches_param
             )
     else:
-        detailed_results = check_pdp_match_detailed(
-            all_pts_flat,
-            generated_points,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-            match_threshold=match_threshold,
-            max_mismatches=max_mismatches_param
-        )
+        # Only pass buffer/rough parameters if variant actually uses them
+        if pdp_variant in ["buffer", "bufferrough", "realistic"]:
+            detailed_results = check_pdp_match_detailed(
+                all_pts_flat,
+                generated_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0,
+                rough_y=rough_y if pdp_variant in ["rough", "bufferrough", "realistic"] else 0.0,
+                match_threshold=match_threshold,
+                max_mismatches=max_mismatches_param
+            )
+        else:
+            # For fundamental and rough variants, pass appropriate parameters
+            detailed_results = check_pdp_match_detailed(
+                all_pts_flat,
+                generated_points,
+                pdp_variant=pdp_variant,
+                buffer_x=0.0,
+                buffer_y=0.0,
+                rough_x=rough_x if pdp_variant == "rough" else 0.0,
+                rough_y=rough_y if pdp_variant == "rough" else 0.0,
+                match_threshold=match_threshold,
+                max_mismatches=max_mismatches_param
+            )
     
-    st.session_state["order_match_d1"] = detailed_results["d1_match"]
-    st.session_state["order_match_d2"] = detailed_results["d2_match"]
+    # Apply single-object logic: accept if EITHER d1 OR d2 matches
+    num_unique_objects = len(all_points_plot.keys()) if 'all_points_plot' in globals() else 2
+    if num_unique_objects <= 1:
+        # For single object: if either dimension matches, consider both as matching
+        if detailed_results["d1_match"] or detailed_results["d2_match"]:
+            st.session_state["order_match_d1"] = True
+            st.session_state["order_match_d2"] = True
+        else:
+            st.session_state["order_match_d1"] = False
+            st.session_state["order_match_d2"] = False
+    else:
+        # For multiple objects: use original logic
+        st.session_state["order_match_d1"] = detailed_results["d1_match"]
+        st.session_state["order_match_d2"] = detailed_results["d2_match"]
+    
     st.session_state["pdp_detailed_results"] = detailed_results
 
 # ============= Helper: Get match threshold from session_state ============
@@ -3290,6 +3322,16 @@ def generate_binary_multipoint() -> None:
     st.session_state["anim_completed_iterations"] = num_iterations
     st.session_state["anim_binary_mode"] = True
     
+    # CRITICAL: Store all_pts for LaTeX order display functions
+    st.session_state["anim_all_pts"] = all_pts_flat.copy()
+    
+    # Store generated points for display
+    if successful_points:
+        last_point = successful_points[-1]
+        st.session_state["anim_generated_point"] = last_point["point"]
+        st.session_state["anim_parent_idx"] = last_point.get("parent_idx", 0)
+        update_order_match_flags()
+    
     # Rerun to update the UI
     st.rerun()
 
@@ -3373,19 +3415,47 @@ def run_multipoint_iteration(
         
         # Get both threshold parameters
         _thresh, _max_mm = get_threshold_params()
-        same_d1, same_d2 = check_pdp_match(
-            all_pts_flat,
-            test_config,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-            match_threshold=_thresh,
-            max_mismatches=_max_mm
-        )
         
-        if same_d1 and same_d2:
+        # DEBUG: Print parameters being used
+        print(f"[DEBUG RUN_MULTIPOINT] variant={pdp_variant}, search_step={search_step}/{max_search_steps-1}")
+        print(f"[DEBUG RUN_MULTIPOINT] buffer_x={buffer_x}, buffer_y={buffer_y}, rough_x={rough_x}, rough_y={rough_y}")
+        
+        # Apply buffer/rough parameters only for variants that use them
+        if pdp_variant in ["buffer", "bufferrough", "realistic"]:
+            print(f"[DEBUG RUN_MULTIPOINT] Using variant with buffer/rough parameters")
+            same_d1, same_d2 = check_pdp_match(
+                all_pts_flat,
+                test_config,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0,
+                rough_y=rough_y if pdp_variant in ["rough", "bufferrough", "realistic"] else 0.0,
+                match_threshold=_thresh,
+                max_mismatches=_max_mm
+            )
+        else:
+            # For fundamental and rough variants
+            print(f"[DEBUG RUN_MULTIPOINT] Using {pdp_variant} with buffer_x=0, buffer_y=0")
+            same_d1, same_d2 = check_pdp_match(
+                all_pts_flat,
+                test_config,
+                pdp_variant=pdp_variant,
+                buffer_x=0.0,
+                buffer_y=0.0,
+                rough_x=rough_x if pdp_variant == "rough" else 0.0,
+                rough_y=rough_y if pdp_variant == "rough" else 0.0,
+                match_threshold=_thresh,
+                max_mismatches=_max_mm
+            )
+        
+        print(f"[DEBUG RUN_MULTIPOINT] Result: d1={same_d1}, d2={same_d2}")
+        
+        # For PDP, BOTH d1 AND d2 must match (regardless of number of objects)
+        success = same_d1 and same_d2
+        print(f"[DEBUG RUN_MULTIPOINT] Order match: d1 AND d2 -> {success}")
+        
+        if success:
             # Success! Add all candidate points to successful_points (with damping applied)
             iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
             for idx, new_pt in candidate_positions.items():
@@ -3418,23 +3488,18 @@ def run_multipoint_iteration(
             dy = new_base_dist * np.sin(new_angle)
             movement_vectors = {idx: (dx, dy) for idx in selected_indices}
     
-    # Max search steps reached - snap to parent positions (minimal change)
-    # This counts as "success" to ensure each iteration produces a result
-    min_scale = 0.001
-    scaled_vectors = scale_movement_vectors(movement_vectors, min_scale)
+    # Max search steps reached without finding PDP match
+    # Fallback: place points EXACTLY at parent position (no movement)
+    # This ensures order preservation when no valid movement exists
+    print(f"[DEBUG RUN_MULTIPOINT] Max search steps reached - placing points at parent positions")
     
     for idx in selected_indices:
         parent_pt = parent_positions.get(idx, current_points[idx])
-        dx, dy = scaled_vectors.get(idx, (0, 0))
-        new_x = np.clip(parent_pt[0] + dx, COORD_MIN_X, COORD_MAX_X)
-        new_y = np.clip(parent_pt[1] + dy, COORD_MIN_Y, COORD_MAX_Y)
-        new_pt = np.array([new_x, new_y])
-        # Apply random damping factor to reduce distance from parent
-        damped_pt = apply_damping_factor(parent_pt, new_pt)
+        # Place exactly at parent position to preserve all orders
         
         iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
         sp: SuccessfulPoint = {
-            "point": damped_pt,
+            "point": parent_pt.copy(),  # Exact copy of parent position
             "parent_idx": idx,
             "parent_point": parent_pt,
             "original_parent_idx": idx,
@@ -3514,6 +3579,20 @@ def generate_exp_multipoint() -> None:
     st.session_state["anim_running"] = False
     st.session_state["anim_completed_iterations"] = num_iterations
     
+    # CRITICAL: Store all_pts for LaTeX order display functions
+    st.session_state["anim_all_pts"] = all_pts_flat.copy()
+    
+    # CRITICAL: Store generated points for display and order match calculation
+    # Use the last successful point as the generated point to enable display
+    if successful_points:
+        last_point = successful_points[-1]
+        st.session_state["anim_generated_point"] = last_point["point"]
+        st.session_state["anim_parent_idx"] = last_point.get("parent_idx", 0)
+        st.session_state["anim_successful_points"] = successful_points
+        
+        # Calculate and store order match flags
+        update_order_match_flags()
+    
     # Rerun to update the UI (especially the Reset button state)
     # This ensures the Reset button becomes enabled after generation completes
     st.rerun()
@@ -3590,17 +3669,33 @@ def generate_exp() -> None:
         # Use PDP inequality matrix comparison with selected variant
         # Get both threshold parameters
         _thresh, _max_mm = get_threshold_params()
-        same_d1, same_d2 = check_pdp_match(
-            all_pts_flat,
-            generated_points,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-            match_threshold=_thresh,
-            max_mismatches=_max_mm
-        )
+        
+        # Apply buffer/rough parameters only for variants that use them
+        if pdp_variant in ["buffer", "bufferrough", "realistic"]:
+            same_d1, same_d2 = check_pdp_match(
+                all_pts_flat,
+                generated_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0,
+                rough_y=rough_y if pdp_variant in ["rough", "bufferrough", "realistic"] else 0.0,
+                match_threshold=_thresh,
+                max_mismatches=_max_mm
+            )
+        else:
+            # For fundamental and rough variants
+            same_d1, same_d2 = check_pdp_match(
+                all_pts_flat,
+                generated_points,
+                pdp_variant=pdp_variant,
+                buffer_x=0.0,
+                buffer_y=0.0,
+                rough_x=rough_x if pdp_variant == "rough" else 0.0,
+                rough_y=rough_y if pdp_variant == "rough" else 0.0,
+                match_threshold=_thresh,
+                max_mismatches=_max_mm
+            )
 
         completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
         max_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
@@ -3615,8 +3710,11 @@ def generate_exp() -> None:
         successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
         in_search = bool(st.session_state.get("anim_in_search", True))
 
+        # For PDP, BOTH d1 AND d2 must match (regardless of number of objects)
+        orders_match = same_d1 and same_d2 and gen_pt is not None
+
         # === Case 1: success (orders match) or distance collapsed to 0 ===
-        if (same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None):
+        if orders_match or (distance <= 0.0 and gen_pt is not None):
             if all_pts.size > 0 and parent_idx < n_total_points:
                 parent_point_val = all_pts[parent_idx]
                 original_parent_idx_val = parent_idx

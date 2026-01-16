@@ -77,11 +77,16 @@ def check_pdp_match(
     orig_pts = original_points.copy()
     gen_pts = generated_points.copy()
 
+    # DEBUG: Print received parameters
+    print(f"[DEBUG CHECK_PDP_MATCH] variant={pdp_variant}, buffer_x={buffer_x}, buffer_y={buffer_y}, rough_x={rough_x}, rough_y={rough_y}")
+
     # Apply buffer transformation if needed
     if pdp_variant in ["buffer", "bufferrough"]:
+        print(f"[DEBUG CHECK_PDP_MATCH] Applying buffer transformation: buffer_x={buffer_x}, buffer_y={buffer_y}")
         orig_pts = apply_buffer_transformation(orig_pts, buffer_x, buffer_y)
         gen_pts = apply_buffer_transformation(gen_pts, buffer_x, buffer_y)
     elif pdp_variant == "realistic":
+        print(f"[DEBUG CHECK_PDP_MATCH] Applying realistic buffer: buffer_x={buffer_x}, buffer_y=0")
         orig_pts = apply_buffer_transformation(orig_pts, buffer_x, 0.0)
         gen_pts = apply_buffer_transformation(gen_pts, buffer_x, 0.0)
 
@@ -89,12 +94,15 @@ def check_pdp_match(
     if pdp_variant in ["rough", "bufferrough"]:
         roughness_x = rough_x
         roughness_y = rough_y
+        print(f"[DEBUG CHECK_PDP_MATCH] Using rough variant: roughness_x={roughness_x}, roughness_y={roughness_y}")
     elif pdp_variant == "realistic":
         roughness_x = 0.0
         roughness_y = rough_y
+        print(f"[DEBUG CHECK_PDP_MATCH] Using realistic variant: roughness_x=0, roughness_y={roughness_y}")
     else:
         roughness_x = 0.0
         roughness_y = 0.0
+        print(f"[DEBUG CHECK_PDP_MATCH] Using fundamental variant: roughness_x=0, roughness_y=0")
 
     # Compute inequality matrices
     original_x_matrix = compute_inequality_matrix(orig_pts, 0, roughness_x)
