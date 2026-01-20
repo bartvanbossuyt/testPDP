@@ -659,6 +659,110 @@ def _extract_longest_object_path(config_df: pd.DataFrame):
             best_pts = pts
     return best_pts
 
+def _calculate_vehicle_speeds(config_df: pd.DataFrame) -> dict:
+    """
+    Calculate average speed for each vehicle in km/h.
+    Assumes: x,y in meters, t in seconds or deciseconds.
+    Returns dict {obj_id: speed_kmh}
+    """
+    speeds = {}
+    for obj_id in config_df['o'].unique():
+        obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
+        if len(obj_df) < 2:
+            speeds[obj_id] = 0.0
+            continue
+        
+        # Calculate distances between consecutive timestamps (in meters)
+        positions = obj_df[['x', 'y']].to_numpy()
+        times = obj_df['t'].to_numpy()
+        
+        distances = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+        time_diffs = np.diff(times)
+        
+        # Speed in m/s
+        speeds_ms = distances / time_diffs
+        avg_speed_ms = np.mean(speeds_ms) if len(speeds_ms) > 0 else 0.0
+        
+        # Convert to km/h (multiply by 3.6)
+        avg_speed_kmh = avg_speed_ms * 3.6
+        speeds[obj_id] = avg_speed_kmh
+        
+        print(f"[SPEED] Object {obj_id}: {avg_speed_kmh:.1f} km/h")
+    
+    return speeds
+
+def _determine_driving_direction(config_df: pd.DataFrame, obj_id: int = None) -> np.ndarray:
+    """
+    Determine the main driving direction based on movement from timestamp 0.
+    If obj_id is provided, calculate direction for that specific object.
+    Returns a unit vector representing the driving direction.
+    """
+    if obj_id is not None:
+        obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
+        if len(obj_df) < 2:
+            return np.array([1.0, 0.0])
+        
+        # Use first and last position to get overall direction
+        p0 = obj_df.iloc[0][['x', 'y']].to_numpy()
+        p1 = obj_df.iloc[-1][['x', 'y']].to_numpy()
+        direction = p1 - p0
+        norm = np.linalg.norm(direction)
+        if norm > 1e-6:
+            return direction / norm
+        return np.array([1.0, 0.0])
+    
+    # Get positions at first two timestamps for all objects
+    t_values = sorted(config_df['t'].unique())
+    if len(t_values) < 2:
+        return np.array([1.0, 0.0])  # Default to x-direction
+    
+    t0_df = config_df[config_df['t'] == t_values[0]]
+    t1_df = config_df[config_df['t'] == t_values[1]]
+    
+    # Calculate center of mass for both timestamps
+    p0 = np.array([t0_df['x'].mean(), t0_df['y'].mean()])
+    p1 = np.array([t1_df['x'].mean(), t1_df['y'].mean()])
+    
+    direction = p1 - p0
+    norm = np.linalg.norm(direction)
+    if norm > 1e-6:
+        return direction / norm
+    return np.array([1.0, 0.0])
+
+def _vehicles_same_direction(config_df: pd.DataFrame, angle_threshold: float = 45.0) -> bool:
+    """
+    Determine if vehicles are traveling in roughly the same direction.
+    Returns True if angle between vehicle directions is less than angle_threshold degrees.
+    """
+    object_ids = sorted(config_df['o'].unique())
+    
+    if len(object_ids) < 2:
+        return True  # Single vehicle, consider as "same direction"
+    
+    # Calculate direction vectors for each vehicle
+    directions = []
+    for obj_id in object_ids:
+        direction = _determine_driving_direction(config_df, obj_id)
+        directions.append(direction)
+        print(f"[DIRECTION] Object {obj_id}: direction={direction}")
+    
+    # Compare all pairs of directions
+    for i in range(len(directions)):
+        for j in range(i + 1, len(directions)):
+            # Calculate angle between directions using dot product
+            dot_product = np.dot(directions[i], directions[j])
+            # Clamp to [-1, 1] to avoid numerical issues with arccos
+            dot_product = np.clip(dot_product, -1.0, 1.0)
+            angle_rad = np.arccos(dot_product)
+            angle_deg = np.degrees(angle_rad)
+            print(f"[DIRECTION] Angle between obj {object_ids[i]} and obj {object_ids[j]}: {angle_deg:.1f}°")
+            
+            # If any pair has large angle difference, they're not in same direction
+            if angle_deg > angle_threshold:
+                return False
+    
+    return True
+
 def _extract_centerline_from_data(c_value: int):
     if _df_all is None:
         return None
@@ -666,16 +770,28 @@ def _extract_centerline_from_data(c_value: int):
     if config_df.empty:
         return None
 
-    # For curved road configs, use the car in the RIGHTMOST lane (lowest y values)
-    # to get correct centerline that follows the actual road curve (not overtaking path)
-    # In config 15: Auto 0 starts with lowest y and follows the right lane through the S-curve
-    if c_value in [15]:
-        # Object 0 follows the right lane (lowest y) through the S-curve
-        if 0 in config_df['o'].values:
-            config_df = config_df[config_df['o'] == 0]
-        elif 1 in config_df['o'].values:
-            config_df = config_df[config_df['o'] == 1]
-
+    # Calculate vehicle speeds to identify slowest vehicle (should be on right)
+    speeds = _calculate_vehicle_speeds(config_df)
+    
+    # Determine driving direction from timestamp 0
+    driving_direction = _determine_driving_direction(config_df)
+    
+    # Find slowest vehicle (should be on the right lane)
+    slowest_vehicle = None
+    if speeds:
+        slowest_vehicle = min(speeds.items(), key=lambda x: x[1])[0]
+        
+        # For curved roads, use the slowest vehicle's path directly as the RIGHT lane
+        # Then offset to create centerline
+        if c_value in [15]:
+            slowest_df = config_df[config_df['o'] == slowest_vehicle].sort_values('t')
+            right_lane_path = slowest_df[['x', 'y']].to_numpy(dtype=float)
+            right_lane_path = _remove_duplicate_points(right_lane_path)
+            if right_lane_path.shape[0] >= 2:
+                # This is the rightmost lane, we'll offset it in _build_lane_polylines_from_data
+                return right_lane_path
+    
+    # Calculate initial centerline as average between all vehicles at each timestamp
     center_samples: list[tuple[float, float, float]] = []
     for t_val, group in config_df.groupby("t"):
         center_samples.append((float(t_val), float(group["x"].mean()), float(group["y"].mean())))
@@ -690,6 +806,38 @@ def _extract_centerline_from_data(c_value: int):
 
     if centerline.shape[0] < 2:
         return _extract_longest_object_path(config_df)
+    
+    # Now adjust centerline so that the slowest vehicle is on the RIGHT lane
+    # "Right" is relative to the driving direction
+    if slowest_vehicle is not None and len(config_df['o'].unique()) > 1:
+        # Get slowest vehicle's average position
+        slowest_df = config_df[config_df['o'] == slowest_vehicle]
+        slowest_positions = slowest_df[['x', 'y']].to_numpy(dtype=float)
+        slowest_avg = np.mean(slowest_positions, axis=0)
+        
+        # Get centerline midpoint
+        centerline_mid = np.mean(centerline, axis=0)
+        
+        # Vector from centerline to slowest vehicle
+        to_slowest = slowest_avg - centerline_mid
+        
+        # Calculate perpendicular to driving direction (right side when facing forward)
+        # Right = rotate driving direction 90 degrees clockwise
+        # In 2D: (x, y) rotated 90° clockwise = (y, -x)
+        right_direction = np.array([driving_direction[1], -driving_direction[0]])
+        
+        # Check if slowest vehicle is on the left or right of centerline
+        # Positive dot product means slowest is on the right side
+        side = np.dot(to_slowest, right_direction)
+        
+        if side < 0:
+            # Slowest vehicle is on the LEFT, we need to shift centerline LEFT
+            # so that slowest ends up on the RIGHT
+            # Calculate how much to shift: distance from centerline to slowest vehicle
+            shift_distance = np.linalg.norm(to_slowest)
+            # Shift centerline in the direction opposite to slowest vehicle
+            shift_vector = -to_slowest / np.linalg.norm(to_slowest) * shift_distance
+            centerline = centerline + shift_vector
 
     # Check if the path is roughly straight (skip for curved configs)
     # IMPORTANT: Always preserve the original slope angle from start to end point!
@@ -732,75 +880,199 @@ def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
     return points + offset * normals
 
 def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, offset: float = 0.0):
+    """
+    Build lane polylines for a configuration. Handles two cases:
+    1. Vehicles traveling in same direction: creates parallel lanes
+    2. Vehicles traveling in different directions: creates separate road segments with merge
+    
+    Dynamically determines lane count based on max speed (>100 km/h = 3 lanes, else 2 lanes).
+    Positions slower vehicle on the rightmost lane.
+    """
     if lane_count < 1:
         return None
-
-    centerline = _extract_centerline_from_data(c_value)
-    if centerline is None or centerline.shape[0] < 2:
+    
+    # Check if we have data and if vehicles are traveling in same direction
+    if _df_all is None:
         return None
+    
+    config_df = _df_all[_df_all["c"] == c_value]
+    if config_df.empty:
+        return None
+    
+    # Calculate speeds to determine lane count and positioning
+    speeds = _calculate_vehicle_speeds(config_df)
+    max_speed = max(speeds.values()) if speeds else 0.0
+    
+    # Determine lane count based on max speed
+    if max_speed > 100.0:
+        lane_count = 3
+        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h -> 3 lanes")
+    else:
+        lane_count = 2
+        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h -> 2 lanes")
+    
+    same_direction = _vehicles_same_direction(config_df)
+    print(f"[LANE BUILD] Config {c_value}: same_direction={same_direction}")
+    
+    if same_direction:
+        # Case 1: Same direction - use traditional parallel lane approach
+        centerline = _extract_centerline_from_data(c_value)
+        if centerline is None or centerline.shape[0] < 2:
+            return None
 
-    # Extend centerline to xlim if provided
-    if xlim is not None:
-        p1 = centerline[0]
-        p2 = centerline[-1]
+        # Extend centerline to xlim if provided
+        if xlim is not None:
+            p1 = centerline[0]
+            p2 = centerline[-1]
+            
+            # For curved lines (>2 points), use LOCAL tangent at endpoints for extension
+            if centerline.shape[0] > 2:
+                # Tangent at start: direction from point 0 to point 1
+                start_tangent = centerline[1] - centerline[0]
+                start_norm = np.linalg.norm(start_tangent)
+                if start_norm > 1e-6:
+                    start_unit = start_tangent / start_norm
+                else:
+                    start_unit = np.array([1.0, 0.0])
+                
+                # Tangent at end: direction from second-to-last to last point
+                end_tangent = centerline[-1] - centerline[-2]
+                end_norm = np.linalg.norm(end_tangent)
+                if end_norm > 1e-6:
+                    end_unit = end_tangent / end_norm
+                else:
+                    end_unit = np.array([1.0, 0.0])
+                
+                # Extend start if needed (using start tangent, going backwards)
+                if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
+                    t_start = (xlim[0] - p1[0]) / start_unit[0]
+                    new_start = p1 + t_start * start_unit
+                    centerline = np.vstack([[new_start], centerline])
+                
+                # Extend end if needed (using end tangent, going forwards)
+                if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
+                    t_end = (xlim[1] - p2[0]) / end_unit[0]
+                    new_end = p2 + t_end * end_unit
+                    centerline = np.vstack([centerline, [new_end]])
+            else:
+                # For straight lines (2 points), use overall direction
+                direction = p2 - p1
+                norm = np.linalg.norm(direction)
+                if norm > 1e-6:
+                    unit_dir = direction / norm
+                    if abs(unit_dir[0]) > 1e-6:
+                        t_start = (xlim[0] - p1[0]) / unit_dir[0]
+                        t_end = (xlim[1] - p1[0]) / unit_dir[0]
+                        if t_start > t_end:
+                            t_start, t_end = t_end, t_start
+                        new_start = p1 + t_start * unit_dir
+                        new_end = p1 + t_end * unit_dir
+                        centerline = np.array([new_start, new_end])
+
+        # Adjust offset to position vehicles realistically in lanes
+        # Reset offset to calculate from scratch based on vehicle positions
+        half_width = (lane_width * lane_count) / 2.0
         
-        # For curved lines (>2 points), use LOCAL tangent at endpoints for extension
-        if centerline.shape[0] > 2:
-            # Tangent at start: direction from point 0 to point 1
-            start_tangent = centerline[1] - centerline[0]
-            start_norm = np.linalg.norm(start_tangent)
-            if start_norm > 1e-6:
-                start_unit = start_tangent / start_norm
-            else:
-                start_unit = np.array([1.0, 0.0])
+        if len(speeds) == 1:
+            # Single vehicle: position in rightmost lane center
+            single_obj = list(speeds.keys())[0]
+            single_df = config_df[config_df['o'] == single_obj]
+            avg_y_vehicle = single_df['y'].mean()
+            avg_y_all = config_df['y'].mean()
             
-            # Tangent at end: direction from second-to-last to last point
-            end_tangent = centerline[-1] - centerline[-2]
-            end_norm = np.linalg.norm(end_tangent)
-            if end_norm > 1e-6:
-                end_unit = end_tangent / end_norm
-            else:
-                end_unit = np.array([1.0, 0.0])
+            # Rightmost lane center is at: centerline_y - half_width + lane_width/2
+            rightmost_lane_center_offset = -half_width + lane_width / 2.0
+            # Calculate total offset needed (not adding to existing offset)
+            offset = avg_y_vehicle - avg_y_all - rightmost_lane_center_offset
+            print(f"[LANE BUILD] Single vehicle obj {single_obj}: positioned in rightmost lane center (offset={offset:.2f}m)")
             
-            # Extend start if needed (using start tangent, going backwards)
-            if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
-                t_start = (xlim[0] - p1[0]) / start_unit[0]
-                new_start = p1 + t_start * start_unit
-                centerline = np.vstack([[new_start], centerline])
+        elif len(speeds) > 1:
+            # Multiple vehicles: preferentially position all vehicles on rightmost lanes
+            # Strategy: position the rightmost vehicle (lowest y-value) in the rightmost lane center
+            object_ids = sorted(speeds.keys())
             
-            # Extend end if needed (using end tangent, going forwards)
-            if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
-                t_end = (xlim[1] - p2[0]) / end_unit[0]
-                new_end = p2 + t_end * end_unit
-                centerline = np.vstack([centerline, [new_end]])
-        else:
-            # For straight lines (2 points), use overall direction
-            direction = p2 - p1
-            norm = np.linalg.norm(direction)
-            if norm > 1e-6:
-                unit_dir = direction / norm
-                if abs(unit_dir[0]) > 1e-6:
-                    t_start = (xlim[0] - p1[0]) / unit_dir[0]
-                    t_end = (xlim[1] - p1[0]) / unit_dir[0]
-                    if t_start > t_end:
-                        t_start, t_end = t_end, t_start
-                    new_start = p1 + t_start * unit_dir
-                    new_end = p1 + t_end * unit_dir
-                    centerline = np.array([new_start, new_end])
+            # Get y-positions for all vehicles
+            vehicle_y_positions = {}
+            for obj_id in object_ids:
+                obj_df = config_df[config_df['o'] == obj_id]
+                vehicle_y_positions[obj_id] = obj_df['y'].mean()
+            
+            # Find the vehicle with lowest y (rightmost with respect to motion)
+            rightmost_obj = min(vehicle_y_positions.items(), key=lambda x: x[1])[0]
+            avg_y_rightmost = vehicle_y_positions[rightmost_obj]
+            
+            # Get centerline y-position (average of all vehicles)
+            avg_y_all = config_df['y'].mean()
+            
+            # The rightmost lane center should be at: centerline_y - half_width + lane_width/2
+            rightmost_lane_center_offset = -half_width + lane_width / 2.0
+            # Calculate total offset to place rightmost vehicle in rightmost lane
+            offset = avg_y_rightmost - avg_y_all - rightmost_lane_center_offset
+            print(f"[LANE BUILD] Rightmost vehicle obj {rightmost_obj}: positioned in rightmost lane (offset={offset:.2f}m)")
+            
+            # Log positioning of all vehicles
+            for obj_id in object_ids:
+                lane_y = vehicle_y_positions[obj_id] - (avg_y_all + offset)
+                lane_num = int((lane_y + half_width) / lane_width)
+                print(f"[LANE BUILD] Vehicle obj {obj_id} at speed {speeds[obj_id]:.1f} km/h -> lane {lane_num}")
 
+        # Apply vertical offset to centerline
+        centerline[:, 1] += offset
 
-    # Apply vertical offset to centerline
-    centerline[:, 1] += offset
+        half_width = (lane_width * lane_count) / 2.0
+        boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
+        boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
 
-    half_width = (lane_width * lane_count) / 2.0
-    boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
-    boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
+        interior_count = max(0, lane_count - 1)
+        center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
+        center_lines = [_offset_polyline(centerline, off) for off in center_offsets]
 
-    interior_count = max(0, lane_count - 1)
-    center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
-    center_lines = [_offset_polyline(centerline, off) for off in center_offsets]
-
-    return {"boundaries": boundaries, "center_lines": center_lines, "centerline": centerline}
+        return {"boundaries": boundaries, "center_lines": center_lines, "centerline": centerline}
+    
+    else:
+        # Case 2: Different directions - create separate road segments for each vehicle
+        # and merge them realistically
+        object_ids = sorted(config_df['o'].unique())
+        
+        # Create road segments for each vehicle
+        all_boundaries = []
+        all_center_lines = []
+        
+        for obj_id in object_ids:
+            obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
+            if len(obj_df) < 2:
+                continue
+            
+            # Get vehicle path
+            vehicle_path = obj_df[['x', 'y']].to_numpy(dtype=float)
+            vehicle_path = _remove_duplicate_points(vehicle_path)
+            
+            if vehicle_path.shape[0] < 2:
+                continue
+            
+            # Create lanes for this vehicle with reduced width for merging sections
+            half_width = (lane_width * lane_count) / 2.0
+            boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
+            obj_boundaries = [_offset_polyline(vehicle_path, off) for off in boundary_offsets]
+            all_boundaries.extend(obj_boundaries)
+            
+            interior_count = max(0, lane_count - 1)
+            center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
+            obj_center_lines = [_offset_polyline(vehicle_path, off) for off in center_offsets]
+            all_center_lines.extend(obj_center_lines)
+        
+        # Use first vehicle path as "centerline" reference for bounds calculation
+        first_obj = object_ids[0]
+        centerline_df = config_df[config_df['o'] == first_obj].sort_values('t')
+        centerline = centerline_df[['x', 'y']].to_numpy(dtype=float)
+        centerline = _remove_duplicate_points(centerline)
+        
+        return {
+            "boundaries": all_boundaries,
+            "center_lines": all_center_lines,
+            "centerline": centerline,
+            "multi_path": True  # Flag to indicate this is a multi-path scenario
+        }
 
 def _lane_polylines_bounds(lane_polylines):
     if not lane_polylines:
@@ -4509,10 +4781,14 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
         current_config = int(current_config_raw)
     except (TypeError, ValueError):
         return
+    
+    print(f"[INFER_LANES] Called for config {current_config}")
 
     lane_cfg = LANE_CONFIGURATIONS.get(current_config)
     if not lane_cfg:
+        print(f"[INFER_LANES] No lane config found for {current_config}")
         return
+    print(f"[INFER_LANES] Lane config: {lane_cfg}")
 
     mode = lane_cfg.get("mode", "data_path")
     if mode == "intersection":
@@ -4532,9 +4808,12 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
                 # Calculate offset to center the road such that y=0 corresponds to the bottom lane center
                 # Formula: offset = (lane_width * (lane_count - 1)) / 2.0
                 offset = (lane_width * (lane_count - 1)) / 2.0
-
+    
+    print(f"[INFER_LANES] About to call _build_lane_polylines_from_data for config {current_config}")
     lane_polylines = _build_lane_polylines_from_data(current_config, lane_width, lane_count, xlim, offset)
+    print(f"[INFER_LANES] Returned from _build_lane_polylines_from_data, result: {lane_polylines is not None}")
     if not lane_polylines:
+        print(f"[INFER_LANES] No lane polylines returned")
         return
 
     road_color = "none"
@@ -4544,15 +4823,25 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
 
     boundaries = lane_polylines.get("boundaries", [])
     center_lines = lane_polylines.get("center_lines", [])
+    is_multi_path = lane_polylines.get("multi_path", False)
 
-    if len(boundaries) >= 2:
-        left_edge = boundaries[0]
-        right_edge = boundaries[-1]
-        polygon_points = np.vstack([left_edge, right_edge[::-1]])
-        ax.fill(polygon_points[:, 0], polygon_points[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+    # Draw boundaries (edges) - always solid
+    if is_multi_path:
+        # Multi-path: draw each boundary as a solid line
+        for boundary in boundaries:
+            ax.plot(boundary[:, 0], boundary[:, 1], color=edge_line_color, linewidth=lane_line_width, 
+                   linestyle='-', alpha=1.0, zorder=1)
+    else:
+        # Single path: draw road polygon with edges
+        if len(boundaries) >= 2:
+            left_edge = boundaries[0]
+            right_edge = boundaries[-1]
+            polygon_points = np.vstack([left_edge, right_edge[::-1]])
+            ax.fill(polygon_points[:, 0], polygon_points[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
 
-        for edge in (left_edge, right_edge):
-            ax.plot(edge[:, 0], edge[:, 1], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)
+            for edge in (left_edge, right_edge):
+                ax.plot(edge[:, 0], edge[:, 1], color=edge_line_color, linewidth=lane_line_width, 
+                       linestyle='-', alpha=1.0, zorder=1)
 
     for dashed_line in center_lines:
         ax.plot(
@@ -4709,16 +4998,28 @@ def _extract_centerline_from_data(c_value: int):
     if config_df.empty:
         return None
 
-    # For curved road configs, use the car in the RIGHTMOST lane (lowest y values)
-    # to get correct centerline that follows the actual road curve (not overtaking path)
-    # In config 15: Auto 0 starts with lowest y and follows the right lane through the S-curve
-    if c_value in [15]:
-        # Object 0 follows the right lane (lowest y) through the S-curve
-        if 0 in config_df['o'].values:
-            config_df = config_df[config_df['o'] == 0]
-        elif 1 in config_df['o'].values:
-            config_df = config_df[config_df['o'] == 1]
-
+    # Calculate vehicle speeds to identify slowest vehicle (should be on right)
+    speeds = _calculate_vehicle_speeds(config_df)
+    
+    # Determine driving direction from timestamp 0
+    driving_direction = _determine_driving_direction(config_df)
+    
+    # Find slowest vehicle (should be on the right lane)
+    slowest_vehicle = None
+    if speeds:
+        slowest_vehicle = min(speeds.items(), key=lambda x: x[1])[0]
+        
+        # For curved roads, use the slowest vehicle's path directly as the RIGHT lane
+        # Then offset to create centerline
+        if c_value in [15]:
+            slowest_df = config_df[config_df['o'] == slowest_vehicle].sort_values('t')
+            right_lane_path = slowest_df[['x', 'y']].to_numpy(dtype=float)
+            right_lane_path = _remove_duplicate_points(right_lane_path)
+            if right_lane_path.shape[0] >= 2:
+                # This is the rightmost lane, we'll offset it in _build_lane_polylines_from_data
+                return right_lane_path
+    
+    # Calculate initial centerline as average between all vehicles at each timestamp
     center_samples: list[tuple[float, float, float]] = []
     for t_val, group in config_df.groupby("t"):
         center_samples.append((float(t_val), float(group["x"].mean()), float(group["y"].mean())))
@@ -4733,6 +5034,38 @@ def _extract_centerline_from_data(c_value: int):
 
     if centerline.shape[0] < 2:
         return _extract_longest_object_path(config_df)
+    
+    # Now adjust centerline so that the slowest vehicle is on the RIGHT lane
+    # "Right" is relative to the driving direction
+    if slowest_vehicle is not None and len(config_df['o'].unique()) > 1:
+        # Get slowest vehicle's average position
+        slowest_df = config_df[config_df['o'] == slowest_vehicle]
+        slowest_positions = slowest_df[['x', 'y']].to_numpy(dtype=float)
+        slowest_avg = np.mean(slowest_positions, axis=0)
+        
+        # Get centerline midpoint
+        centerline_mid = np.mean(centerline, axis=0)
+        
+        # Vector from centerline to slowest vehicle
+        to_slowest = slowest_avg - centerline_mid
+        
+        # Calculate perpendicular to driving direction (right side when facing forward)
+        # Right = rotate driving direction 90 degrees clockwise
+        # In 2D: (x, y) rotated 90° clockwise = (y, -x)
+        right_direction = np.array([driving_direction[1], -driving_direction[0]])
+        
+        # Check if slowest vehicle is on the left or right of centerline
+        # Positive dot product means slowest is on the right side
+        side = np.dot(to_slowest, right_direction)
+        
+        if side < 0:
+            # Slowest vehicle is on the LEFT, we need to shift centerline LEFT
+            # so that slowest ends up on the RIGHT
+            # Calculate how much to shift: distance from centerline to slowest vehicle
+            shift_distance = np.linalg.norm(to_slowest)
+            # Shift centerline in the direction opposite to slowest vehicle
+            shift_vector = -to_slowest / np.linalg.norm(to_slowest) * shift_distance
+            centerline = centerline + shift_vector
 
     # Check if the path is roughly straight (skip for curved configs)
     # IMPORTANT: Always preserve the original slope angle from start to end point!
@@ -4773,77 +5106,6 @@ def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
     normals = np.column_stack((-normalized[:, 1], normalized[:, 0]))
 
     return points + offset * normals
-
-def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, offset: float = 0.0):
-    if lane_count < 1:
-        return None
-
-    centerline = _extract_centerline_from_data(c_value)
-    if centerline is None or centerline.shape[0] < 2:
-        return None
-
-    # Extend centerline to xlim if provided
-    if xlim is not None:
-        p1 = centerline[0]
-        p2 = centerline[-1]
-        
-        # For curved lines (>2 points), use LOCAL tangent at endpoints for extension
-        if centerline.shape[0] > 2:
-            # Tangent at start: direction from point 0 to point 1
-            start_tangent = centerline[1] - centerline[0]
-            start_norm = np.linalg.norm(start_tangent)
-            if start_norm > 1e-6:
-                start_unit = start_tangent / start_norm
-            else:
-                start_unit = np.array([1.0, 0.0])
-            
-            # Tangent at end: direction from second-to-last to last point
-            end_tangent = centerline[-1] - centerline[-2]
-            end_norm = np.linalg.norm(end_tangent)
-            if end_norm > 1e-6:
-                end_unit = end_tangent / end_norm
-            else:
-                end_unit = np.array([1.0, 0.0])
-            
-            # Extend start if needed (using start tangent, going backwards)
-            if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
-                t_start = (xlim[0] - p1[0]) / start_unit[0]
-                new_start = p1 + t_start * start_unit
-                centerline = np.vstack([[new_start], centerline])
-            
-            # Extend end if needed (using end tangent, going forwards)
-            if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
-                t_end = (xlim[1] - p2[0]) / end_unit[0]
-                new_end = p2 + t_end * end_unit
-                centerline = np.vstack([centerline, [new_end]])
-        else:
-            # For straight lines (2 points), use overall direction
-            direction = p2 - p1
-            norm = np.linalg.norm(direction)
-            if norm > 1e-6:
-                unit_dir = direction / norm
-                if abs(unit_dir[0]) > 1e-6:
-                    t_start = (xlim[0] - p1[0]) / unit_dir[0]
-                    t_end = (xlim[1] - p1[0]) / unit_dir[0]
-                    if t_start > t_end:
-                        t_start, t_end = t_end, t_start
-                    new_start = p1 + t_start * unit_dir
-                    new_end = p1 + t_end * unit_dir
-                    centerline = np.array([new_start, new_end])
-
-
-    # Apply vertical offset to centerline
-    centerline[:, 1] += offset
-
-    half_width = (lane_width * lane_count) / 2.0
-    boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
-    boundaries = [_offset_polyline(centerline, offset) for offset in boundary_offsets]
-
-    interior_count = max(0, lane_count - 1)
-    center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
-    center_lines = [_offset_polyline(centerline, offset) for offset in center_offsets]
-
-    return {"boundaries": boundaries, "center_lines": center_lines, "centerline": centerline}
 
 def _lane_polylines_bounds(lane_polylines):
     if not lane_polylines:
