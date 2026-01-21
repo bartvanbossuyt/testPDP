@@ -970,58 +970,91 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
                         centerline = np.array([new_start, new_end])
 
         # Adjust offset to position vehicles realistically in lanes
-        # Reset offset to calculate from scratch based on vehicle positions
+        # The centerline currently passes through the average of all vehicle y-positions
+        # We need to shift it so vehicles are centered in their respective lanes
         half_width = (lane_width * lane_count) / 2.0
         
+        # Get the current centerline y-position (use mean for representative value)
+        centerline_y = np.mean(centerline[:, 1])
+        
         if len(speeds) == 1:
-            # Single vehicle: position in rightmost lane center
+            # Single vehicle: center it in the rightmost lane
             single_obj = list(speeds.keys())[0]
             single_df = config_df[config_df['o'] == single_obj]
             avg_y_vehicle = single_df['y'].mean()
-            avg_y_all = config_df['y'].mean()
             
-            # Rightmost lane center is at: centerline_y - half_width + lane_width/2
-            rightmost_lane_center_offset = -half_width + lane_width / 2.0
-            # Calculate total offset needed (not adding to existing offset)
-            offset = avg_y_vehicle - avg_y_all - rightmost_lane_center_offset
-            print(f"[LANE BUILD] Single vehicle obj {single_obj}: positioned in rightmost lane center (offset={offset:.2f}m)")
+            # Rightmost lane center relative to road centerline: -half_width + lane_width/2
+            rightmost_lane_center = -half_width + lane_width / 2.0
+            
+            # The vehicle is at avg_y_vehicle
+            # We want the road centerline positioned so that:
+            # (avg_y_vehicle - new_centerline_y) = rightmost_lane_center
+            # Therefore: new_centerline_y = avg_y_vehicle - rightmost_lane_center
+            # offset = new_centerline_y - old_centerline_y
+            offset = (avg_y_vehicle - rightmost_lane_center) - centerline_y
+            
+            print(f"[LANE BUILD] Single vehicle obj {single_obj}: centered in rightmost lane (centerline_y={centerline_y:.2f}, vehicle_y={avg_y_vehicle:.2f}, offset={offset:.2f}m)")
             
         elif len(speeds) > 1:
-            # Multiple vehicles: preferentially position all vehicles on rightmost lanes
-            # Strategy: position the rightmost vehicle (lowest y-value) in the rightmost lane center
+            # Multiple vehicles: position lanes so all vehicles are centered in their lanes
             object_ids = sorted(speeds.keys())
             
-            # Get y-positions for all vehicles
+            # Get y-positions for all vehicles (these are absolute coordinates)
             vehicle_y_positions = {}
             for obj_id in object_ids:
                 obj_df = config_df[config_df['o'] == obj_id]
                 vehicle_y_positions[obj_id] = obj_df['y'].mean()
             
-            # Find the vehicle with lowest y (rightmost with respect to motion)
-            rightmost_obj = min(vehicle_y_positions.items(), key=lambda x: x[1])[0]
-            avg_y_rightmost = vehicle_y_positions[rightmost_obj]
+            # Sort vehicles by y-position (lowest y = rightmost)
+            sorted_vehicles = sorted(vehicle_y_positions.items(), key=lambda x: x[1])
             
-            # Get centerline y-position (average of all vehicles)
-            avg_y_all = config_df['y'].mean()
+            # Assign lanes: rightmost vehicle gets rightmost lane, etc.
+            lane_assignments = {}
+            for i, (obj_id, y_pos) in enumerate(sorted_vehicles):
+                # Assign from rightmost lane (0) upward, but don't exceed available lanes
+                lane_idx = min(i, lane_count - 1)
+                lane_assignments[obj_id] = lane_idx
             
-            # The rightmost lane center should be at: centerline_y - half_width + lane_width/2
-            rightmost_lane_center_offset = -half_width + lane_width / 2.0
-            # Calculate total offset to place rightmost vehicle in rightmost lane
-            offset = avg_y_rightmost - avg_y_all - rightmost_lane_center_offset
-            print(f"[LANE BUILD] Rightmost vehicle obj {rightmost_obj}: positioned in rightmost lane (offset={offset:.2f}m)")
+            # Calculate lane centers relative to road centerline
+            # Lane 0 (rightmost): -half_width + lane_width/2
+            # Lane 1: -half_width + 3*lane_width/2, etc.
+            lane_centers = {}
+            for lane_idx in range(lane_count):
+                lane_centers[lane_idx] = -half_width + (lane_idx + 0.5) * lane_width
             
-            # Log positioning of all vehicles
+            # Find offset that best centers all vehicles in their assigned lanes
+            # Use rightmost vehicle as anchor
+            rightmost_obj, rightmost_y = sorted_vehicles[0]
+            rightmost_lane_idx = lane_assignments[rightmost_obj]
+            
+            # We want: (rightmost_y - new_centerline_y) = lane_centers[rightmost_lane_idx]
+            # Therefore: new_centerline_y = rightmost_y - lane_centers[rightmost_lane_idx]
+            # offset = new_centerline_y - old_centerline_y
+            offset = (rightmost_y - lane_centers[rightmost_lane_idx]) - centerline_y
+            
+            print(f"[LANE BUILD] Positioned {len(speeds)} vehicles (centerline_y={centerline_y:.2f}, rightmost obj {rightmost_obj} at y={rightmost_y:.2f} -> lane {rightmost_lane_idx}, offset={offset:.2f}m)")
+            
+            # Log all vehicle positions
             for obj_id in object_ids:
-                lane_y = vehicle_y_positions[obj_id] - (avg_y_all + offset)
-                lane_num = int((lane_y + half_width) / lane_width)
-                print(f"[LANE BUILD] Vehicle obj {obj_id} at speed {speeds[obj_id]:.1f} km/h -> lane {lane_num}")
+                lane_idx = lane_assignments[obj_id]
+                # After applying offset, where will this vehicle be relative to the shifted centerline?
+                new_centerline_y = centerline_y + offset
+                vehicle_rel_to_new_centerline = vehicle_y_positions[obj_id] - new_centerline_y
+                deviation = vehicle_rel_to_new_centerline - lane_centers[lane_idx]
+                print(f"[LANE BUILD]   Vehicle obj {obj_id} at {speeds[obj_id]:.1f} km/h -> lane {lane_idx} (deviation: {deviation:.2f}m)")
 
         # Apply vertical offset to centerline
         centerline[:, 1] += offset
+        print(f"[LANE BUILD] After offset, centerline y-range: [{np.min(centerline[:, 1]):.2f}, {np.max(centerline[:, 1]):.2f}]")
 
         half_width = (lane_width * lane_count) / 2.0
         boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
         boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
+        print(f"[LANE BUILD] Created {len(boundaries)} boundaries with offsets: {boundary_offsets}")
+        if boundaries:
+            for i, boundary in enumerate(boundaries):
+                y_range = [np.min(boundary[:, 1]), np.max(boundary[:, 1])]
+                print(f"[LANE BUILD]   Boundary {i} y-range: [{y_range[0]:.2f}, {y_range[1]:.2f}]")
 
         interior_count = max(0, lane_count - 1)
         center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
@@ -1036,7 +1069,6 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         
         # Create road segments for each vehicle
         all_boundaries = []
-        all_center_lines = []
         
         for obj_id in object_ids:
             obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
@@ -1050,16 +1082,33 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             if vehicle_path.shape[0] < 2:
                 continue
             
-            # Create lanes for this vehicle with reduced width for merging sections
+            # Position vehicle in the rightmost lane of its road
+            # Vehicle is currently on the path, we need to shift the road so vehicle is in rightmost lane center
             half_width = (lane_width * lane_count) / 2.0
+            
+            # Rightmost lane center is at -half_width + lane_width/2 relative to road centerline
+            rightmost_lane_center = -half_width + lane_width / 2.0
+            
+            # The vehicle path is at y-position of vehicle
+            # We want road centerline offset so: vehicle_y - centerline_y = rightmost_lane_center
+            # Therefore: centerline should be at vehicle_y - rightmost_lane_center
+            # Since vehicle_path is the vehicle position, offset = -rightmost_lane_center
+            road_offset = -rightmost_lane_center
+            
+            # Shift vehicle path to become road centerline
+            road_centerline = vehicle_path.copy()
+            road_centerline[:, 1] += road_offset
+            
+            # Create lane boundaries relative to this centerline
             boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
-            obj_boundaries = [_offset_polyline(vehicle_path, off) for off in boundary_offsets]
+            obj_boundaries = [_offset_polyline(road_centerline, off) for off in boundary_offsets]
             all_boundaries.extend(obj_boundaries)
             
-            interior_count = max(0, lane_count - 1)
-            center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
-            obj_center_lines = [_offset_polyline(vehicle_path, off) for off in center_offsets]
-            all_center_lines.extend(obj_center_lines)
+            print(f"[LANE BUILD] Case 2: obj {obj_id} - road offset={road_offset:.2f}m to center vehicle in rightmost lane")
+        
+        # For multi-path scenarios (different directions), don't draw center lines
+        # as they would overlap/conflict where paths cross or merge
+        # Only draw the road boundaries for each vehicle path
         
         # Use first vehicle path as "centerline" reference for bounds calculation
         first_obj = object_ids[0]
@@ -1069,7 +1118,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         
         return {
             "boundaries": all_boundaries,
-            "center_lines": all_center_lines,
+            "center_lines": [],  # No center lines for multi-path scenarios
             "centerline": centerline,
             "multi_path": True  # Flag to indicate this is a multi-path scenario
         }
@@ -4799,15 +4848,8 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
     lane_count = int(lane_cfg.get("lanes", 3))
     offset = float(lane_cfg.get("offset", 0.0))
 
-    # Dynamic offset for single-object configurations: force object to rightmost (bottom) lane
-    if _df_all is not None:
-        config_df = _df_all[_df_all["c"] == current_config]
-        if not config_df.empty:
-            unique_objects = config_df["o"].unique()
-            if len(unique_objects) == 1:
-                # Calculate offset to center the road such that y=0 corresponds to the bottom lane center
-                # Formula: offset = (lane_width * (lane_count - 1)) / 2.0
-                offset = (lane_width * (lane_count - 1)) / 2.0
+    # NOTE: Offset is now calculated dynamically inside _build_lane_polylines_from_data()
+    # based on actual vehicle positions to center them in lanes
     
     print(f"[INFER_LANES] About to call _build_lane_polylines_from_data for config {current_config}")
     lane_polylines = _build_lane_polylines_from_data(current_config, lane_width, lane_count, xlim, offset)
@@ -5544,6 +5586,10 @@ def draw_original(ax: matplotlib.axes.Axes) -> None:
             label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
             ax.plot(pts[:, 0], pts[:, 1], linewidth=1.2, color=color)  # type: ignore
             annotate_points(ax, pts, vals, label, color)
+    
+    # Draw lane markings in the original trajectory view
+    current_config = st.session_state.get("anim_current_config", 1)
+    infer_and_draw_lanes(ax, XLIM, YLIM)
     
     # Draw external reference points (fixed points) with a distinct marker
     if external_pts_for_window:
