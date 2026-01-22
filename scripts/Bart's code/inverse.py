@@ -22,6 +22,7 @@ import matplotlib.patches
 import matplotlib.pyplot as plt
 
 import plotly.graph_objects as go
+from scipy.interpolate import CubicSpline
 
 from pdp_utils.core import (
     COORD_DISPLAY_PRECISION,
@@ -903,13 +904,32 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     speeds = _calculate_vehicle_speeds(config_df)
     max_speed = max(speeds.values()) if speeds else 0.0
     
-    # Determine lane count based on max speed
-    if max_speed > 100.0:
+    # Check vehicle y-positions to determine if they span multiple lanes
+    object_ids = sorted(config_df['o'].unique())
+    vehicle_y_positions = {}
+    for obj_id in object_ids:
+        obj_df = config_df[config_df['o'] == obj_id]
+        vehicle_y_positions[obj_id] = obj_df['y'].mean()
+    
+    # Calculate y-span across all vehicles
+    if len(vehicle_y_positions) > 0:
+        y_values = list(vehicle_y_positions.values())
+        y_span = max(y_values) - min(y_values)
+    else:
+        y_span = 0.0
+    
+    # Determine lane count based on:
+    # 1. Speed: >100 km/h suggests highway (3 lanes)
+    # 2. Y-span: if vehicles are separated by more than 1.5 * lane_width, need 3 lanes
+    # 3. Default: 2 lanes
+    needs_3_lanes = (max_speed > 100.0) or (y_span > 1.5 * lane_width)
+    
+    if needs_3_lanes:
         lane_count = 3
-        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h -> 3 lanes")
+        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 3 lanes")
     else:
         lane_count = 2
-        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h -> 2 lanes")
+        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 2 lanes")
     
     same_direction = _vehicles_same_direction(config_df)
     print(f"[LANE BUILD] Config {c_value}: same_direction={same_direction}")
@@ -997,13 +1017,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             
         elif len(speeds) > 1:
             # Multiple vehicles: position lanes so all vehicles are centered in their lanes
-            object_ids = sorted(speeds.keys())
-            
-            # Get y-positions for all vehicles (these are absolute coordinates)
-            vehicle_y_positions = {}
-            for obj_id in object_ids:
-                obj_df = config_df[config_df['o'] == obj_id]
-                vehicle_y_positions[obj_id] = obj_df['y'].mean()
+            # vehicle_y_positions already calculated above for lane count determination
             
             # Sort vehicles by y-position (lowest y = rightmost)
             sorted_vehicles = sorted(vehicle_y_positions.items(), key=lambda x: x[1])
@@ -5189,6 +5203,7 @@ def _add_lane_polylines_plotly(
         polygon_x = np.concatenate([left_edge[:, 0], right_edge[::-1, 0], [left_edge[0, 0]]])
         polygon_y = np.concatenate([left_edge[:, 1], right_edge[::-1, 1], [left_edge[0, 1]]])
 
+        # Add filled road area
         fig.add_trace(
             go.Scatter(
                 x=polygon_x,
@@ -5198,33 +5213,335 @@ def _add_lane_polylines_plotly(
                 line=dict(color="rgba(0, 0, 0, 0)", width=0),
                 hoverinfo="skip",
                 showlegend=False,
+                name="Road surface"
             )
         )
 
+        # Draw outer edge boundaries with thicker, more visible lines
         for edge in (left_edge, right_edge):
             fig.add_trace(
                 go.Scatter(
                     x=edge[:, 0],
                     y=edge[:, 1],
                     mode="lines",
-                    line=dict(color=edge_color, width=1),
+                    line=dict(color=edge_color, width=3),  # Increased width from 1 to 3
                     hoverinfo="skip",
                     showlegend=False,
+                    name="Road edge"
                 )
             )
 
+    # Draw dashed center lines between lanes
     for dashed_line in center_lines:
         fig.add_trace(
             go.Scatter(
                 x=dashed_line[:, 0],
                 y=dashed_line[:, 1],
                 mode="lines",
-                line=dict(color=dashed_color, width=1, dash="dash"),
+                line=dict(color=dashed_color, width=2, dash="dash"),  # Increased width from 1 to 2
                 hoverinfo="skip",
                 showlegend=False,
+                name="Lane divider"
             )
         )
 
+    return fig
+
+
+def create_smooth_animation(
+    all_points_plot: dict,
+    all_vals_plot: dict,
+    latest_generated: dict,
+    selected_configs: list,
+    configs_by_variant: dict,
+    all_configs_list: list,
+    external_pts_for_window: list,
+    external_ts_for_window: list,
+    external_points_list: list,
+    n_total_points: int,
+    selected_c_int: int,
+    xlim: tuple,
+    ylim: tuple,
+) -> go.Figure:
+    """
+    Create a smooth animated trajectory visualization using cubic spline interpolation.
+    Objects smoothly traverse through their timestamp coordinates with smooth curves.
+    """
+    # Create figure
+    fig = go.Figure()
+    
+    # Add lane markings and save them to include in every frame
+    fig = add_lane_markings_to_figure(fig, selected_c_int, xlim, ylim)
+    
+    # Extract lane marking traces to add to every frame
+    lane_marking_traces = [trace for trace in fig.data]
+    
+    # Configuration to animate - for simplicity, let's animate the first selected config
+    # If "Original" is selected, use original points; otherwise use first generated config
+    animate_original = "Original" in selected_configs
+    
+    # Prepare data for each configuration we want to animate
+    configs_to_animate = []
+    
+    if animate_original:
+        configs_to_animate.append({
+            "name": "Original",
+            "data": {obj_id: all_points_plot[obj_id] for obj_id in all_points_plot.keys()},
+            "timestamps": all_vals_plot,
+            "color_offset": 0
+        })
+    
+    # Add generated configurations
+    for variant in sorted(configs_by_variant.keys()):
+        for config_num in sorted(configs_by_variant[variant]):
+            config_label = f"{variant} C{config_num}"
+            if config_label not in selected_configs:
+                continue
+            
+            # Build generated points for this config
+            generated_pts_config = {}
+            for flat_idx in range(n_total_points):
+                obj_id, local_idx, _ = get_object_info_for_flat_idx(flat_idx)
+                if obj_id == -1:  # Skip external points
+                    continue
+                if obj_id not in generated_pts_config:
+                    generated_pts_config[obj_id] = all_points_plot[obj_id].copy()
+                if (config_num, flat_idx) in latest_generated:
+                    generated_pts_config[obj_id][local_idx] = latest_generated[(config_num, flat_idx)]
+            
+            configs_to_animate.append({
+                "name": config_label,
+                "data": generated_pts_config,
+                "timestamps": all_vals_plot,
+                "color_offset": len(configs_to_animate)
+            })
+    
+    # Determine time range for animation
+    all_timestamps = []
+    for obj_timestamps in all_vals_plot.values():
+        all_timestamps.extend(obj_timestamps)
+    
+    if not all_timestamps:
+        st.warning("No timestamp data available for animation")
+        return fig
+    
+    t_min = min(all_timestamps)
+    t_max = max(all_timestamps)
+    
+    # Create smooth time samples for animation (more samples = smoother, more fluid animation)
+    n_frames = 200  # Increased from 100 for more fluid animation
+    t_smooth = np.linspace(t_min, t_max, n_frames)
+    
+    # For each configuration and object, create smooth trajectories
+    all_frames_data = []
+    
+    for config_info in configs_to_animate:
+        config_name = config_info["name"]
+        config_data = config_info["data"]
+        timestamps_data = config_info["timestamps"]
+        
+        for obj_idx, obj_id in enumerate(sorted(config_data.keys())):
+            if obj_id == -1:  # Skip external points
+                continue
+            
+            pts = config_data[obj_id]
+            ts = np.array(timestamps_data[obj_id])
+            
+            if len(pts) < 2:
+                # Not enough points for interpolation, skip
+                continue
+            
+            # Create cubic spline interpolation for x and y coordinates
+            # Use 'natural' boundary condition for smooth ends
+            try:
+                cs_x = CubicSpline(ts, pts[:, 0], bc_type='natural')
+                cs_y = CubicSpline(ts, pts[:, 1], bc_type='natural')
+                
+                # Evaluate splines at smooth time samples
+                x_smooth = cs_x(t_smooth)
+                y_smooth = cs_y(t_smooth)
+                
+                color = OBJECT_COLORS_PLOTLY[obj_idx % len(OBJECT_COLORS_PLOTLY)]
+                label = OBJECT_LABELS[obj_idx % len(OBJECT_LABELS)]
+                
+                all_frames_data.append({
+                    "config_name": config_name,
+                    "object_label": label,
+                    "color": color,
+                    "x_smooth": x_smooth,
+                    "y_smooth": y_smooth,
+                    "t_smooth": t_smooth,
+                    "x_keyframes": pts[:, 0],
+                    "y_keyframes": pts[:, 1],
+                    "t_keyframes": ts,
+                })
+            except Exception as e:
+                st.warning(f"Could not interpolate trajectory for {config_name} - {label}: {e}")
+                continue
+    
+    if not all_frames_data:
+        st.warning("No valid trajectory data for animation")
+        return fig
+    
+    # Create animation frames
+    frames = []
+    for frame_idx in range(n_frames):
+        frame_data = []
+        
+        # Add lane markings to every frame (must come first so they appear behind trajectories)
+        frame_data.extend(lane_marking_traces)
+        
+        for traj_data in all_frames_data:
+            config_name = traj_data["config_name"]
+            obj_label = traj_data["object_label"]
+            color = traj_data["color"]
+            x_smooth = traj_data["x_smooth"]
+            y_smooth = traj_data["y_smooth"]
+            t_smooth = traj_data["t_smooth"]
+            
+            # Trail: show the path up to current time
+            trail_x = x_smooth[:frame_idx+1]
+            trail_y = y_smooth[:frame_idx+1]
+            
+            # Current position
+            current_x = x_smooth[frame_idx]
+            current_y = y_smooth[frame_idx]
+            current_t = t_smooth[frame_idx]
+            
+            # Add smooth trail with gradient opacity for fading effect
+            frame_data.append(
+                go.Scatter(
+                    x=trail_x,
+                    y=trail_y,
+                    mode='lines',
+                    line=dict(color=color, width=3),
+                    name=f'{config_name} ({obj_label})',
+                    showlegend=(frame_idx == 0),
+                )
+            )
+            
+            # Add current position marker - larger and more visible
+            frame_data.append(
+                go.Scatter(
+                    x=[current_x],
+                    y=[current_y],
+                    mode='markers',
+                    marker=dict(size=14, color=color, symbol='circle',
+                               line=dict(color='white', width=2.5)),
+                    name=f'{config_name} ({obj_label}) - current',
+                    showlegend=False,
+                    hovertemplate=f'<b>{config_name}</b><br>{obj_label}<br>t={current_t:.2f}<br>d1={current_x:.2f}<br>d2={current_y:.2f}<extra></extra>',
+                )
+            )
+        
+        frames.append(go.Frame(data=frame_data, name=str(frame_idx)))
+    
+    # Add initial traces (first frame)
+    for trace in frames[0].data:
+        fig.add_trace(trace)
+    
+    # Add external reference points if present (they don't animate)
+    if external_pts_for_window:
+        ext_pts_arr = np.array(external_pts_for_window)
+        fig.add_trace(go.Scatter(
+            x=ext_pts_arr[:, 0],
+            y=ext_pts_arr[:, 1],
+            mode='markers',
+            name='External Reference',
+            marker=dict(size=10, symbol='square', color='gray', 
+                       line=dict(color='black', width=1.5)),
+            showlegend=True,
+        ))
+    
+    # Configure animation
+    fig.frames = frames
+    
+    # Calculate optimal y-range to maximize vertical space
+    all_y_values = []
+    for traj_data in all_frames_data:
+        all_y_values.extend(traj_data["y_smooth"])
+    if all_y_values:
+        y_min = min(all_y_values)
+        y_max = max(all_y_values)
+        y_margin = (y_max - y_min) * 0.1  # 10% margin
+        y_range = [y_min - y_margin, y_max + y_margin]
+    else:
+        y_range = [ylim[0], ylim[1]]
+    
+    fig.update_layout(
+        width=1100,
+        height=900,
+        xaxis=dict(
+            range=[xlim[0], xlim[1]],
+            title="d1",
+            showgrid=True,
+            gridcolor='lightgray'
+        ),
+        yaxis=dict(
+            range=y_range,  # Use optimized y-range for better space usage
+            title="d2",
+            showgrid=True,
+            gridcolor='lightgray'
+        ),
+        title="Smooth Trajectory Animation",
+        updatemenus=[{
+            "type": "buttons",
+            "showactive": False,
+            "buttons": [
+                {
+                    "label": "▶ Play",
+                    "method": "animate",
+                    "args": [None, {
+                        "frame": {"duration": 30, "redraw": True},  # Faster frame rate
+                        "fromcurrent": True,
+                        "mode": "immediate",
+                        "transition": {"duration": 0}
+                    }]
+                },
+                {
+                    "label": "⏸ Pause",
+                    "method": "animate",
+                    "args": [[None], {
+                        "frame": {"duration": 0, "redraw": False},
+                        "mode": "immediate",
+                        "transition": {"duration": 0}
+                    }]
+                }
+            ],
+            "x": 0.1,
+            "y": 1.15,
+            "xanchor": "left",
+            "yanchor": "top"
+        }],
+        sliders=[{
+            "active": 0,
+            "steps": [
+                {
+                    "args": [[f.name], {
+                        "frame": {"duration": 0, "redraw": True},
+                        "mode": "immediate",
+                        "transition": {"duration": 0}
+                    }],
+                    "label": f"{t_smooth[int(f.name)]:.1f}",
+                    "method": "animate"
+                }
+                for f in frames[::max(1, len(frames)//20)]  # Show ~20 slider ticks
+            ],
+            "x": 0.1,
+            "len": 0.85,
+            "xanchor": "left",
+            "y": 0,
+            "yanchor": "top",
+            "pad": {"b": 10, "t": 50},
+            "currentvalue": {
+                "visible": True,
+                "prefix": "Time: ",
+                "xanchor": "right",
+                "font": {"size": 16}
+            }
+        }]
+    )
+    
     return fig
 
 def _draw_intersection_lanes_matplotlib(
@@ -7862,6 +8179,19 @@ all_configs_list: list = st.session_state.get("anim_all_configs", [])
 current_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
 current_config_num = int(st.session_state.get("anim_current_config", 1))
 
+# Initialize latest_generated and configs_by_variant for use in animation
+latest_generated: dict[tuple[int, int], np.ndarray] = {}
+configs_by_variant: dict = {}
+
+# Build configs_by_variant from all_configs_list
+for cfg in all_configs_list:
+    variant = cfg.get("pdp_variant", "fundamental")
+    config_num = cfg.get("config_num", 0)
+    if variant not in configs_by_variant:
+        configs_by_variant[variant] = []
+    if config_num not in configs_by_variant[variant]:
+        configs_by_variant[variant].append(config_num)
+
 if all_configs_list or current_successful_points:
     # Collect all generated points, grouped per configuration
     all_points_by_config: dict[int, list[SuccessfulPoint]] = {}
@@ -7928,16 +8258,6 @@ if all_configs_list or current_successful_points:
     
     # Build list of all available configurations: "Original" + generated configs
     available_configs = ["Original"]
-    
-    # Get unique variants and organize generated configs
-    configs_by_variant: dict = {}
-    for cfg in all_configs_list:
-        variant = cfg.get("pdp_variant", "fundamental")
-        config_num = cfg.get("config_num", 0)
-        if variant not in configs_by_variant:
-            configs_by_variant[variant] = []
-        if config_num not in configs_by_variant[variant]:
-            configs_by_variant[variant].append(config_num)
     
     # Build config labels for multiselect (format: "variant C{num}")
     for variant in sorted(configs_by_variant.keys()):
@@ -8104,6 +8424,71 @@ if all_configs_list or current_successful_points:
 
 else:
     st.info("Run an animation or use 'Generate configurations' to generate configuration data.")
+
+# ============= Smooth Animation Button (Always Available) ============
+st.markdown("---")
+st.markdown("### 🎬 Smooth Trajectory Animation")
+st.markdown("""
+Animate the selected configurations with smooth, continuous motion:
+- **Cubic spline interpolation** for natural, fluid trajectories
+- **Road boundaries and lane markings** clearly visible (3 meter rijvakken)
+- **Independent y-scale** to maximize space usage
+- Works with both **Original** and **Generated configurations**
+""")
+
+# Build list of all available configurations for animation
+available_configs_anim = ["Original"]
+for variant in sorted(configs_by_variant.keys()):
+    for config_num in sorted(configs_by_variant[variant]):
+        available_configs_anim.append(f"{variant} C{config_num}")
+
+# Configuration selector for animation - default to only "Original"
+st.markdown("**Select configurations to animate:**")
+selected_configs_anim = st.multiselect(
+    "Animate configurations:",
+    options=available_configs_anim,
+    default=["Original"],
+    key="anim_config_filter",
+    help="Select which configurations to animate. Multiple selections will be shown together in one animation."
+)
+
+if st.button("▶ Play Animation", key="btn_smooth_animation", 
+             help="Opens an interactive animation of all selected configurations with smooth trajectories, road boundaries, and lane markings"):
+    st.session_state["show_smooth_animation"] = True
+    st.session_state["selected_configs_for_anim"] = selected_configs_anim
+
+# Display the smooth animation if requested
+if st.session_state.get("show_smooth_animation", False):
+    st.markdown("---")
+    st.markdown("**Animation Controls:** Use Play/Pause buttons and the slider to control playback.")
+    
+    # Get the selected configs from session state
+    anim_configs = st.session_state.get("selected_configs_for_anim", ["Original"])
+    
+    # Create the animation
+    anim_fig = create_smooth_animation(
+        all_points_plot=all_points_plot,
+        all_vals_plot=all_vals_plot,
+        latest_generated=latest_generated,
+        selected_configs=anim_configs,
+        configs_by_variant=configs_by_variant,
+        all_configs_list=all_configs_list,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        external_points_list=external_points_list,
+        n_total_points=n_total_points,
+        selected_c_int=selected_c_int,
+        xlim=XLIM,
+        ylim=YLIM,
+    )
+    
+    # Display the animation
+    st.plotly_chart(anim_fig, width="stretch")
+    
+    # Add a close button
+    if st.button("✖ Close Animation", key="btn_close_animation_v2"):
+        st.session_state["show_smooth_animation"] = False
+        st.rerun()
 
 # ============= Diagnostic table for binary strategy ============
 st.markdown("<hr />", unsafe_allow_html=True)
