@@ -8,9 +8,7 @@ DEFAULT_LANE_SETUP = {
 }
 
 # Configuration for lane drawing per 'c' value
-# Default configuration for all configs 0-67
-LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 68)}
-
+LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 11)}
 # Apply offset to Config 1 to center cars in lanes (shift road up by half lane width)
 LANE_CONFIGURATIONS[1]["offset"] = 1.25
 # Config 4 also needs this offset
