@@ -39,6 +39,11 @@ from pdp_utils.order_comparison import (
 )
 from pdp_utils.frenet_coordinates import FrenetFrame
 
+# Type annotations for imported items with incomplete type stubs
+LANE_CONFIGURATIONS: dict[int, dict[str, Any]]
+check_pdp_match_detailed: Callable[..., dict[str, Any]]
+check_pdp_match_frenet_detailed: Callable[..., dict[str, Any]]
+
 # ============= Page configuration =============
 st.set_page_config(
     page_title="pdp inverse",
@@ -276,8 +281,8 @@ elif data_source == "Upload custom file":
             
             # Clean the dataframe
             for col in names:
-                _df_all[col] = pd.to_numeric(_df_all[col], errors="coerce")
-            _df_all = _df_all.dropna(subset=names)
+                _df_all[col] = pd.to_numeric(_df_all[col], errors="coerce")  # type: ignore[assignment]
+            _df_all = _df_all.dropna(subset=names)  # type: ignore[assignment]
             _df_all = _df_all.reset_index(drop=True)
             
             available_configs = sorted(_df_all["c"].dropna().unique().astype(int).tolist())
@@ -661,7 +666,7 @@ def _calculate_vehicle_speeds(config_df: pd.DataFrame) -> dict[int, float]:
     """
     speeds: dict[int, float] = {}
     for obj_id in config_df['o'].unique():
-        obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
+        obj_df: pd.DataFrame = config_df[config_df['o'] == obj_id].sort_values('t')  # type: ignore[assignment]
         if len(obj_df) < 2:
             speeds[obj_id] = 0.0
             continue
@@ -758,7 +763,7 @@ def _vehicles_same_direction(config_df: pd.DataFrame, angle_threshold: float = 4
     
     return True
 
-def _extract_centerline_from_data(c_value: int):
+def _extract_centerline_from_data(c_value: int) -> np.ndarray | None:
     if _df_all is None:
         return None
     config_df = _df_all[_df_all["c"] == c_value]
@@ -834,6 +839,20 @@ def _extract_centerline_from_data(c_value: int):
             shift_vector = -to_slowest / np.linalg.norm(to_slowest) * shift_distance
             centerline = centerline + shift_vector
 
+    # Check if horizontal lanes should be forced (for certain configs like 7)
+    lane_cfg = LANE_CONFIGURATIONS.get(c_value, {})
+    force_horizontal = lane_cfg.get("force_horizontal", False)
+    
+    if force_horizontal and centerline.shape[0] >= 2:
+        # Force completely horizontal lanes: use average y-coordinate
+        avg_y = np.mean(centerline[:, 1])
+        # Create a horizontal line from min to max x-coordinate at constant y
+        x_min = np.min(centerline[:, 0])
+        x_max = np.max(centerline[:, 0])
+        centerline = np.array([[x_min, avg_y], [x_max, avg_y]])
+        print(f"[CENTERLINE] Config {c_value}: Forced horizontal lanes at y={avg_y:.2f}")
+        return centerline
+
     # Check if the path is roughly straight (skip for curved configs)
     # IMPORTANT: Always preserve the original slope angle from start to end point!
     if c_value not in [15] and centerline.shape[0] >= 3:
@@ -874,7 +893,7 @@ def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
 
     return points + offset * normals
 
-def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, offset: float = 0.0):
+def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, config_offset: float = 0.0) -> dict[str, Any] | None:
     """
     Build lane polylines for a configuration. Handles two cases:
     1. Vehicles traveling in same direction: creates parallel lanes
@@ -902,8 +921,8 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     object_ids = sorted(config_df['o'].unique())
     vehicle_y_positions: dict[int, float] = {}
     for obj_id in object_ids:
-        obj_df = config_df[config_df['o'] == obj_id]
-        vehicle_y_positions[obj_id] = obj_df['y'].mean()
+        obj_df: pd.DataFrame = config_df[config_df['o'] == obj_id]  # type: ignore[assignment]
+        vehicle_y_positions[obj_id] = float(obj_df['y'].mean())  # type: ignore[arg-type]
     
     # Calculate y-span across all vehicles
     if len(vehicle_y_positions) > 0:
@@ -930,7 +949,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     
     if same_direction:
         # Case 1: Same direction - use traditional parallel lane approach
-        centerline = _extract_centerline_from_data(c_value)
+        centerline: np.ndarray | None = _extract_centerline_from_data(c_value)
         if centerline is None or centerline.shape[0] < 2:
             return None
 
@@ -984,91 +1003,61 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
                         centerline = np.array([new_start, new_end])
 
         # Adjust offset to position vehicles realistically in lanes
-        # The centerline currently passes through the average of all vehicle y-positions
-        # We need to shift it so vehicles are centered in their respective lanes
-        half_width = (lane_width * lane_count) / 2.0
+        # STRATEGY: The road centerline should be positioned such that vehicles
+        # are centered in their assigned lanes. The "centerline" variable represents
+        # the reference line for creating parallel lane boundaries.
+        #
+        # For a road with N lanes:
+        # - Boundary offsets: [-half_width, -half_width + lane_width, ..., +half_width]
+        # - Lane k center (0-indexed, rightmost): -half_width + (k + 0.5) * lane_width
+        #
+        # We position the reference centerline so that after applying boundary offsets,
+        # vehicles end up centered in their assigned lanes.
         
-        # Get the current centerline y-position (use mean for representative value)
-        centerline_y = np.mean(centerline[:, 1])
+        half_width = (lane_width * lane_count) / 2.0
         
         if len(speeds) == 1:
-            # Single vehicle: center it in the rightmost lane
+            # Single vehicle: place it in the center lane
             single_obj = list(speeds.keys())[0]
             single_df = config_df[config_df['o'] == single_obj]
-            avg_y_vehicle = single_df['y'].mean()
+            avg_y_vehicle = float(single_df['y'].mean())
             
-            # Rightmost lane center relative to road centerline: -half_width + lane_width/2
-            rightmost_lane_center = -half_width + lane_width / 2.0
+            # For a 2-lane road, center lane is lane 0 with offset around 0
+            # We want the reference line to be positioned such that the vehicle
+            # is centered in a lane. Simply position ref line at vehicle position.
+            target_ref_y = avg_y_vehicle
             
-            # The vehicle is at avg_y_vehicle
-            # We want the road centerline positioned so that:
-            # (avg_y_vehicle - new_centerline_y) = rightmost_lane_center
-            # Therefore: new_centerline_y = avg_y_vehicle - rightmost_lane_center
-            # offset = new_centerline_y - old_centerline_y
-            offset = (avg_y_vehicle - rightmost_lane_center) - centerline_y
+            current_ref_y = float(np.mean(centerline[:, 1]))
+            offset = target_ref_y - current_ref_y
             
-            print(f"[LANE BUILD] Single vehicle obj {single_obj}: centered in rightmost lane (centerline_y={centerline_y:.2f}, vehicle_y={avg_y_vehicle:.2f}, offset={offset:.2f}m)")
+            print(f"[LANE BUILD] Single vehicle obj {single_obj}: vehicle_y={avg_y_vehicle:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
             
         elif len(speeds) > 1:
-            # Multiple vehicles: position lanes so all vehicles are centered in their lanes
-            # vehicle_y_positions already calculated above for lane count determination
+            # Multiple vehicles: position reference line at average of all vehicles
+            avg_vehicle_y = sum(vehicle_y_positions.values()) / len(vehicle_y_positions)
+            target_ref_y = avg_vehicle_y
             
-            # Sort vehicles by y-position (lowest y = rightmost)
-            sorted_vehicles = sorted(vehicle_y_positions.items(), key=lambda x: x[1])
-            
-            # Assign lanes: rightmost vehicle gets rightmost lane, etc.
-            lane_assignments = {}
-            for i, (obj_id, y_pos) in enumerate(sorted_vehicles):
-                # Assign from rightmost lane (0) upward, but don't exceed available lanes
-                lane_idx = min(i, lane_count - 1)
-                lane_assignments[obj_id] = lane_idx
-            
-            # Calculate lane centers relative to road centerline
-            # Lane 0 (rightmost): -half_width + lane_width/2
-            # Lane 1: -half_width + 3*lane_width/2, etc.
-            lane_centers = {}
-            for lane_idx in range(lane_count):
-                lane_centers[lane_idx] = -half_width + (lane_idx + 0.5) * lane_width
-            
-            # Find offset that best centers all vehicles in their assigned lanes
-            # Calculate required offset for each vehicle and take the average
-            required_offsets = []
-            for obj_id, y_pos in sorted_vehicles:
-                lane_idx = lane_assignments[obj_id]
-                # We want: (y_pos - new_centerline_y) = lane_centers[lane_idx]
-                # Therefore: new_centerline_y = y_pos - lane_centers[lane_idx]
-                # offset = new_centerline_y - old_centerline_y
-                required_offset = (y_pos - lane_centers[lane_idx]) - centerline_y
-                required_offsets.append(required_offset)
-            
-            # Use average offset to balance all vehicles
-            offset = sum(required_offsets) / len(required_offsets)
-            
-            rightmost_obj, rightmost_y = sorted_vehicles[0]
-            rightmost_lane_idx = lane_assignments[rightmost_obj]
-            
-            print(f"[LANE BUILD] Positioned {len(speeds)} vehicles (centerline_y={centerline_y:.2f}, rightmost obj {rightmost_obj} at y={rightmost_y:.2f} -> lane {rightmost_lane_idx}, offset={offset:.2f}m)")
-            
-            # Log all vehicle positions
-            for obj_id in object_ids:
-                lane_idx = lane_assignments[obj_id]
-                # After applying offset, where will this vehicle be relative to the shifted centerline?
-                new_centerline_y = centerline_y + offset
-                vehicle_rel_to_new_centerline = vehicle_y_positions[obj_id] - new_centerline_y
-                deviation = vehicle_rel_to_new_centerline - lane_centers[lane_idx]
-                print(f"[LANE BUILD]   Vehicle obj {obj_id} at {speeds[obj_id]:.1f} km/h -> lane {lane_idx} (deviation: {deviation:.2f}m)")
+            current_ref_y = float(np.mean(centerline[:, 1]))
+            offset = target_ref_y - current_ref_y
+            print(f"[LANE BUILD] Multi-vehicle: avg_vehicle_y={avg_vehicle_y:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
+        else:
+            # No vehicles
+            offset = 0.0
 
         # Apply vertical offset to centerline
+        # NOTE: We ignore config_offset parameter as our calculated offset already
+        # positions vehicles correctly in their lanes. The config_offset was a legacy
+        # manual adjustment that is no longer needed.
         centerline[:, 1] += offset
-        print(f"[LANE BUILD] After offset, centerline y-range: [{np.min(centerline[:, 1]):.2f}, {np.max(centerline[:, 1]):.2f}]")
+        print(f"[LANE BUILD] After offset (calculated={offset:.2f}m, config_offset={config_offset:.2f}m ignored), centerline y-range: [{np.min(centerline[:, 1]):.2f}, {np.max(centerline[:, 1]):.2f}]")
 
-        half_width = (lane_width * lane_count) / 2.0
+        # half_width already calculated above, reuse it
         boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
         boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
         print(f"[LANE BUILD] Created {len(boundaries)} boundaries with offsets: {boundary_offsets}")
         if boundaries:
             for i, boundary in enumerate(boundaries):
-                y_range = [np.min(boundary[:, 1]), np.max(boundary[:, 1])]
+                y_range: list[float] = [float(np.min(boundary[:, 1])), float(np.max(boundary[:, 1]))]
                 print(f"[LANE BUILD]   Boundary {i} y-range: [{y_range[0]:.2f}, {y_range[1]:.2f}]")
 
         interior_count = max(0, lane_count - 1)
@@ -1086,12 +1075,12 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         all_boundaries = []
         
         for obj_id in object_ids:
-            obj_df = config_df[config_df['o'] == obj_id].sort_values('t')  # type: ignore[attr-defined]
+            obj_df: pd.DataFrame = config_df[config_df['o'] == obj_id].sort_values('t')  # type: ignore[assignment]
             if len(obj_df) < 2:
                 continue
             
             # Get vehicle path
-            vehicle_path = obj_df[['x', 'y']].to_numpy(dtype=float)
+            vehicle_path: np.ndarray = obj_df[['x', 'y']].to_numpy(dtype=float)
             vehicle_path = _remove_duplicate_points(vehicle_path)
             
             if vehicle_path.shape[0] < 2:
@@ -1127,8 +1116,8 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         
         # Use first vehicle path as "centerline" reference for bounds calculation
         first_obj = object_ids[0]
-        centerline_df = config_df[config_df['o'] == first_obj].sort_values('t')
-        centerline = centerline_df[['x', 'y']].to_numpy(dtype=float)
+        centerline_df: pd.DataFrame = config_df[config_df['o'] == first_obj].sort_values('t')  # type: ignore[assignment]
+        centerline: np.ndarray = centerline_df[['x', 'y']].to_numpy(dtype=float)  # type: ignore[assignment]
         centerline = _remove_duplicate_points(centerline)
         
         return {
@@ -1138,7 +1127,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             "multi_path": True  # Flag to indicate this is a multi-path scenario
         }
 
-def _lane_polylines_bounds(lane_polylines: dict[str, Any] | None):
+def _lane_polylines_bounds(lane_polylines: dict[str, Any] | None) -> tuple[float, float, float, float] | None:
     if not lane_polylines:
         return None
 
@@ -1172,11 +1161,14 @@ def _auto_detect_bounds_logic() -> bool:
     Calculate and update coordinate bounds based on current configuration and timestamp window.
     Returns True if bounds were successfully updated, False otherwise.
     """
+    if _df_all is None:
+        return False
+    
     _detect_c = int(st.session_state.get("cfg_c", available_configs[0]))
     _detect_k = int(st.session_state.get("cfg_k", 3))  # Number of timestamps
     _detect_start_t = st.session_state.get("cfg_start_t", None)
     
-    config_df = _df_all[_df_all["c"] == _detect_c]
+    config_df: pd.DataFrame = _df_all[_df_all["c"] == _detect_c]  # type: ignore[assignment]
     if config_df.empty:
         return False
 
@@ -1231,17 +1223,17 @@ def _auto_detect_bounds_logic() -> bool:
         if lane_cfg:
             lane_bounds = lane_cfg.get("bounds")
             if lane_bounds:
-                x_bounds = lane_bounds.get("x")
-                y_bounds = lane_bounds.get("y")
+                x_bounds: Any = lane_bounds.get("x")
+                y_bounds: Any = lane_bounds.get("y")
             else:
-                x_bounds = None
-                y_bounds = None
+                x_bounds: Any = None
+                y_bounds: Any = None
             if x_bounds:
-                _new_min_x = min(_new_min_x, float(x_bounds[0]))
-                _new_max_x = max(_new_max_x, float(x_bounds[1]))
+                _new_min_x = min(_new_min_x, float(x_bounds[0]))  # type: ignore[index]
+                _new_max_x = max(_new_max_x, float(x_bounds[1]))  # type: ignore[index]
             if y_bounds:
-                _new_min_y = min(_new_min_y, float(y_bounds[0]))
-                _new_max_y = max(_new_max_y, float(y_bounds[1]))
+                _new_min_y = min(_new_min_y, float(y_bounds[0]))  # type: ignore[index]
+                _new_max_y = max(_new_max_y, float(y_bounds[1]))  # type: ignore[index]
 
             if lane_cfg.get("mode", "data_path") == "data_path":
                 lane_width = float(lane_cfg.get("lane_width", 3.0))  # type: ignore[arg-type]
@@ -1557,20 +1549,18 @@ with st.expander("Advanced Point Selection", expanded=False):
             help="How many random points to select and move together in each iteration."
         )
     elif point_selection_mode == "Consecutive time stamps":
-        # Get available objects from data (check if variables exist first)
-        _obj_ids_available = 'all_obj_ids_flat' in dir() and all_obj_ids_flat is not None and hasattr(all_obj_ids_flat, 'size') and all_obj_ids_flat.size > 0
-        available_objects: list[int]
-        if _obj_ids_available:
-            available_objects = sorted(set(all_obj_ids_flat.tolist()))
-        else:
+        # Get available objects from data (use config_df which is already available)
+        available_objects: list[int] = sorted(config_df["o"].unique().tolist())  # type: ignore[attr-defined]
+        if not available_objects:
             available_objects = [0, 1]  # Default: assume k and l
         object_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in available_objects]
         
         # Get max timestamps for selected object
         def get_max_timestamps_for_object(obj_id: int) -> int:
-            if not _obj_ids_available:
+            obj_data = config_df[config_df["o"] == obj_id]  # type: ignore[attr-defined]
+            if len(obj_data) == 0:  # type: ignore[arg-type]
                 return 3  # Default assumption
-            return int(np.sum(all_obj_ids_flat == obj_id))
+            return int(obj_data["t"].nunique())  # type: ignore[attr-defined]
         
         gp_col1, gp_col2, gp_col3 = st.columns([1, 1, 1], gap="small")
         with gp_col1:
@@ -1935,7 +1925,7 @@ if is_any_manual_mode:
         if prev_step_clicked and has_history:
             # Save current state to redo stack before going back
             import copy
-            current_state_for_redo = {}
+            current_state_for_redo: dict[str, Any] = {}
             anim_state_keys = [
                 "anim_generated_point", "anim_parent_idx", "anim_successful_points",
                 "anim_distance", "anim_angle", "anim_search_steps", "anim_completed_iterations",
@@ -1954,7 +1944,7 @@ if is_any_manual_mode:
                     if isinstance(value, np.ndarray):
                         current_state_for_redo[key] = value.copy()
                     elif isinstance(value, (list, dict)):
-                        current_state_for_redo[key] = copy.deepcopy(value)
+                        current_state_for_redo[key] = copy.deepcopy(value)  # type: ignore[arg-type]
                     else:
                         current_state_for_redo[key] = value
             anim_redo_stack.append(current_state_for_redo)
@@ -1985,7 +1975,7 @@ if is_any_manual_mode:
                 # Redo: restore the next state from redo stack
                 # First save current state to history
                 import copy
-                current_state_for_history = {}
+                current_state_for_history: dict[str, Any] = {}
                 anim_state_keys = [
                     "anim_generated_point", "anim_parent_idx", "anim_successful_points",
                     "anim_distance", "anim_angle", "anim_search_steps", "anim_completed_iterations",
@@ -2000,11 +1990,11 @@ if is_any_manual_mode:
                 ]
                 for key in anim_state_keys:
                     if key in st.session_state:
-                        value = st.session_state[key]
+                        value: Any = st.session_state[key]
                         if isinstance(value, np.ndarray):
                             current_state_for_history[key] = value.copy()
                         elif isinstance(value, (list, dict)):
-                            current_state_for_history[key] = copy.deepcopy(value)
+                            current_state_for_history[key] = copy.deepcopy(value)  # type: ignore[arg-type]
                         else:
                             current_state_for_history[key] = value
                 anim_history.append(current_state_for_history)
@@ -2066,6 +2056,20 @@ else:
             help="Halt the animation and reset all graphs to their initial values. Clears all generated points and search state."
         )
         st.markdown('</div>', unsafe_allow_html=True)
+
+# ============= Advanced: Generate 30 configs and show 5 most deviating ============
+st.markdown("<hr style='margin:1.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
+st.markdown("**Advanced Generation & Analysis**")
+
+advanced_col1, advanced_col2 = st.columns([3, 1], gap="small")
+with advanced_col1:
+    st.caption("Generate 30 configurations automatically and visualize the 5 most deviating from the original pattern.")
+with advanced_col2:
+    generate_30_btn = st.button(
+        "Generate 30 & Show Top 5",
+        key="btn_generate_30",
+        help="Automatically generates 30 configurations using your current settings (strategy, iterations, buffer, rough, etc.) and displays PNG images of the 5 configurations that deviate most from the original. You can download each of these 5 configurations."
+    )
 
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
@@ -2563,7 +2567,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
         best_angle = None
         best_in_bounds_count = 0
         
-        for attempt in range(max_attempts):
+        for _ in range(max_attempts):
             angle = float(np.random.uniform(0, 2 * np.pi))
             delta_x = base_distance * np.cos(angle)
             delta_y = base_distance * np.sin(angle)
@@ -2603,14 +2607,14 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     else:  # Random directions
         # Each point gets its own random angle - ensure each point stays in bounds
-        vectors = {}
+        vectors: dict[int, tuple[float, float]] = {}
         max_attempts = 50
         
         for idx in selected_indices:
             parent_pt = get_parent_point(idx)
             best_angle = None
             
-            for attempt in range(max_attempts):
+            for _ in range(max_attempts):
                 angle = float(np.random.uniform(0, 2 * np.pi))
                 delta_x = base_distance * np.cos(angle)
                 delta_y = base_distance * np.sin(angle)
@@ -3277,7 +3281,7 @@ def update_order_match_flags() -> None:
                 st.session_state["frenet_centerline"] = centerline
         
         if centerline is not None and len(centerline) >= 2:
-            detailed_results = check_pdp_match_frenet_detailed(  # type: ignore[misc]
+            detailed_results: dict[str, Any] = check_pdp_match_frenet_detailed(  # type: ignore[misc]
                 all_pts_flat,
                 generated_points,
                 centerline=centerline,
@@ -3290,19 +3294,19 @@ def update_order_match_flags() -> None:
                 max_mismatches=max_mismatches_param
             )
             # Map Frenet results to d1/d2 naming (s->d1, n->d2)
-            detailed_results["d1_match"] = detailed_results.pop("s_match")  # type: ignore[misc]
-            detailed_results["d2_match"] = detailed_results.pop("n_match")  # type: ignore[misc]
-            detailed_results["d1_percentage"] = detailed_results.pop("s_percentage")  # type: ignore[misc]
-            detailed_results["d2_percentage"] = detailed_results.pop("n_percentage")  # type: ignore[misc]
-            detailed_results["d1_mismatches"] = detailed_results.pop("s_mismatches")  # type: ignore[misc]
-            detailed_results["d2_mismatches"] = detailed_results.pop("n_mismatches")  # type: ignore[misc]
-            detailed_results["original_d1_matrix"] = detailed_results.pop("original_s_matrix")  # type: ignore[misc]
-            detailed_results["original_d2_matrix"] = detailed_results.pop("original_n_matrix")  # type: ignore[misc]
-            detailed_results["generated_d1_matrix"] = detailed_results.pop("generated_s_matrix")  # type: ignore[misc]
-            detailed_results["generated_d2_matrix"] = detailed_results.pop("generated_n_matrix")  # type: ignore[misc]
+            detailed_results["d1_match"] = detailed_results.pop("s_match")
+            detailed_results["d2_match"] = detailed_results.pop("n_match")
+            detailed_results["d1_percentage"] = detailed_results.pop("s_percentage")
+            detailed_results["d2_percentage"] = detailed_results.pop("n_percentage")
+            detailed_results["d1_mismatches"] = detailed_results.pop("s_mismatches")
+            detailed_results["d2_mismatches"] = detailed_results.pop("n_mismatches")
+            detailed_results["original_d1_matrix"] = detailed_results.pop("original_s_matrix")
+            detailed_results["original_d2_matrix"] = detailed_results.pop("original_n_matrix")
+            detailed_results["generated_d1_matrix"] = detailed_results.pop("generated_s_matrix")
+            detailed_results["generated_d2_matrix"] = detailed_results.pop("generated_n_matrix")
         else:
             # Fallback to fundamental if no centerline
-            detailed_results = check_pdp_match_detailed(
+            detailed_results: dict[str, Any] = check_pdp_match_detailed(
                 all_pts_flat, generated_points,
                 pdp_variant="fundamental",
                 match_threshold=match_threshold,
@@ -3311,7 +3315,7 @@ def update_order_match_flags() -> None:
     else:
         # Only pass buffer/rough parameters if variant actually uses them
         if pdp_variant in ["buffer", "bufferrough", "realistic"]:
-            detailed_results = check_pdp_match_detailed(
+            detailed_results: dict[str, Any] = check_pdp_match_detailed(
                 all_pts_flat,
                 generated_points,
                 pdp_variant=pdp_variant,
@@ -3324,7 +3328,7 @@ def update_order_match_flags() -> None:
             )
         else:
             # For fundamental and rough variants, pass appropriate parameters
-            detailed_results = check_pdp_match_detailed(
+            detailed_results: dict[str, Any] = check_pdp_match_detailed(
                 all_pts_flat,
                 generated_points,
                 pdp_variant=pdp_variant,
@@ -3340,7 +3344,7 @@ def update_order_match_flags() -> None:
     num_unique_objects = len(all_points_plot.keys()) if 'all_points_plot' in globals() else 2
     if num_unique_objects <= 1:
         # For single object: if either dimension matches, consider both as matching
-        if detailed_results["d1_match"] or detailed_results["d2_match"]:
+        if detailed_results.get("d1_match", False) or detailed_results.get("d2_match", False):
             st.session_state["order_match_d1"] = True
             st.session_state["order_match_d2"] = True
         else:
@@ -3348,8 +3352,8 @@ def update_order_match_flags() -> None:
             st.session_state["order_match_d2"] = False
     else:
         # For multiple objects: use original logic
-        st.session_state["order_match_d1"] = detailed_results["d1_match"]
-        st.session_state["order_match_d2"] = detailed_results["d2_match"]
+        st.session_state["order_match_d1"] = detailed_results.get("d1_match", False)
+        st.session_state["order_match_d2"] = detailed_results.get("d2_match", False)
     
     st.session_state["pdp_detailed_results"] = detailed_results
 
@@ -3498,7 +3502,7 @@ def run_binary_iteration(
     # Binary search: 7 steps
     for binary_step in range(max_binary_steps):
         # Compute candidate positions: ok_point + delta for each point
-        candidate_positions: dict[int, np.ndarray] = {}
+        candidate_positions: dict[int, np.ndarray] = {}  # Explicit type for Pylance
         for idx in selected_indices:
             ok_pt = ok_points[idx]
             delta = deltas[idx]
@@ -3605,12 +3609,15 @@ def generate_binary_multipoint() -> None:
     match_threshold = pct_threshold if mode == "Percentage" else 1.0
     max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
     
-    all_configs: list = []
-    current_points = all_pts_flat.copy()
+    all_configs: list[dict[str, Any]] = []
+    current_points: np.ndarray = all_pts_flat.copy()
     
     # Reset diagnostics
     st.session_state["diag_rows"] = []
     st.session_state["binary_iteration_summary"] = []
+    
+    # Initialize successful_points to avoid 'possibly unbound' warning
+    successful_points: list[SuccessfulPoint] = []
     
     # Process each variant
     for variant_idx, pdp_variant in enumerate(pdp_variants_list):
@@ -3620,7 +3627,7 @@ def generate_binary_multipoint() -> None:
         # Generate configurations for this variant
         for config_num in range(1, num_configs + 1):
             st.session_state["anim_current_config"] = config_num
-            successful_points: list[SuccessfulPoint] = []
+            successful_points = []
             
             # Reset diagnostics for each configuration
             st.session_state["diag_rows"] = []
@@ -3629,7 +3636,7 @@ def generate_binary_multipoint() -> None:
             for iteration in range(num_iterations):
                 st.session_state["anim_completed_iterations"] = iteration
                 
-                successful_points, success = run_binary_iteration(
+                successful_points, _ = run_binary_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -3728,7 +3735,7 @@ def run_multipoint_iteration(
         scaled_vectors = scale_movement_vectors(movement_vectors, current_scale)
         
         # Get parent points (either from successful_points or original)
-        parent_positions = {}
+        parent_positions: dict[int, np.ndarray] = {}
         for idx in selected_indices:
             # Find most recent position for this index
             latest_pos = None
@@ -3741,7 +3748,7 @@ def run_multipoint_iteration(
             parent_positions[idx] = latest_pos
         
         # Apply movements from parent positions
-        candidate_positions = {}
+        candidate_positions: dict[int, np.ndarray] = {}
         for idx, (dx, dy) in scaled_vectors.items():
             parent_pt = parent_positions.get(idx, current_points[idx])
             new_x = np.clip(parent_pt[0] + dx, COORD_MIN_X, COORD_MAX_X)
@@ -3832,14 +3839,30 @@ def run_multipoint_iteration(
     print(f"[DEBUG RUN_MULTIPOINT] Max search steps reached - placing points at parent positions")
     
     for idx in selected_indices:
-        parent_pt = parent_positions.get(idx, current_points[idx])
-        # Place exactly at parent position to preserve all orders
+        # Get parent position, ensuring it's never None
+        parent_pt_candidate: np.ndarray | None = parent_positions.get(idx)
+        if parent_pt_candidate is None:
+            # Fallback: find most recent position from successful_points or use original
+            for sp in reversed(successful_points):
+                if int(sp["original_parent_idx"]) == idx:
+                    parent_pt_candidate = np.array(sp["point"])
+                    break
+            if parent_pt_candidate is None:
+                # Ultimate fallback: use original position from current_points
+                if 0 <= idx < len(current_points):
+                    parent_pt_candidate = np.array(current_points[idx])
+                else:
+                    parent_pt_candidate = np.array([0.0, 0.0])
         
+        # At this point parent_pt_candidate is guaranteed to be an ndarray
+        parent_pt: np.ndarray = parent_pt_candidate if parent_pt_candidate is not None else np.array([0.0, 0.0])
+        
+        # Place exactly at parent position to preserve all orders
         iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
         sp: SuccessfulPoint = {
             "point": parent_pt.copy(),  # Exact copy of parent position
             "parent_idx": idx,
-            "parent_point": parent_pt,
+            "parent_point": parent_pt.copy(),
             "original_parent_idx": idx,
             "iteration": iteration_num,
         }
@@ -3873,8 +3896,8 @@ def generate_exp_multipoint() -> None:
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
-    all_configs: list = []
-    current_points = all_pts_flat.copy()
+    all_configs: list[dict[str, Any]] = []
+    current_points: np.ndarray = all_pts_flat.copy()
     
     # Process each variant
     for variant_idx, pdp_variant in enumerate(pdp_variants_list):
@@ -4140,6 +4163,9 @@ def generate_exp() -> None:
 
                     distance_new = maxdist
                     max_attempts = 20
+                    angle_local: float = 0.0  # Initialize to avoid unbound warning
+                    new_x: float = parent_pt_reset[0]  # Initialize to avoid unbound warning
+                    new_y: float = parent_pt_reset[1]  # Initialize to avoid unbound warning
                     for _ in range(max_attempts):
                         angle_local = float(np.random.uniform(0, 2 * np.pi))
                         new_x = parent_pt_reset[0] + distance_new * np.cos(angle_local)
@@ -4193,6 +4219,9 @@ def generate_exp() -> None:
                         
                         distance_new = maxdist
                         max_attempts = 20
+                        angle_local: float = 0.0  # Initialize to avoid unbound warning
+                        new_x: float = parent_pt_reset[0]  # Initialize to avoid unbound warning
+                        new_y: float = parent_pt_reset[1]  # Initialize to avoid unbound warning
                         for _ in range(max_attempts):
                             angle_local = float(np.random.uniform(0, 2 * np.pi))
                             new_x = parent_pt_reset[0] + distance_new * np.cos(angle_local)
@@ -4242,6 +4271,9 @@ def generate_exp() -> None:
 
                 distance_new = maxdist
                 max_attempts = 20
+                angle_local: float = 0.0  # Initialize to avoid unbound warning
+                new_x: float = parent_pt_new[0]  # Initialize to avoid unbound warning
+                new_y: float = parent_pt_new[1]  # Initialize to avoid unbound warning
                 for _ in range(max_attempts):
                     angle_local = float(np.random.uniform(0, 2 * np.pi))
                     new_x = parent_pt_new[0] + distance_new * np.cos(angle_local)
@@ -4301,6 +4333,7 @@ def generate_exp() -> None:
 
                     new_distance = distance / 2.0
                     min_distance = 1e-5
+                    angle_local: float = angle  # Initialize with current angle
                     if new_distance < min_distance:
                         # If we get too small, reset angle randomly
                         new_distance = min_distance * 2.0
@@ -4840,6 +4873,199 @@ if generate_btn:
         # Run the binary search generator
         generate_binary_multipoint()
 
+# ============= Generate 30 configs and show top 5 handler ============
+if generate_30_btn:
+    # Store in session state that we want to generate
+    st.session_state["_generate_30_requested"] = True
+
+# Check if we have stored results or need to generate
+if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 30 Configurations...")
+    
+    # Store current settings
+    current_strategy = st.session_state.get("cfg_strategy", "exponential")
+    current_iterations = int(st.session_state.get("cfg_iterations", 3))
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    
+    # Generate 30 configurations
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_generated_configs: list[dict[str, Any]] = []
+    
+    for config_idx in range(30):
+        status_text.text(f"Generating configuration {config_idx + 1}/30...")
+        progress_bar.progress((config_idx + 1) / 30)
+        
+        # Reset state for each generation
+        st.session_state["anim_all_configs"] = []
+        st.session_state["anim_successful_points"] = []
+        st.session_state["anim_max_iterations"] = current_iterations
+        st.session_state["anim_num_configs"] = 1
+        st.session_state["anim_running"] = True
+        st.session_state["show_anim_circle"] = False
+        
+        # Multi-variant support
+        st.session_state["anim_pdp_variants_list"] = pdp_variants_list
+        st.session_state["anim_current_variant_idx"] = 0
+        st.session_state["anim_current_variant"] = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        
+        # Generate based on strategy
+        if current_strategy == "exponential":
+            generate_exp_multipoint()
+        else:
+            generate_binary_multipoint()
+        
+        # Collect the generated configuration
+        generated_configs = st.session_state.get("anim_all_configs", [])
+        if generated_configs:
+            config_data = generated_configs[0].copy()
+            config_data["config_number"] = config_idx + 1
+            all_generated_configs.append(config_data)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        
+        # Calculate deviation for each configuration
+        # Deviation = average distance of generated points from original points
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        
+        for config in all_generated_configs:
+            total_deviation = 0.0
+            num_points = 0
+            
+            successful_points = config.get("successful_points", [])
+            for sp in successful_points:
+                parent_coord = sp.parent_coord
+                generated_coord = sp.generated_coord
+                distance = float(np.linalg.norm(generated_coord - parent_coord))
+                total_deviation += distance
+                num_points += 1
+            
+            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, avg_deviation, config))
+        
+        # Sort by deviation (descending) and take top 5
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_5 = deviations[:5]
+        
+        # Store results in session state
+        st.session_state["_generate_30_results"] = top_5
+        st.rerun()
+
+# Display results if they exist
+if st.session_state.get("_generate_30_results", None):
+    top_5 = st.session_state["_generate_30_results"]
+    
+    st.markdown("---")
+    st.markdown("### Top 5 Most Deviating Configurations")
+    st.caption("These configurations have the largest average distance from the original points.")
+    
+    # Display each of the top 5
+    for rank, (config_num, deviation, config) in enumerate(top_5, 1):
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
+            
+            # Create visualization
+            fig = Figure(figsize=(10, 5), dpi=120)
+            canvas = FigureCanvas(fig)
+            
+            # Two subplots: original (left) and generated (right)
+            ax_left = fig.add_subplot(121)
+            ax_right = fig.add_subplot(122)
+            
+            # Setup both axes
+            for ax in [ax_left, ax_right]:
+                setup_square_axes(ax, XLIM, YLIM)
+            
+            # Draw original on left
+            ax_left.set_title("Original", fontsize=12, fontweight='bold')
+            for i, o_id in enumerate(sorted(all_points_plot.keys())):
+                pts = all_points_plot[o_id]
+                vals = all_vals_plot[o_id]
+                if pts.shape[0] > 0:
+                    color = OBJECT_COLORS[i % len(OBJECT_COLORS)]
+                    label = OBJECT_LABELS.get(o_id, f"obj{o_id}")
+                    ax_left.plot(pts[:, 0], pts[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
+                    annotate_points(ax_left, pts, vals, label, color)
+            
+            # Draw generated on right
+            ax_right.set_title(f"Generated (Config #{config_num})", fontsize=12, fontweight='bold')
+            
+            # Build the generated configuration
+            successful_points = config.get("successful_points", [])
+            generated_points_dict: dict[int, list[tuple[np.ndarray, float]]] = {}
+            
+            for sp in successful_points:
+                orig_idx = sp.original_idx
+                gen_coord = sp.generated_coord
+                t_val = sp.t_val
+                
+                # Determine object ID from original index
+                obj_id = 0
+                cumulative = 0
+                for oid in sorted(all_points_plot.keys()):
+                    n_pts = all_points_plot[oid].shape[0]
+                    if orig_idx < cumulative + n_pts:
+                        obj_id = oid
+                        break
+                    cumulative += n_pts
+                
+                if obj_id not in generated_points_dict:
+                    generated_points_dict[obj_id] = []
+                generated_points_dict[obj_id].append((gen_coord, t_val))
+            
+            # Draw generated trajectories
+            for i, o_id in enumerate(sorted(generated_points_dict.keys())):
+                points_list = generated_points_dict[o_id]
+                # Sort by timestamp
+                points_list.sort(key=lambda x: x[1])
+                pts_array = np.array([p[0] for p in points_list])
+                vals_array = np.array([p[1] for p in points_list])
+                
+                color = OBJECT_COLORS[i % len(OBJECT_COLORS)]
+                label = OBJECT_LABELS.get(o_id, f"obj{o_id}")
+                ax_right.plot(pts_array[:, 0], pts_array[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
+                annotate_points(ax_right, pts_array, vals_array, f"{label}'", color)
+            
+            fig.tight_layout()
+            
+            # Save to buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=120, bbox_inches='tight')
+            buf.seek(0)
+            
+            # Display image
+            st.image(buf, use_container_width=True)
+            
+            # Download button
+            buf.seek(0)
+            st.download_button(
+                label=f"📥 Download Configuration #{config_num}",
+                data=buf,
+                file_name=f"config_{config_num}_deviation_{deviation:.1f}m.png",
+                mime="image/png",
+                key=f"download_config_{config_num}"
+            )
+            
+            st.markdown("---")
+    
+    # Add a clear button
+    if st.button("Clear Results", key="clear_top5_results"):
+        st.session_state["_generate_30_requested"] = False
+        st.session_state["_generate_30_results"] = None
+        st.rerun()
+
 # ============= Drawing (without gridlines) ============
 
 def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
@@ -4899,10 +5125,10 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
             right_edge = boundaries[-1]
             polygon_arrays: list[np.ndarray] = [left_edge, right_edge[::-1]]
             polygon_points = np.vstack(polygon_arrays)
-            ax.fill(polygon_points[:, 0], polygon_points[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+            ax.fill(polygon_points[:, 0], polygon_points[:, 1], facecolor=road_color, edgecolor='none', zorder=0)  # type: ignore[call-overload]
 
             for edge in (left_edge, right_edge):
-                ax.plot(edge[:, 0], edge[:, 1], color=edge_line_color, linewidth=lane_line_width, 
+                ax.plot(edge[:, 0], edge[:, 1], color=edge_line_color, linewidth=lane_line_width,  # type: ignore[call-overload]
                        linestyle='-', alpha=1.0, zorder=1)
 
     for dashed_line in center_lines:
@@ -4921,7 +5147,7 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
     centerline = lane_polylines.get("centerline")
     if current_config in [15, 17] and centerline is not None:
         # Draw the centerline (basiskromme) as a thin colored line
-        ax.plot(centerline[:, 0], centerline[:, 1], 
+        ax.plot(centerline[:, 0], centerline[:, 1],  # type: ignore[call-overload]
                 color='#666666', linewidth=1.2, linestyle='-', 
                 alpha=0.6, zorder=1, label='centerline')
         _draw_frenet_axes(ax, centerline, num_arrows=5)
@@ -5019,6 +5245,8 @@ LABEL_FS = 9
 
 # Colors for all objects (matplotlib style): blue, orange, green, purple, brown, pink, etc.
 OBJECT_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
+# Matplotlib colors (explicit names for contour plots, same as OBJECT_COLORS but with explicit names)
+OBJECT_COLORS_MPL = OBJECT_COLORS  # Alias for consistency
 # Plotly-compatible colors (hex equivalents of matplotlib's default color cycle)
 OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
                         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
@@ -5129,6 +5357,20 @@ def _extract_centerline_from_data(c_value: int):
             shift_vector = -to_slowest / np.linalg.norm(to_slowest) * shift_distance
             centerline = centerline + shift_vector
 
+    # Check if horizontal lanes should be forced (for certain configs like 7)
+    lane_cfg = LANE_CONFIGURATIONS.get(c_value, {})
+    force_horizontal = lane_cfg.get("force_horizontal", False)
+    
+    if force_horizontal and centerline.shape[0] >= 2:
+        # Force completely horizontal lanes: use average y-coordinate
+        avg_y = np.mean(centerline[:, 1])
+        # Create a horizontal line from min to max x-coordinate at constant y
+        x_min = np.min(centerline[:, 0])
+        x_max = np.max(centerline[:, 0])
+        centerline = np.array([[x_min, avg_y], [x_max, avg_y]])
+        print(f"[CENTERLINE] Config {c_value}: Forced horizontal lanes at y={avg_y:.2f}")
+        return centerline
+
     # Check if the path is roughly straight (skip for curved configs)
     # IMPORTANT: Always preserve the original slope angle from start to end point!
     if c_value not in [15] and centerline.shape[0] >= 3:
@@ -5169,16 +5411,16 @@ def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
 
     return points + offset * normals
 
-def _lane_polylines_bounds(lane_polylines):
+def _lane_polylines_bounds(lane_polylines: dict[str, Any] | None):
     if not lane_polylines:
         return None
 
     arrays: list[np.ndarray] = []
-    boundaries = lane_polylines.get("boundaries") if isinstance(lane_polylines, dict) else None
+    boundaries = lane_polylines.get("boundaries")
     if boundaries:
         arrays.extend(boundaries)
 
-    centerline = lane_polylines.get("centerline") if isinstance(lane_polylines, dict) else None
+    centerline = lane_polylines.get("centerline")
     if centerline is not None and centerline.size:
         arrays.append(centerline)
 
@@ -5195,13 +5437,13 @@ def _lane_polylines_bounds(lane_polylines):
 
 def _add_lane_polylines_plotly(
     fig: go.Figure,
-    lane_polylines: dict,
+    lane_polylines: dict[str, Any],
     lane_color: str,
     edge_color: str,
     dashed_color: str,
 ) -> go.Figure:
     boundaries = lane_polylines.get("boundaries", [])
-    center_lines = lane_polylines.get("center_lines", [])
+    center_lines: list[np.ndarray] = lane_polylines.get("center_lines", [])
 
     if len(boundaries) >= 2:
         left_edge = boundaries[0]
@@ -5280,7 +5522,7 @@ def create_smooth_animation(
     fig = add_lane_markings_to_figure(fig, selected_c_int, xlim, ylim)
     
     # Extract lane marking traces to add to every frame
-    lane_marking_traces = [trace for trace in fig.data]
+    lane_marking_traces: list[Any] = [trace for trace in fig.data]
     
     # Configuration to animate - for simplicity, let's animate the first selected config
     # If "Original" is selected, use original points; otherwise use first generated config
@@ -5343,7 +5585,7 @@ def create_smooth_animation(
         st.write(f"  - {cfg['name']}: {len(cfg['data'])} objects")
     
     # Determine time range for animation
-    all_timestamps = []
+    all_timestamps: list[float] = []
     for obj_timestamps in all_vals_plot.values():
         all_timestamps.extend(obj_timestamps)
     
@@ -5351,8 +5593,8 @@ def create_smooth_animation(
         st.warning("No timestamp data available for animation")
         return fig
     
-    t_min = min(all_timestamps)
-    t_max = max(all_timestamps)
+    t_min: float = min(all_timestamps)
+    t_max: float = max(all_timestamps)
     
     # Create smooth time samples for animation (more samples = smoother, more fluid animation)
     n_frames = 200  # Increased from 100 for more fluid animation
@@ -5484,16 +5726,16 @@ def create_smooth_animation(
     fig.frames = frames
     
     # Calculate optimal y-range to maximize vertical space
-    all_y_values = []
+    all_y_values: list[float] = []
     for traj_data in all_frames_data:
         all_y_values.extend(traj_data["y_smooth"])
     if all_y_values:
-        y_min = min(all_y_values)
-        y_max = max(all_y_values)
-        y_margin = (y_max - y_min) * 0.1  # 10% margin
-        y_range = [y_min - y_margin, y_max + y_margin]
+        y_min: float = float(min(all_y_values))
+        y_max: float = float(max(all_y_values))
+        y_margin: float = (y_max - y_min) * 0.1  # 10% margin
+        y_range: list[float] = [y_min - y_margin, y_max + y_margin]
     else:
-        y_range = [ylim[0], ylim[1]]
+        y_range: list[float] = [ylim[0], ylim[1]]
     
     fig.update_layout(
         width=1100,
@@ -5544,15 +5786,15 @@ def create_smooth_animation(
             "active": 0,
             "steps": [
                 {
-                    "args": [[f.name], {
+                    "args": [[str(f.name) if hasattr(f, 'name') else str(f_idx)], {
                         "frame": {"duration": 0, "redraw": True},
                         "mode": "immediate",
                         "transition": {"duration": 0}
                     }],
-                    "label": f"{t_smooth[int(f.name)]:.1f}",
+                    "label": f"{float(t_smooth[int(str(f.name) if hasattr(f, 'name') else str(f_idx))]):.1f}",
                     "method": "animate"
                 }
-                for f in frames[::max(1, len(frames)//20)]  # Show ~20 slider ticks
+                for f_idx, f in enumerate(frames[::max(1, len(frames)//20)])  # Show ~20 slider ticks
             ],
             "x": 0.1,
             "len": 0.85,
@@ -5609,7 +5851,7 @@ def _draw_intersection_lanes_matplotlib(
         [h_x_max, center_y + h_half],
         [h_x_min, center_y + h_half],
     ])
-    ax.fill(h_poly[:, 0], h_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+    ax.fill(h_poly[:, 0], h_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)  # type: ignore[call-overload]
 
     # Vertical road fill
     v_poly = np.array([  # type: ignore[var-annotated]
@@ -5618,7 +5860,7 @@ def _draw_intersection_lanes_matplotlib(
         [center_x + v_half, v_y_max],
         [center_x - v_half, v_y_max],
     ])
-    ax.fill(v_poly[:, 0], v_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)
+    ax.fill(v_poly[:, 0], v_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)  # type: ignore[call-overload]
 
     # Horizontal road edges (skip intersection)
     # Bottom edge
@@ -5750,7 +5992,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict[str, Any], lane_color: 
     v_x_right = cx + v_width / 2
     
     # Draw horizontal road
-    fig.add_shape(
+    fig.add_shape(  # type: ignore[call-arg]
         type="rect",
         x0=h_x_min, y0=h_y_bottom,
         x1=h_x_max, y1=h_y_top,
@@ -5760,7 +6002,7 @@ def _add_intersection_lanes(fig: go.Figure, config: dict[str, Any], lane_color: 
     )
     
     # Draw vertical road
-    fig.add_shape(
+    fig.add_shape(  # type: ignore[call-arg]
         type="rect",
         x0=v_x_left, y0=v_y_min,
         x1=v_x_right, y1=v_y_max,
@@ -6411,13 +6653,13 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                 
                 # Group by time and compute mean position (centerline)
                 from collections import defaultdict
-                by_time = defaultdict(list)
+                by_time: defaultdict[float, list[tuple[float, float]]] = defaultdict(list)
                 for t, x, y in all_window_pts:
                     by_time[t].append((x, y))
                 
                 center_samples = []
                 for t in sorted(by_time.keys()):
-                    pts_at_t = by_time[t]
+                    pts_at_t: list[tuple[float, float]] = by_time[t]
                     mean_x = np.mean([p[0] for p in pts_at_t])
                     mean_y = np.mean([p[1] for p in pts_at_t])
                     center_samples.append((mean_x, mean_y))
@@ -6501,13 +6743,13 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                 
                 # Group by time and compute mean position (centerline)
                 from collections import defaultdict
-                by_time = defaultdict(list)
+                by_time: defaultdict[float, list[tuple[float, float]]] = defaultdict(list)
                 for t, x, y in all_window_pts:
                     by_time[t].append((x, y))
                 
                 center_samples = []
                 for t in sorted(by_time.keys()):
-                    pts_at_t = by_time[t]
+                    pts_at_t: list[tuple[float, float]] = by_time[t]
                     mean_x = np.mean([p[0] for p in pts_at_t])
                     mean_y = np.mean([p[1] for p in pts_at_t])
                     center_samples.append((mean_x, mean_y))
@@ -6837,7 +7079,7 @@ if n_total_points > 0 and should_update_heatmaps:
     st.session_state["pdp_detailed_results"] = pdp_detailed
 elif n_total_points > 0:
     # Use cached results if not updating
-    pdp_detailed = st.session_state.get("pdp_detailed_results", None)
+    pdp_detailed: dict[str, Any] | None = st.session_state.get("pdp_detailed_results", None)
 
 if pdp_detailed is not None:
     # Get match percentages
@@ -7120,7 +7362,7 @@ if _should_process_animation:
                     current_state_snapshot[key] = value.copy()
                 elif isinstance(value, (list, dict)):
                     # Deep copy lists (e.g., SuccessfulPoints) and dicts (e.g., generated_points, movement_vectors)
-                    current_state_snapshot[key] = copy.deepcopy(value)
+                    current_state_snapshot[key] = copy.deepcopy(value)  # type: ignore[arg-type]
                 else:
                     current_state_snapshot[key] = value
         
@@ -8324,7 +8566,7 @@ if all_configs_list or current_successful_points:
             color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
             label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
             # Build hover text for each point
-            hover_texts = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+            hover_texts: list[str] = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                           for j, t in enumerate(vals)]
             fig.add_trace(  # type: ignore[call-arg]
                 go.Scatter(
@@ -8344,8 +8586,8 @@ if all_configs_list or current_successful_points:
         # Add external reference points to Original configuration
         if external_pts_for_window:
             ext_pts_arr = np.array(external_pts_for_window)
-            hover_texts_ext = []
-            text_labels_ext = []
+            hover_texts_ext: list[str] = []
+            text_labels_ext: list[str] = []
             n_timestamps = len(selected_ts_window)
             for idx, (ext_pt, ext_t) in enumerate(zip(external_pts_for_window, external_ts_for_window)):
                 ext_point_idx = idx % len(external_points_list) if external_points_list else idx
@@ -8610,6 +8852,10 @@ def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict
     
     return angle_series
 
+# ============= Angle Comparison Section =============
+st.markdown("<hr />", unsafe_allow_html=True)
+st.markdown("<h3 style='margin-top:1.5rem;'>📐 Angle Comparison</h3>", unsafe_allow_html=True)
+
 # Check if we have generated configurations to display
 # Use the same data source as the Plotly comparison chart (anim_all_configs)
 angles_all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
@@ -8653,7 +8899,8 @@ if has_generated_data:
             all_generated_pts_per_config[current_config_num][(obj_id, local_idx)] = np.array(sp["point"])
     
     # Get the maximum config number to ensure we have all configs from 1 to max
-    max_config_num = max([int(k) for k in all_generated_pts_per_config.keys()]) if all_generated_pts_per_config else 1
+    config_nums_list: list[int] = [int(k) for k in all_generated_pts_per_config.keys()]
+    max_config_num: int = max(config_nums_list) if config_nums_list else 1
     
     # Build angle series for each config from 1 to max_config_num
     for config_num in range(1, max_config_num + 1):
@@ -8721,8 +8968,8 @@ if has_generated_data:
         
         # Calculate stats for this vector pair
         if len(y_vals) >= 1:
-            avg_angle = np.mean(y_vals)
-            std_angle = np.std(y_vals) if len(y_vals) > 1 else 0.0
+            avg_angle: float = float(np.mean(y_vals))
+            std_angle: float = float(np.std(y_vals)) if len(y_vals) > 1 else 0.0
             vector_pair_stats[vector_pair] = {
                 "avg": avg_angle,
                 "std": std_angle,
@@ -8745,8 +8992,8 @@ if has_generated_data:
             ))
     
     # Determine x-axis range
-    min_config = min([int(c) for c in all_config_nums]) if all_config_nums else 1
-    max_config = max([int(c) for c in all_config_nums]) if all_config_nums else 1
+    min_config = min([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
+    max_config = max([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
     
     # Get the search strategy (exponential, linear, binary)
     search_strategy = st.session_state.get("cfg_strategy", "exponential")

@@ -281,13 +281,12 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     else:  # Random directions
         # Each point gets its own random angle - ensure each point stays in bounds
-        vectors = {}
         vectors: dict[int, tuple[float, float]] = {}
         max_attempts = 50
         
         for idx in selected_indices:
+            idx = int(idx)  # Ensure idx is int for type checker
             parent_pt = get_parent_point(idx)
-            best_angle = None
             best_angle: float | None = None
             
             for _ in range(max_attempts):
@@ -299,7 +298,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
                 new_y = parent_pt[1] + delta_y
                 
                 if point_in_bounds(new_x, new_y):
-                    vectors[int(idx)] = (delta_x, delta_y)
+                    vectors[idx] = (delta_x, delta_y)
                     break
                 elif best_angle is None:
                     best_angle = angle
@@ -308,13 +307,13 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
                 if best_angle is not None:
                     delta_x = base_distance * np.cos(best_angle)
                     delta_y = base_distance * np.sin(best_angle)
-                    vectors[int(idx)] = (delta_x, delta_y)
+                    vectors[idx] = (delta_x, delta_y)
                 else:
                     # Complete fallback
                     angle = float(np.random.uniform(0, 2 * np.pi))
                     delta_x = base_distance * np.cos(angle)
                     delta_y = base_distance * np.sin(angle)
-                    vectors[int(idx)] = (delta_x, delta_y)
+                    vectors[idx] = (delta_x, delta_y)
         
         return vectors
 
@@ -345,15 +344,16 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
         x_min, x_max = COORD_MIN_X, COORD_MAX_X
         y_min, y_max = COORD_MIN_Y, COORD_MAX_Y
     
-    new_positions = {}
+    new_positions: dict[int, np.ndarray] = {}
     for idx, (dx, dy) in vectors.items():
+        idx = int(idx)  # Ensure idx is int for type checker
         if 0 <= idx < len(base_points):
-            new_x = base_points[idx, 0] + dx
-            new_y = base_points[idx, 1] + dy
+            new_x = float(base_points[idx, 0] + dx)
+            new_y = float(base_points[idx, 1] + dy)
             # Clip to visualization bounds to keep points within the graph
-            new_x = np.clip(new_x, x_min, x_max)
-            new_y = np.clip(new_y, y_min, y_max)
-            new_positions[idx] = np.array([new_x, new_y])
+            new_x = float(np.clip(new_x, x_min, x_max))
+            new_y = float(np.clip(new_y, y_min, y_max))
+            new_positions[idx] = np.array([new_x, new_y], dtype=float)
     return new_positions
 
 

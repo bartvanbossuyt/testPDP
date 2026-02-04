@@ -15,6 +15,8 @@ LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range
 LANE_CONFIGURATIONS[1]["offset"] = 1.25
 # Config 4 also needs this offset
 LANE_CONFIGURATIONS[4] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
+# Config 7: horizontal lanes (force straight horizontal lanes)
+LANE_CONFIGURATIONS[7] = {**DEFAULT_LANE_SETUP, "offset": 0.0, "force_horizontal": True}
 # Also add Config 11 with the same offset, as it's often used as default
 LANE_CONFIGURATIONS[11] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
 # Config 3: overtaking scenario with wider lanes
