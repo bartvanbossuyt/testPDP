@@ -2065,12 +2065,19 @@ st.markdown("**Advanced Generation & Analysis**")
 
 advanced_col1, advanced_col2 = st.columns([3, 1], gap="small")
 with advanced_col1:
-    st.caption("Generate 30 configurations automatically and visualize the 5 most deviating from the original pattern.")
+    st.caption("""Generate 1000 configurations automatically and analyze the 100 most deviating from the original pattern.
+    
+**Metrics explained:**
+- **Average Deviation**: Mean Euclidean distance (in meters) of all generated points from their original positions
+- **Max Angle Deviation**: Maximum change in trajectory angle (in degrees) between consecutive timestamps
+- **Max Distance Deviation**: Maximum change in distance (in meters) between consecutive timestamps
+
+The analysis identifies configurations with the largest spatial variations while preserving the PDP inequality pattern.""")
 with advanced_col2:
     generate_30_btn = st.button(
-        "Generate 30 & Show Top 5",
+        "Generate 1000 & Show Top 100",
         key="btn_generate_30",
-        help="Automatically generates 30 configurations using your current settings (strategy, iterations, buffer, rough, etc.) and displays PNG images of the 5 configurations that deviate most from the original. You can download each of these 5 configurations."
+        help="Automatically generates 1000 configurations using your current settings (iterations, PDP variant, buffer, roughness, threshold). Displays detailed analysis of the 100 configurations that deviate most from the original, including visualizations, statistics, and downloadable data."
     )
 
 # Handle Reset button click for both modes
@@ -4883,7 +4890,8 @@ if generate_30_btn:
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
     st.markdown("---")
-    st.markdown("### Generating 30 Configurations...")
+    st.markdown("### Generating 1000 Configurations...")
+    st.caption("This may take several minutes. Progress is shown below.")
     
     # Store current settings
     current_iterations = int(st.session_state.get("cfg_iterations", 3))
@@ -4897,14 +4905,14 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
     max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
     
-    # Generate 500 configurations
+    # Generate 1000 configurations
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     all_generated_configs: list[dict[str, Any]] = []
     
-    for config_idx in range(500):
-        status_text.text(f"Generating configuration {config_idx + 1}/500...")
+    for config_idx in range(1000):
+        status_text.text(f"Generating configuration {config_idx + 1}/1000...")
         
         # Generate one configuration using the core logic
         current_points = all_pts_flat.copy()
@@ -4941,7 +4949,7 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
             }
             all_generated_configs.append(config_data)
         
-        progress_bar.progress((config_idx + 1) / 500)
+        progress_bar.progress((config_idx + 1) / 1000)
     
     progress_bar.empty()
     status_text.empty()
@@ -4971,27 +4979,34 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
             config_num = config.get("config_number", 0)
             deviations.append((config_num, avg_deviation, config))
         
-        # Sort by deviation (descending) and take top 50
+        # Sort by deviation (descending) and take top 100
         deviations.sort(key=lambda x: x[1], reverse=True)
-        top_50 = deviations[:50]
+        top_100 = deviations[:100]
         
         # Store results in session state
-        st.session_state["_generate_30_results"] = top_50
+        st.session_state["_generate_30_results"] = top_100
         st.rerun()
 
 # Display results if they exist
 if st.session_state.get("_generate_30_results", None):
-    top_50 = st.session_state["_generate_30_results"]
+    top_100 = st.session_state["_generate_30_results"]
     
     st.markdown("---")
-    st.markdown("### Top 50 Most Deviating Configurations")
-    st.caption("These configurations have the largest average distance from the original points.")
+    st.markdown("### Top 100 Most Deviating Configurations (from 1000 generated)")
+    st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
+    
+**Deviation Metrics (calculated per configuration):**
+- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions. This measures overall spatial displacement.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps. Values range from 0° (parallel) to 180° (opposite direction).
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps. This captures variations in vehicle speed or trajectory compression/expansion.
+
+Configurations are ranked by average deviation (highest first). Each visualization shows the complete generated trajectory with lane markings for context.""")
     
     # Store metrics for summary chart
     config_metrics: list[dict[str, Any]] = []
     
-    # Display each of the top 50
-    for rank, (config_num, deviation, config) in enumerate(top_50, 1):
+    # Display each of the top 100
+    for rank, (config_num, deviation, config) in enumerate(top_100, 1):
             st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
             
             # Get configuration characteristics
@@ -5231,7 +5246,8 @@ if st.session_state.get("_generate_30_results", None):
     std_avg = float(np.std(avg_devs))
     
     # Display statistics summary
-    st.markdown("### Statistics Summary (Top 50)")
+    st.markdown("### Statistics Summary (Top 100 configurations)")
+    st.caption("Mean ± standard deviation calculated across the top 100 most deviating configurations. Lower standard deviation indicates consistent behavior across these high-deviation cases.")
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -5244,8 +5260,14 @@ if st.session_state.get("_generate_30_results", None):
     st.markdown("---")
     
     # Display data table
-    st.markdown("### Top 50 Configurations - Detailed Metrics")
-    st.caption("Copy this table to PowerPoint by selecting and copying the data below.")
+    st.markdown("### Top 100 Configurations - Detailed Metrics")
+    st.caption("""Complete metrics for the 100 most deviating configurations (selected from 1000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
+    
+- **Rank**: Position in descending order of average deviation (1 = highest deviation)
+- **Config #**: Unique configuration identifier from the generation batch (1-1000)
+- **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
+- **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
+- **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
     
     # Create DataFrame for display
     df_metrics = pd.DataFrame(config_metrics)
@@ -5265,16 +5287,22 @@ if st.session_state.get("_generate_30_results", None):
     st.download_button(
         label="📥 Download as CSV",
         data=csv,
-        file_name="top_50_configurations_metrics.csv",
+        file_name="top_100_configurations_metrics.csv",
         mime="text/csv",
-        key="download_metrics_csv"
+        key="download_metrics_csv",
+        help="Download all metrics as CSV file for further analysis in Excel, Python, R, etc."
     )
     
     st.markdown("---")
     
     # Display summary metrics chart
-    st.markdown("### Maximum Deviations Summary (Top 50)")
-    st.caption("Maximum angle and distance deviations for each of the top 50 configurations.")
+    st.markdown("### Maximum Deviations Summary (Top 100 from 1000 generated)")
+    st.caption("""Visual comparison of maximum deviations across the top 100 configurations. Red dashed line indicates the mean value calculated from these 100 configurations.
+    
+- **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
+- **Right chart**: Maximum distance deviation shows the largest speed/spacing variation in any trajectory segment
+
+These metrics help identify configurations with extreme local variations, even if their average deviation is moderate.""")
     
     # Create bar chart
     fig_metrics = Figure(figsize=(12, 5), dpi=100)
@@ -5289,29 +5317,29 @@ if st.session_state.get("_generate_30_results", None):
     
     # Angle deviations bar chart
     ax1.bar(x_positions, angle_devs, color='#FF7F0E', alpha=0.7, edgecolor='black', linewidth=0.5)
-    ax1.set_xlabel("Configuration", fontsize=11)
+    ax1.set_xlabel("Configuration Rank", fontsize=11)
     ax1.set_ylabel("Max Angle Deviation (degrees)", fontsize=11)
-    ax1.set_title("Maximum Angle Deviation (Top 50)", fontsize=12, fontweight='bold')
+    ax1.set_title("Maximum Angle Deviation (Top 100)", fontsize=12, fontweight='bold')
     ax1.grid(axis='y', alpha=0.3, linestyle='--')
     ax1.axhline(y=mean_angle, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_angle:.1f}°')
     ax1.legend()
     
-    # Only show x-tick labels for every 5th config
-    ax1.set_xticks([i for i in range(0, len(config_labels), 5)])
-    ax1.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 5)], rotation=45, ha='right')
+    # Only show x-tick labels for every 10th config
+    ax1.set_xticks([i for i in range(0, len(config_labels), 10)])
+    ax1.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
     
     # Distance deviations bar chart
     ax2.bar(x_positions, dist_devs, color='#1F77B4', alpha=0.7, edgecolor='black', linewidth=0.5)
-    ax2.set_xlabel("Configuration", fontsize=11)
+    ax2.set_xlabel("Configuration Rank", fontsize=11)
     ax2.set_ylabel("Max Distance Deviation (m)", fontsize=11)
-    ax2.set_title("Maximum Distance Deviation (Top 50)", fontsize=12, fontweight='bold')
+    ax2.set_title("Maximum Distance Deviation (Top 100)", fontsize=12, fontweight='bold')
     ax2.grid(axis='y', alpha=0.3, linestyle='--')
     ax2.axhline(y=mean_dist, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_dist:.2f}m')
     ax2.legend()
     
-    # Only show x-tick labels for every 5th config
-    ax2.set_xticks([i for i in range(0, len(config_labels), 5)])
-    ax2.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 5)], rotation=45, ha='right')
+    # Only show x-tick labels for every 10th config
+    ax2.set_xticks([i for i in range(0, len(config_labels), 10)])
+    ax2.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
     
     fig_metrics.tight_layout()
     
