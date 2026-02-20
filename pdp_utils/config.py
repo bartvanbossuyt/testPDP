@@ -36,4 +36,12 @@ LANE_CONFIGURATIONS[16] = {
     "offset_vertical": -3.0,
 }
 LANE_CONFIGURATIONS[17] = {**DEFAULT_LANE_SETUP, "bounds": {"x": (55, 115), "y": (40, 125)}, "description": "Curved overtaking maneuver"}
+LANE_CONFIGURATIONS[68] = {
+    **DEFAULT_LANE_SETUP,
+    "lanes": 2,
+    "lane_width": 2.0,
+    "offset": 0.0,
+    "force_horizontal": True,
+    "description": "Straight 2-lane overtaking maneuver",
+}
 
