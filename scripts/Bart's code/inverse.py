@@ -1844,6 +1844,20 @@ st.markdown("""
     .auto-detect-bounds-wrapper button p {
         color: #ffffff !important;
     }
+    /* Style Generate 5000 button: light red background */
+    .generate-5000-wrapper button {
+        background-color: #f8d7da !important;
+        color: #721c24 !important;
+        border: 1px solid #f5c2c7 !important;
+    }
+    .generate-5000-wrapper button:hover:not(:disabled) {
+        background-color: #f1b0b7 !important;
+        color: #721c24 !important;
+        border: 1px solid #eea7af !important;
+    }
+    .generate-5000-wrapper button p {
+        color: #721c24 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -2059,7 +2073,7 @@ else:
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-# ============= Advanced: Generate 30 configs and show 5 most deviating ============
+# ============= Advanced: Batch generation & deviation analysis ============
 st.markdown("<hr style='margin:1.5rem 0 0.7rem 0;' />", unsafe_allow_html=True)
 st.markdown("**Advanced Generation & Analysis**")
 
@@ -2079,6 +2093,13 @@ with advanced_col2:
         key="btn_generate_30",
         help="Automatically generates 1000 configurations using your current settings (iterations, PDP variant, buffer, roughness, threshold). Displays detailed analysis of the 100 configurations that deviate most from the original, including visualizations, statistics, and downloadable data."
     )
+    st.markdown('<div class="generate-5000-wrapper">', unsafe_allow_html=True)
+    generate_5000_btn = st.button(
+        "Generate 5000 & Show Top 500",
+        key="btn_generate_5000",
+        help="Automatically generates 5000 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 5 iterations only for this button and shows the top 500 most deviating configurations with full analysis."
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
@@ -4882,10 +4903,14 @@ if generate_btn:
         # Run the binary search generator
         generate_binary_multipoint()
 
-# ============= Generate 30 configs and show top 5 handler ============
+# ============= Advanced batch generation handlers ============
 if generate_30_btn:
     # Store in session state that we want to generate
     st.session_state["_generate_30_requested"] = True
+
+if generate_5000_btn:
+    # Store in session state that we want to generate 5000
+    st.session_state["_generate_5000_requested"] = True
 
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
@@ -4987,6 +5012,105 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
         st.session_state["_generate_30_results"] = top_100
         st.rerun()
 
+if st.session_state.get("_generate_5000_requested", False) and not st.session_state.get("_generate_5000_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 5000 Configurations...")
+    st.caption("This may take several minutes. Progress is shown below.")
+    
+    # Store current settings (iterations forced to 5 for this button)
+    current_iterations = 5
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    
+    # Get threshold settings
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    
+    # Generate 5000 configurations
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_generated_configs: list[dict[str, Any]] = []
+    
+    for config_idx in range(5000):
+        status_text.text(f"Generating configuration {config_idx + 1}/5000...")
+        
+        # Generate one configuration using the core logic
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        
+        # Use the first variant
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        
+        # Run iterations
+        for iteration in range(current_iterations):
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y
+            )
+        
+        # Store configuration
+        if successful_points:
+            config_data = {
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": current_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold
+            }
+            all_generated_configs.append(config_data)
+        
+        progress_bar.progress((config_idx + 1) / 5000)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_5000_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        
+        # Calculate deviation for each configuration
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        
+        for config in all_generated_configs:
+            total_deviation = 0.0
+            num_points = 0
+            
+            successful_points = config.get("successful_points", [])
+            for sp in successful_points:
+                parent_coord = sp["parent_point"]
+                generated_coord = sp["point"]
+                distance = float(np.linalg.norm(generated_coord - parent_coord))
+                total_deviation += distance
+                num_points += 1
+            
+            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, avg_deviation, config))
+        
+        # Sort by deviation (descending) and take top 500
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_500 = deviations[:500]
+        
+        # Store results in session state
+        st.session_state["_generate_5000_results"] = top_500
+        st.rerun()
+
 # Display results if they exist
 if st.session_state.get("_generate_30_results", None):
     top_100 = st.session_state["_generate_30_results"]
@@ -5007,6 +5131,377 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     
     # Display each of the top 100
     for rank, (config_num, deviation, config) in enumerate(top_100, 1):
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.3f}m)")
+            
+            # Get configuration characteristics
+            pdp_variant = config.get("pdp_variant", "fundamental")
+            iterations = config.get("iterations", "N/A")
+            threshold_mode = config.get("threshold_mode", "Percentage")
+            max_threshold = config.get("max_threshold", 0.0)
+            
+            # Calculate angle and distance deviations
+            successful_points = config.get("successful_points", [])
+            
+            # Create mapping from original_parent_idx to generated coordinates
+            generated_coords_map: dict[int, np.ndarray] = {}
+            for sp in successful_points:
+                orig_idx = sp["original_parent_idx"]
+                gen_coord = sp["point"]
+                generated_coords_map[orig_idx] = gen_coord
+            
+            max_angle_deviation = 0.0
+            max_distance_deviation = 0.0
+            
+            # Process each object
+            global_idx = 0
+            for oid in sorted(all_points_plot.keys()):
+                n_pts = all_points_plot[oid].shape[0]
+                original_pts = all_points_plot[oid]
+                
+                # Build generated points for this object
+                generated_pts_list = []
+                for local_idx in range(n_pts):
+                    if global_idx in generated_coords_map:
+                        coord = generated_coords_map[global_idx]
+                    else:
+                        coord = original_pts[local_idx]
+                    generated_pts_list.append(coord)
+                    global_idx += 1
+                
+                generated_pts = np.array(generated_pts_list)
+                
+                # Calculate deviations for consecutive points
+                for i in range(n_pts - 1):
+                    # Original angle and distance
+                    orig_dx = original_pts[i+1, 0] - original_pts[i, 0]
+                    orig_dy = original_pts[i+1, 1] - original_pts[i, 1]
+                    orig_angle = np.degrees(np.arctan2(orig_dy, orig_dx))
+                    orig_dist = np.sqrt(orig_dx**2 + orig_dy**2)
+                    
+                    # Generated angle and distance
+                    gen_dx = generated_pts[i+1, 0] - generated_pts[i, 0]
+                    gen_dy = generated_pts[i+1, 1] - generated_pts[i, 1]
+                    gen_angle = np.degrees(np.arctan2(gen_dy, gen_dx))
+                    gen_dist = np.sqrt(gen_dx**2 + gen_dy**2)
+                    
+                    # Angle deviation (handle wraparound)
+                    angle_diff = abs(gen_angle - orig_angle)
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    max_angle_deviation = max(max_angle_deviation, angle_diff)
+                    
+                    # Distance deviation
+                    dist_diff = abs(gen_dist - orig_dist)
+                    max_distance_deviation = max(max_distance_deviation, dist_diff)
+            
+            # Store metrics
+            config_metrics.append({
+                "config_num": config_num,
+                "rank": rank,
+                "avg_deviation": deviation,
+                "max_angle_dev": max_angle_deviation,
+                "max_dist_dev": max_distance_deviation
+            })
+            
+            # Format threshold display
+            if threshold_mode == "Percentage":
+                threshold_display = f"{max_threshold:.1%}"
+            else:
+                threshold_display = str(int(max_threshold))
+            
+            # Create visualization - only right plot for download
+            fig = Figure(figsize=(6, 5.5), dpi=120)
+            canvas = FigureCanvas(fig)
+            
+            # Single subplot: generated (right)
+            ax_right = fig.add_subplot(111)
+            
+            # Setup axis
+            ax_right.set_xlim(*XLIM)
+            ax_right.set_ylim(*YLIM)
+            ax_right.set_aspect("equal", adjustable="box")
+            for sp in ax_right.spines.values():
+                sp.set_linewidth(0.9)
+                sp.set_color("#222")
+            ax_right.tick_params(axis="both", labelsize=9, width=0.8, color="#222")
+            ax_right.set_xlabel("d1", fontsize=11, labelpad=8)
+            ax_right.set_ylabel("d2", fontsize=11, labelpad=8)
+            
+            # Add banner text inside the top of right subplot (two lines)
+            banner_line1 = f"Variant 1/1 ({pdp_variant}) | Config {config_num} | Iteration {iterations}"
+            banner_line2 = f"Max threshold {threshold_display}"
+            banner_text = f"{banner_line1}\n{banner_line2}"
+            ax_right.text(0.5, 0.97, banner_text, 
+                        transform=ax_right.transAxes,
+                        ha='center', va='top', 
+                        fontsize=8, fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5DEB3', edgecolor='black', linewidth=1.5))
+            
+            # Define colors locally
+            obj_colors = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
+            
+            # Calculate average vehicle y-position for lane positioning
+            all_y_coords = []
+            for o_id in sorted(all_points_plot.keys()):
+                pts = all_points_plot[o_id]
+                if pts.shape[0] > 0:
+                    all_y_coords.extend(pts[:, 1].tolist())
+            
+            avg_y = float(np.mean(all_y_coords)) if all_y_coords else 0.0
+            lane_width = 3.0
+            
+            # Draw generated on right
+            ax_right.set_title(f"Generated (Config #{config_num})", fontsize=12, fontweight='bold')
+            
+            # Draw lanes positioned at vehicle location
+            lane_offsets = [-lane_width, 0.0, lane_width]
+            for offset in lane_offsets:
+                lane_y = avg_y + offset
+                ax_right.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
+            
+            # Build the generated configuration
+            successful_points = config.get("successful_points", [])
+            
+            # Create a mapping from original_parent_idx to generated coordinates
+            generated_coords_map: dict[int, np.ndarray] = {}
+            for sp in successful_points:
+                orig_idx = sp["original_parent_idx"]
+                gen_coord = sp["point"]
+                generated_coords_map[orig_idx] = gen_coord
+            
+            # Build complete point set for visualization (all objects, all timestamps)
+            generated_points_dict: dict[int, list[tuple[np.ndarray, float]]] = {}
+            
+            global_idx = 0
+            for oid in sorted(all_points_plot.keys()):
+                n_pts = all_points_plot[oid].shape[0]
+                vals = all_vals_plot[oid]
+                
+                if oid not in generated_points_dict:
+                    generated_points_dict[oid] = []
+                
+                for local_idx in range(n_pts):
+                    # Use generated coordinate if available, otherwise use original
+                    if global_idx in generated_coords_map:
+                        coord = generated_coords_map[global_idx]
+                    else:
+                        coord = all_points_plot[oid][local_idx]
+                    
+                    t_val = float(vals[local_idx])
+                    generated_points_dict[oid].append((coord, t_val))
+                    global_idx += 1
+            
+            # Draw generated trajectories
+            for i, o_id in enumerate(sorted(generated_points_dict.keys())):
+                points_list = generated_points_dict[o_id]
+                # Sort by timestamp
+                points_list.sort(key=lambda x: x[1])
+                pts_array = np.array([p[0] for p in points_list])
+                vals_array = np.array([p[1] for p in points_list])
+                
+                color = obj_colors[i % len(obj_colors)]
+                label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
+                ax_right.plot(pts_array[:, 0], pts_array[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
+                
+                # Add point annotations
+                offsets = [(3, 3), (3, -8), (-8, 3)]
+                for j, ((x, y), tval) in enumerate(zip(pts_array, vals_array)):
+                    ax_right.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
+                    off = offsets[j % len(offsets)]
+                    try:
+                        tnum = float(tval)
+                    except Exception:
+                        tnum = float(np.array(tval, dtype=float))
+                    lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
+                    # Only add label if both label and lbl are valid
+                    if label and lbl:
+                        try:
+                            label_text = f"$\\mathit{{{label}}}_{{{lbl}}}$"
+                            ax_right.annotate(
+                                label_text,
+                                xy=(x, y),
+                                xytext=off,
+                                textcoords="offset points",
+                                fontsize=8,
+                                color=color,
+                                ha="center",
+                                va="center",
+                            )
+                        except Exception:
+                            # If LaTeX fails, skip this label
+                            pass
+            
+            try:
+                fig.tight_layout()
+            except Exception:
+                # If tight_layout fails, continue without it
+                pass
+            
+            # Save to buffer
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=120, bbox_inches='tight')
+            buf.seek(0)
+            
+            # Display image
+            st.image(buf, use_container_width=True)
+            
+            # Download button
+            buf.seek(0)
+            st.download_button(
+                label=f"📥 Download Configuration #{config_num}",
+                data=buf,
+                file_name=f"config_{config_num}_deviation_{deviation:.3f}m.png",
+                mime="image/png",
+                key=f"download_config_{config_num}"
+            )
+            
+            st.markdown("---")
+    
+    # Calculate statistics
+    angle_devs = [m['max_angle_dev'] for m in config_metrics]
+    dist_devs = [m['max_dist_dev'] for m in config_metrics]
+    avg_devs = [m['avg_deviation'] for m in config_metrics]
+    
+    mean_angle = float(np.mean(angle_devs))
+    std_angle = float(np.std(angle_devs))
+    mean_dist = float(np.mean(dist_devs))
+    std_dist = float(np.std(dist_devs))
+    mean_avg = float(np.mean(avg_devs))
+    std_avg = float(np.std(avg_devs))
+    
+    # Display statistics summary
+    st.markdown("### Statistics Summary (Top 100 configurations)")
+    st.caption("Mean ± standard deviation calculated across the top 100 most deviating configurations. Lower standard deviation indicates consistent behavior across these high-deviation cases.")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Avg Deviation", f"{mean_avg:.2f}m ± {std_avg:.2f}m")
+    with col2:
+        st.metric("Max Angle Dev", f"{mean_angle:.1f}° ± {std_angle:.1f}°")
+    with col3:
+        st.metric("Max Distance Dev", f"{mean_dist:.2f}m ± {std_dist:.2f}m")
+    
+    st.markdown("---")
+    
+    # Display data table
+    st.markdown("### Top 100 Configurations - Detailed Metrics")
+    st.caption("""Complete metrics for the 100 most deviating configurations (selected from 1000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
+    
+- **Rank**: Position in descending order of average deviation (1 = highest deviation)
+- **Config #**: Unique configuration identifier from the generation batch (1-1000)
+- **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
+- **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
+- **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
+    
+    # Create DataFrame for display
+    df_metrics = pd.DataFrame(config_metrics)
+    df_metrics = df_metrics[['rank', 'config_num', 'avg_deviation', 'max_angle_dev', 'max_dist_dev']]
+    df_metrics.columns = ['Rank', 'Config #', 'Avg Deviation (m)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
+    
+    # Format numeric columns
+    df_metrics['Avg Deviation (m)'] = df_metrics['Avg Deviation (m)'].apply(lambda x: f"{x:.2f}")
+    df_metrics['Max Angle Dev (°)'] = df_metrics['Max Angle Dev (°)'].apply(lambda x: f"{x:.1f}")
+    df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.2f}")
+    
+    # Display table
+    st.dataframe(df_metrics, use_container_width=True, height=400)
+    
+    # Add download button for CSV
+    csv = df_metrics.to_csv(index=False)
+    st.download_button(
+        label="📥 Download as CSV",
+        data=csv,
+        file_name="top_100_configurations_metrics.csv",
+        mime="text/csv",
+        key="download_metrics_csv",
+        help="Download all metrics as CSV file for further analysis in Excel, Python, R, etc."
+    )
+    
+    st.markdown("---")
+    
+    # Display summary metrics chart
+    st.markdown("### Maximum Deviations Summary (Top 100 from 1000 generated)")
+    st.caption("""Visual comparison of maximum deviations across the top 100 configurations. Red dashed line indicates the mean value calculated from these 100 configurations.
+    
+- **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
+- **Right chart**: Maximum distance deviation shows the largest speed/spacing variation in any trajectory segment
+
+These metrics help identify configurations with extreme local variations, even if their average deviation is moderate.""")
+    
+    # Create bar chart
+    fig_metrics = Figure(figsize=(12, 5), dpi=100)
+    canvas_metrics = FigureCanvas(fig_metrics)
+    
+    ax1 = fig_metrics.add_subplot(121)
+    ax2 = fig_metrics.add_subplot(122)
+    
+    # Extract data
+    config_labels = [f"#{m['config_num']}" for m in config_metrics]
+    x_positions = range(len(config_labels))
+    
+    # Angle deviations bar chart
+    ax1.bar(x_positions, angle_devs, color='#FF7F0E', alpha=0.7, edgecolor='black', linewidth=0.5)
+    ax1.set_xlabel("Configuration Rank", fontsize=11)
+    ax1.set_ylabel("Max Angle Deviation (degrees)", fontsize=11)
+    ax1.set_title("Maximum Angle Deviation (Top 100)", fontsize=12, fontweight='bold')
+    ax1.grid(axis='y', alpha=0.3, linestyle='--')
+    ax1.axhline(y=mean_angle, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_angle:.1f}°')
+    ax1.legend()
+    
+    # Only show x-tick labels for every 10th config
+    ax1.set_xticks([i for i in range(0, len(config_labels), 10)])
+    ax1.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
+    
+    # Distance deviations bar chart
+    ax2.bar(x_positions, dist_devs, color='#1F77B4', alpha=0.7, edgecolor='black', linewidth=0.5)
+    ax2.set_xlabel("Configuration Rank", fontsize=11)
+    ax2.set_ylabel("Max Distance Deviation (m)", fontsize=11)
+    ax2.set_title("Maximum Distance Deviation (Top 100)", fontsize=12, fontweight='bold')
+    ax2.grid(axis='y', alpha=0.3, linestyle='--')
+    ax2.axhline(y=mean_dist, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_dist:.2f}m')
+    ax2.legend()
+    
+    # Only show x-tick labels for every 10th config
+    ax2.set_xticks([i for i in range(0, len(config_labels), 10)])
+    ax2.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
+    
+    fig_metrics.tight_layout()
+    
+    # Display chart
+    buf_metrics = io.BytesIO()
+    fig_metrics.savefig(buf_metrics, format='png', dpi=100, bbox_inches='tight')
+    buf_metrics.seek(0)
+    st.image(buf_metrics, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # Add a clear button
+    if st.button("Clear Results & Cache", key="clear_top5_results"):
+        st.session_state["_generate_30_requested"] = False
+        st.session_state["_generate_30_results"] = None
+        st.cache_data.clear()
+        st.rerun()
+
+# Display results for 5000-config generation if they exist
+if st.session_state.get("_generate_5000_results", None):
+    top_500 = st.session_state["_generate_5000_results"]
+    
+    st.markdown("---")
+    st.markdown("### Top 500 Most Deviating Configurations (from 5000 generated)")
+    st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
+    
+**Deviation Metrics (calculated per configuration):**
+- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions. This measures overall spatial displacement.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps. Values range from 0° (parallel) to 180° (opposite direction).
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps. This captures variations in vehicle speed or trajectory compression/expansion.
+
+Configurations are ranked by average deviation (highest first). Each visualization shows the complete generated trajectory with lane markings for context.""")
+    
+    # Store metrics for summary chart
+    config_metrics: list[dict[str, Any]] = []
+    
+    # Display each of the top 500
+    for rank, (config_num, deviation, config) in enumerate(top_500, 1):
             st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
             
             # Get configuration characteristics
@@ -5228,7 +5723,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
                 data=buf,
                 file_name=f"config_{config_num}_deviation_{deviation:.1f}m.png",
                 mime="image/png",
-                key=f"download_config_{config_num}"
+                key=f"download_config_{config_num}_top300"
             )
             
             st.markdown("---")
@@ -5246,25 +5741,25 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     std_avg = float(np.std(avg_devs))
     
     # Display statistics summary
-    st.markdown("### Statistics Summary (Top 100 configurations)")
-    st.caption("Mean ± standard deviation calculated across the top 100 most deviating configurations. Lower standard deviation indicates consistent behavior across these high-deviation cases.")
+    st.markdown("### Statistics Summary (Top 500 configurations)")
+    st.caption("Mean ± standard deviation calculated across the top 500 most deviating configurations. Lower standard deviation indicates consistent behavior across these high-deviation cases.")
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Avg Deviation", f"{mean_avg:.2f}m ± {std_avg:.2f}m")
+        st.metric("Avg Deviation", f"{mean_avg:.3f}m ± {std_avg:.3f}m")
     with col2:
-        st.metric("Max Angle Dev", f"{mean_angle:.1f}° ± {std_angle:.1f}°")
+        st.metric("Max Angle Dev", f"{mean_angle:.3f}° ± {std_angle:.3f}°")
     with col3:
-        st.metric("Max Distance Dev", f"{mean_dist:.2f}m ± {std_dist:.2f}m")
+        st.metric("Max Distance Dev", f"{mean_dist:.3f}m ± {std_dist:.3f}m")
     
     st.markdown("---")
     
     # Display data table
-    st.markdown("### Top 100 Configurations - Detailed Metrics")
-    st.caption("""Complete metrics for the 100 most deviating configurations (selected from 1000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
+    st.markdown("### Top 500 Configurations - Detailed Metrics")
+    st.caption("""Complete metrics for the 500 most deviating configurations (selected from 5000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
     
 - **Rank**: Position in descending order of average deviation (1 = highest deviation)
-- **Config #**: Unique configuration identifier from the generation batch (1-1000)
+- **Config #**: Unique configuration identifier from the generation batch (1-5000)
 - **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
 - **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
 - **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
@@ -5275,9 +5770,9 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     df_metrics.columns = ['Rank', 'Config #', 'Avg Deviation (m)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
     
     # Format numeric columns
-    df_metrics['Avg Deviation (m)'] = df_metrics['Avg Deviation (m)'].apply(lambda x: f"{x:.2f}")
-    df_metrics['Max Angle Dev (°)'] = df_metrics['Max Angle Dev (°)'].apply(lambda x: f"{x:.1f}")
-    df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.2f}")
+    df_metrics['Avg Deviation (m)'] = df_metrics['Avg Deviation (m)'].apply(lambda x: f"{x:.3f}")
+    df_metrics['Max Angle Dev (°)'] = df_metrics['Max Angle Dev (°)'].apply(lambda x: f"{x:.3f}")
+    df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.3f}")
     
     # Display table
     st.dataframe(df_metrics, use_container_width=True, height=400)
@@ -5287,17 +5782,17 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     st.download_button(
         label="📥 Download as CSV",
         data=csv,
-        file_name="top_100_configurations_metrics.csv",
+        file_name="top_500_configurations_metrics.csv",
         mime="text/csv",
-        key="download_metrics_csv",
+        key="download_metrics_csv_top500",
         help="Download all metrics as CSV file for further analysis in Excel, Python, R, etc."
     )
     
     st.markdown("---")
     
     # Display summary metrics chart
-    st.markdown("### Maximum Deviations Summary (Top 100 from 1000 generated)")
-    st.caption("""Visual comparison of maximum deviations across the top 100 configurations. Red dashed line indicates the mean value calculated from these 100 configurations.
+    st.markdown("### Maximum Deviations Summary (Top 500 from 5000 generated)")
+    st.caption("""Visual comparison of maximum deviations across the top 500 configurations. Red dashed line indicates the mean value calculated from these 500 configurations.
     
 - **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
 - **Right chart**: Maximum distance deviation shows the largest speed/spacing variation in any trajectory segment
@@ -5319,27 +5814,27 @@ These metrics help identify configurations with extreme local variations, even i
     ax1.bar(x_positions, angle_devs, color='#FF7F0E', alpha=0.7, edgecolor='black', linewidth=0.5)
     ax1.set_xlabel("Configuration Rank", fontsize=11)
     ax1.set_ylabel("Max Angle Deviation (degrees)", fontsize=11)
-    ax1.set_title("Maximum Angle Deviation (Top 100)", fontsize=12, fontweight='bold')
+    ax1.set_title("Maximum Angle Deviation (Top 500)", fontsize=12, fontweight='bold')
     ax1.grid(axis='y', alpha=0.3, linestyle='--')
     ax1.axhline(y=mean_angle, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_angle:.1f}°')
     ax1.legend()
     
-    # Only show x-tick labels for every 10th config
-    ax1.set_xticks([i for i in range(0, len(config_labels), 10)])
-    ax1.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
+    # Only show x-tick labels for every 30th config
+    ax1.set_xticks([i for i in range(0, len(config_labels), 50)])
+    ax1.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 50)], rotation=45, ha='right')
     
     # Distance deviations bar chart
     ax2.bar(x_positions, dist_devs, color='#1F77B4', alpha=0.7, edgecolor='black', linewidth=0.5)
     ax2.set_xlabel("Configuration Rank", fontsize=11)
     ax2.set_ylabel("Max Distance Deviation (m)", fontsize=11)
-    ax2.set_title("Maximum Distance Deviation (Top 100)", fontsize=12, fontweight='bold')
+    ax2.set_title("Maximum Distance Deviation (Top 500)", fontsize=12, fontweight='bold')
     ax2.grid(axis='y', alpha=0.3, linestyle='--')
     ax2.axhline(y=mean_dist, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_dist:.2f}m')
     ax2.legend()
     
-    # Only show x-tick labels for every 10th config
-    ax2.set_xticks([i for i in range(0, len(config_labels), 10)])
-    ax2.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 10)], rotation=45, ha='right')
+    # Only show x-tick labels for every 30th config
+    ax2.set_xticks([i for i in range(0, len(config_labels), 50)])
+    ax2.set_xticklabels([config_labels[i] for i in range(0, len(config_labels), 50)], rotation=45, ha='right')
     
     fig_metrics.tight_layout()
     
@@ -5352,9 +5847,9 @@ These metrics help identify configurations with extreme local variations, even i
     st.markdown("---")
     
     # Add a clear button
-    if st.button("Clear Results & Cache", key="clear_top5_results"):
-        st.session_state["_generate_30_requested"] = False
-        st.session_state["_generate_30_results"] = None
+    if st.button("Clear Results & Cache", key="clear_top500_results"):
+        st.session_state["_generate_5000_requested"] = False
+        st.session_state["_generate_5000_results"] = None
         st.cache_data.clear()
         st.rerun()
 
