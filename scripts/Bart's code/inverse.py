@@ -770,6 +770,9 @@ def _extract_centerline_from_data(c_value: int) -> np.ndarray | None:
     if config_df.empty:
         return None
 
+    lane_cfg: dict[str, Any] = LANE_CONFIGURATIONS.get(c_value, {})
+    force_horizontal = bool(lane_cfg.get("force_horizontal", False))
+
     # Calculate vehicle speeds to identify slowest vehicle (should be on right)
     speeds = _calculate_vehicle_speeds(config_df)
     
@@ -844,8 +847,13 @@ def _extract_centerline_from_data(c_value: int) -> np.ndarray | None:
     force_horizontal = lane_cfg.get("force_horizontal", False)
     
     if force_horizontal and centerline.shape[0] >= 2:
-        # Force completely horizontal lanes: use average y-coordinate
-        avg_y = np.mean(centerline[:, 1])
+        # Force completely horizontal lanes.
+        # If provided, use explicit configured centerline y-position.
+        forced_centerline_y = lane_cfg.get("centerline_y")
+        if forced_centerline_y is not None:
+            avg_y = float(forced_centerline_y)
+        else:
+            avg_y = float(np.mean(centerline[:, 1]))
         # Create a horizontal line from min to max x-coordinate at constant y
         x_min = np.min(centerline[:, 0])
         x_max = np.max(centerline[:, 0])
@@ -912,6 +920,9 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     config_df = _df_all[_df_all["c"] == c_value]
     if config_df.empty:
         return None
+
+    lane_cfg: dict[str, Any] = LANE_CONFIGURATIONS.get(c_value, {})
+    force_horizontal = bool(lane_cfg.get("force_horizontal", False))
     
     # Calculate speeds to determine lane count and positioning
     speeds = _calculate_vehicle_speeds(config_df)
@@ -1015,8 +1026,13 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         # vehicles end up centered in their assigned lanes.
         
         half_width = (lane_width * lane_count) / 2.0
-        
-        if len(speeds) == 1:
+        forced_centerline_y = lane_cfg.get("centerline_y")
+        lock_centerline = bool(force_horizontal and forced_centerline_y is not None)
+
+        if lock_centerline:
+            offset = 0.0
+            print(f"[LANE BUILD] Config {c_value}: centerline locked at y={float(forced_centerline_y):.2f} (auto-offset disabled)")
+        elif len(speeds) == 1:
             # Single vehicle: place it in the center lane
             single_obj = list(speeds.keys())[0]
             single_df = config_df[config_df['o'] == single_obj]
@@ -1059,6 +1075,9 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             for i, boundary in enumerate(boundaries):
                 y_range: list[float] = [float(np.min(boundary[:, 1])), float(np.max(boundary[:, 1]))]
                 print(f"[LANE BUILD]   Boundary {i} y-range: [{y_range[0]:.2f}, {y_range[1]:.2f}]")
+        if centerline.shape[0] > 0:
+            centerline_y_dbg = float(np.mean(centerline[:, 1]))
+            print(f"[LANE BUILD] Lane y-positions -> lower edge: {centerline_y_dbg - half_width:.2f}, dashed divider: {centerline_y_dbg:.2f}, upper edge: {centerline_y_dbg + half_width:.2f}")
 
         interior_count = max(0, lane_count - 1)
         center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
@@ -1328,7 +1347,7 @@ with sc1:
         selected_c = st.selectbox(
             "Configuration (c)",
             options=available_configs,
-            index=available_configs.index(7) if 7 in available_configs else 0,
+            index=available_configs.index(68) if 68 in available_configs else (available_configs.index(7) if 7 in available_configs else 0),
             key="cfg_c",
             help="Select which configuration to use as the reference. Each configuration has its own set of k and l trajectories."
         )
@@ -1367,7 +1386,7 @@ if not _t_common:
     st.stop()
 
 n_timepoints = len(_t_common)
-default_window = min(8, n_timepoints)
+default_window = min(130, n_timepoints)
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
@@ -1391,8 +1410,8 @@ with sc3:
     valid_starts = _t_common[:valid_start_count]
     
     if len(valid_starts) > 1:
-        # Try to default to 38 if available, otherwise use first
-        default_start_idx = valid_starts.index(38) if 38 in valid_starts else 0
+        # Default to start timestamp 0 if available, otherwise use first
+        default_start_idx = valid_starts.index(0) if 0 in valid_starts else 0
         start_t = st.selectbox(
             "Starting time (t)",
             options=valid_starts,
@@ -6512,23 +6531,49 @@ def create_smooth_animation(
     # Configure animation
     fig.frames = frames
     
-    # Calculate optimal y-range to maximize vertical space
-    all_y_values: list[float] = []
+    # Determine axis ranges for animation.
+    # Prefer explicit lane-config bounds when available, otherwise use computed defaults.
+    lane_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
+    lane_bounds = lane_cfg.get("bounds") if lane_cfg else None
+    x_range: list[float] = [xlim[0], xlim[1]]
+    y_range: list[float] = [ylim[0], ylim[1]]
+
+    if isinstance(lane_bounds, dict):
+        x_bounds = lane_bounds.get("x")
+        y_bounds = lane_bounds.get("y")
+        if x_bounds and len(x_bounds) == 2:
+            x_range = [float(x_bounds[0]), float(x_bounds[1])]
+        if y_bounds and len(y_bounds) == 2:
+            y_range = [float(y_bounds[0]), float(y_bounds[1])]
+
+    # If there are no explicit y-bounds, keep the adaptive behavior as fallback.
+    if not (isinstance(lane_bounds, dict) and lane_bounds.get("y")):
+        all_y_values: list[float] = []
+        for traj_data in all_frames_data:
+            all_y_values.extend(traj_data["y_smooth"])
+        if all_y_values:
+            y_min: float = float(min(all_y_values))
+            y_max: float = float(max(all_y_values))
+            y_margin: float = max((y_max - y_min) * 0.1, 0.25)
+            y_range = [y_min - y_margin, y_max + y_margin]
+
+    # Always ensure the right x-bound shows the full trajectory extent.
+    all_x_values: list[float] = []
     for traj_data in all_frames_data:
-        all_y_values.extend(traj_data["y_smooth"])
-    if all_y_values:
-        y_min: float = float(min(all_y_values))
-        y_max: float = float(max(all_y_values))
-        y_margin: float = (y_max - y_min) * 0.1  # 10% margin
-        y_range: list[float] = [y_min - y_margin, y_max + y_margin]
-    else:
-        y_range: list[float] = [ylim[0], ylim[1]]
+        all_x_values.extend(traj_data["x_smooth"])
+    if external_pts_for_window:
+        ext_arr = np.array(external_pts_for_window)
+        if ext_arr.size > 0:
+            all_x_values.extend(ext_arr[:, 0].tolist())
+    if all_x_values:
+        x_max_data = float(max(all_x_values))
+        x_range[1] = max(x_range[1], x_max_data)
     
     fig.update_layout(
         width=1100,
         height=900,
         xaxis=dict(
-            range=[xlim[0], xlim[1]],
+            range=x_range,
             title="d1",
             showgrid=True,
             gridcolor='lightgray'
