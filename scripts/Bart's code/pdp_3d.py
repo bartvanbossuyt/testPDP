@@ -13,73 +13,100 @@ def build_trajectory(
 	azimuth_deg: float,
 	elevation_deg: float,
 	n_timestamps: int,
+	air_density: float,
 	drag_coefficient: float,
+	ball_radius: float,
+	ball_mass: float,
 	wind_d1: float,
 	wind_d2: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	"""Build trajectory with gravity + quadratic air drag using wind-relative velocity."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+	"""Build trajectory with physical drag model and launch speed solved for ~30 m apex."""
 	elevation_rad = np.deg2rad(elevation_deg)
 	azimuth_rad = np.deg2rad(azimuth_deg)
 
-	# Keep original launch setup: in still air this reaches ~30 m.
-	vz0 = float(np.sqrt(2.0 * G * TARGET_MAX_HEIGHT))
-	v0 = float(vz0 / np.sin(elevation_rad))
-	vxy = float(v0 * np.cos(elevation_rad))
+	area = float(np.pi * ball_radius**2)
+	k_drag = float(0.5 * air_density * drag_coefficient * area / max(ball_mass, 1e-6))
 
-	vx0 = float(vxy * np.cos(azimuth_rad))
-	vy0 = float(vxy * np.sin(azimuth_rad))
+	def simulate_with_speed(v0: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+		vxy = float(v0 * np.cos(elevation_rad))
+		vz0 = float(v0 * np.sin(elevation_rad))
+		vx0 = float(vxy * np.cos(azimuth_rad))
+		vy0 = float(vxy * np.sin(azimuth_rad))
 
-	# Numerical integration (semi-implicit Euler)
-	dt = 0.01
-	time_max = 20.0
+		dt = 0.005
+		time_max = 40.0
 
-	t_hist = [0.0]
-	x_hist = [0.0]
-	y_hist = [0.0]
-	z_hist = [0.0]
+		t_hist = [0.0]
+		x_hist = [0.0]
+		y_hist = [0.0]
+		z_hist = [0.0]
 
-	vel = np.array([vx0, vy0, vz0], dtype=float)
-	pos = np.array([0.0, 0.0, 0.0], dtype=float)
-	wind = np.array([wind_d1, wind_d2, 0.0], dtype=float)
+		vel = np.array([vx0, vy0, vz0], dtype=float)
+		pos = np.array([0.0, 0.0, 0.0], dtype=float)
+		wind = np.array([wind_d1, wind_d2, 0.0], dtype=float)
 
-	t_curr = 0.0
-	while t_curr < time_max:
-		v_rel = vel - wind
-		speed_rel = float(np.linalg.norm(v_rel))
-		drag_acc = -drag_coefficient * speed_rel * v_rel
-		gravity_acc = np.array([0.0, 0.0, -G], dtype=float)
-		acc = gravity_acc + drag_acc
+		t_curr = 0.0
+		while t_curr < time_max:
+			v_rel = vel - wind
+			speed_rel = float(np.linalg.norm(v_rel))
+			drag_acc = -k_drag * speed_rel * v_rel
+			gravity_acc = np.array([0.0, 0.0, -G], dtype=float)
+			acc = gravity_acc + drag_acc
 
-		vel = vel + acc * dt
-		pos = pos + vel * dt
-		t_curr += dt
+			vel = vel + acc * dt
+			pos = pos + vel * dt
+			t_curr += dt
 
-		if pos[2] <= 0.0 and t_curr > 0.02:
-			pos[2] = 0.0
+			if pos[2] <= 0.0 and t_curr > 0.02:
+				pos[2] = 0.0
+				t_hist.append(t_curr)
+				x_hist.append(float(pos[0]))
+				y_hist.append(float(pos[1]))
+				z_hist.append(0.0)
+				break
+
 			t_hist.append(t_curr)
 			x_hist.append(float(pos[0]))
 			y_hist.append(float(pos[1]))
-			z_hist.append(0.0)
-			break
+			z_hist.append(float(max(pos[2], 0.0)))
 
-		t_hist.append(t_curr)
-		x_hist.append(float(pos[0]))
-		y_hist.append(float(pos[1]))
-		z_hist.append(float(max(pos[2], 0.0)))
+		return (
+			np.array(t_hist, dtype=float),
+			np.array(x_hist, dtype=float),
+			np.array(y_hist, dtype=float),
+			np.array(z_hist, dtype=float),
+		)
+
+	# Solve launch speed so max height is ~TARGET_MAX_HEIGHT, also with drag.
+	v_no_drag = float(np.sqrt(2.0 * G * TARGET_MAX_HEIGHT) / np.sin(elevation_rad))
+	low_v = 0.2 * v_no_drag
+	high_v = max(1.5 * v_no_drag, 1.0)
+
+	def max_height_for_speed(v: float) -> float:
+		_, _, _, z_tmp = simulate_with_speed(v)
+		return float(np.max(z_tmp))
+
+	while max_height_for_speed(high_v) < TARGET_MAX_HEIGHT and high_v < 500.0:
+		high_v *= 1.5
+
+	for _ in range(28):
+		mid = 0.5 * (low_v + high_v)
+		if max_height_for_speed(mid) < TARGET_MAX_HEIGHT:
+			low_v = mid
+		else:
+			high_v = mid
+
+	v0_solved = high_v
+	t_dense, x_dense, y_dense, z_dense = simulate_with_speed(v0_solved)
 
 	# Resample to exactly n_timestamps for matrix construction and slider.
-	t_dense = np.array(t_hist, dtype=float)
-	x_dense = np.array(x_hist, dtype=float)
-	y_dense = np.array(y_hist, dtype=float)
-	z_dense = np.array(z_hist, dtype=float)
-
 	t = np.linspace(float(t_dense[0]), float(t_dense[-1]), int(n_timestamps))
 	x = np.interp(t, t_dense, x_dense)
 	y = np.interp(t, t_dense, y_dense)
 	z = np.interp(t, t_dense, z_dense)
 	z[-1] = 0.0
 
-	return t, x, y, z
+	return t, x, y, z, v0_solved
 
 
 def inequality_matrix(values: np.ndarray, eps: float = 1e-9) -> np.ndarray:
@@ -160,12 +187,12 @@ with ctrl3:
 wind_col1, wind_col2, wind_col3 = st.columns(3)
 with wind_col1:
 	drag_coefficient = st.slider(
-		"Air friction strength",
-		min_value=0.0,
-		max_value=0.08,
-		value=0.02,
-		step=0.001,
-		help="Quadratic drag strength. Higher = stronger slowdown.",
+		"Drag coefficient Cd",
+		min_value=0.05,
+		max_value=1.2,
+		value=0.47,
+		step=0.01,
+		help="Aerodynamic drag coefficient. Sphere-like balls are often around 0.4-0.5.",
 	)
 with wind_col2:
 	wind_d1 = st.slider(
@@ -186,11 +213,40 @@ with wind_col3:
 		help="Positive wind pushes toward +d2.",
 	)
 
-t, x, y, z = build_trajectory(
+phys1, phys2, phys3 = st.columns(3)
+with phys1:
+	air_density = st.slider(
+		"Air density ρ (kg/m³)",
+		min_value=0.8,
+		max_value=1.4,
+		value=1.225,
+		step=0.005,
+	)
+with phys2:
+	ball_radius = st.slider(
+		"Ball radius (m)",
+		min_value=0.02,
+		max_value=0.15,
+		value=0.033,
+		step=0.001,
+	)
+with phys3:
+	ball_mass = st.slider(
+		"Ball mass (kg)",
+		min_value=0.02,
+		max_value=1.0,
+		value=0.058,
+		step=0.001,
+	)
+
+t, x, y, z, launch_speed = build_trajectory(
 	azimuth_deg=azimuth_deg,
 	elevation_deg=elevation_deg,
 	n_timestamps=n_timestamps,
+	air_density=air_density,
 	drag_coefficient=drag_coefficient,
+	ball_radius=ball_radius,
+	ball_mass=ball_mass,
 	wind_d1=wind_d1,
 	wind_d2=wind_d2,
 )
@@ -206,10 +262,92 @@ idx = st.slider(
 
 left, right = st.columns([2, 1])
 with left:
-	max_range = float(max(np.max(np.abs(x)), np.max(np.abs(y)), TARGET_MAX_HEIGHT))
-	x_min, x_max = -0.1 * max_range, max_range * 1.05
-	y_min, y_max = -0.55 * max_range, 0.55 * max_range
+	x_data_min, x_data_max = float(np.min(x)), float(np.max(x))
+	y_data_min, y_data_max = float(np.min(y)), float(np.max(y))
+
+	x_span = max(1.0, x_data_max - x_data_min)
+	y_span = max(1.0, y_data_max - y_data_min)
+
+	# Larger margins to keep the full trajectory visible under strong wind/drag.
+	x_margin = 0.25 * x_span
+	y_margin = 0.25 * y_span
+
+	x_min, x_max = x_data_min - x_margin, x_data_max + x_margin
+	y_min, y_max = y_data_min - y_margin, y_data_max + y_margin
 	z_min, z_max = 0.0, TARGET_MAX_HEIGHT * 1.1
+
+	wind_mag = float(np.hypot(wind_d1, wind_d2))
+	wind_dir_deg = float(np.degrees(np.arctan2(wind_d2, wind_d1))) if wind_mag > 1e-9 else 0.0
+
+	origin_x, origin_y = 0.08, 0.92
+	if wind_mag > 1e-9:
+		u_x = wind_d1 / wind_mag
+		u_y = wind_d2 / wind_mag
+	else:
+		u_x, u_y = 1.0, 0.0
+
+	arrow_len = 0.07 + min(0.12, wind_mag * 0.006)
+	end_x = origin_x + arrow_len * u_x
+	end_y = origin_y + arrow_len * u_y
+
+	head_len = 0.022
+	head_angle = np.deg2rad(26.0)
+	back_x, back_y = -u_x, -u_y
+	lx = back_x * np.cos(head_angle) - back_y * np.sin(head_angle)
+	ly = back_x * np.sin(head_angle) + back_y * np.cos(head_angle)
+	rx = back_x * np.cos(-head_angle) - back_y * np.sin(-head_angle)
+	ry_ = back_x * np.sin(-head_angle) + back_y * np.cos(-head_angle)
+
+	left_head_x = end_x + head_len * lx
+	left_head_y = end_y + head_len * ly
+	right_head_x = end_x + head_len * rx
+	right_head_y = end_y + head_len * ry_
+
+	wind_shapes = [
+		dict(
+			type="line",
+			xref="paper",
+			yref="paper",
+			x0=origin_x,
+			y0=origin_y,
+			x1=end_x,
+			y1=end_y,
+			line=dict(color="black", width=1),
+		),
+		dict(
+			type="line",
+			xref="paper",
+			yref="paper",
+			x0=end_x,
+			y0=end_y,
+			x1=left_head_x,
+			y1=left_head_y,
+			line=dict(color="black", width=1),
+		),
+		dict(
+			type="line",
+			xref="paper",
+			yref="paper",
+			x0=end_x,
+			y0=end_y,
+			x1=right_head_x,
+			y1=right_head_y,
+			line=dict(color="black", width=1),
+		),
+	]
+
+	wind_annotations = [
+		dict(
+			xref="paper",
+			yref="paper",
+			x=origin_x,
+			y=origin_y - 0.045,
+			text=f"Wind: {wind_mag:.1f} m/s | {wind_dir_deg:.0f}°",
+			showarrow=False,
+			font=dict(size=11, color="black"),
+			align="left",
+		)
+	]
 
 	fig3d = go.Figure()
 	fig3d.add_trace(
@@ -234,12 +372,22 @@ with left:
 	)
 	fig3d.add_trace(
 		go.Scatter3d(
-			x=[x[0], x[-1]],
-			y=[y[0], y[-1]],
-			z=[z[0], z[-1]],
+			x=[x[0]],
+			y=[y[0]],
+			z=[z[0]],
 			mode="markers",
-			name="Start/End",
-			marker=dict(size=5),
+			name="Start",
+			marker=dict(size=6, color="lime"),
+		)
+	)
+	fig3d.add_trace(
+		go.Scatter3d(
+			x=[x[-1]],
+			y=[y[-1]],
+			z=[z[-1]],
+			mode="markers",
+			name="End",
+			marker=dict(size=6),
 		)
 	)
 
@@ -247,6 +395,8 @@ with left:
 		title="3D trajectory and current ball position (drag to rotate)",
 		height=560,
 		margin=dict(l=0, r=0, b=0, t=40),
+		shapes=wind_shapes,
+		annotations=wind_annotations,
 		scene=dict(
 			xaxis=dict(title="d1 (x)", range=[x_min, x_max]),
 			yaxis=dict(title="d2 (y)", range=[y_min, y_max]),
@@ -265,6 +415,7 @@ with right:
 	st.write(f"d3 = {z[idx]:.2f}")
 	st.write(f"Max d3 = {np.max(z):.2f}")
 	st.write(f"Ground hit at t = {t[-1]:.2f} s")
+	st.write(f"Launch speed solved for target apex ≈ 30 m: {launch_speed:.2f} m/s")
 
 
 st.markdown("---")
