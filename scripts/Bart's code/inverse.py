@@ -1386,7 +1386,7 @@ if not _t_common:
     st.stop()
 
 n_timepoints = len(_t_common)
-default_window = min(130, n_timepoints)
+default_window = min(140, n_timepoints)
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
@@ -6168,8 +6168,13 @@ def _extract_centerline_from_data(c_value: int):
     force_horizontal = lane_cfg.get("force_horizontal", False)
     
     if force_horizontal and centerline.shape[0] >= 2:
-        # Force completely horizontal lanes: use average y-coordinate
-        avg_y = np.mean(centerline[:, 1])
+        # Force completely horizontal lanes.
+        # If provided, use explicit configured centerline y-position.
+        forced_centerline_y = lane_cfg.get("centerline_y")
+        if forced_centerline_y is not None:
+            avg_y = float(forced_centerline_y)
+        else:
+            avg_y = float(np.mean(centerline[:, 1]))
         # Create a horizontal line from min to max x-coordinate at constant y
         x_min = np.min(centerline[:, 0])
         x_max = np.max(centerline[:, 0])
