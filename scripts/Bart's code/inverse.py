@@ -1863,19 +1863,19 @@ st.markdown("""
     .auto-detect-bounds-wrapper button p {
         color: #ffffff !important;
     }
-    /* Style Generate 5000 button: light red background */
+    /* Style Generate 1500 button: solid red background */
     .generate-5000-wrapper button {
-        background-color: #f8d7da !important;
-        color: #721c24 !important;
-        border: 1px solid #f5c2c7 !important;
+        background-color: #dc2626 !important;
+        color: #ffffff !important;
+        border: 1px solid #dc2626 !important;
     }
     .generate-5000-wrapper button:hover:not(:disabled) {
-        background-color: #f1b0b7 !important;
-        color: #721c24 !important;
-        border: 1px solid #eea7af !important;
+        background-color: #b91c1c !important;
+        color: #ffffff !important;
+        border: 1px solid #b91c1c !important;
     }
     .generate-5000-wrapper button p {
-        color: #721c24 !important;
+        color: #ffffff !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -2114,9 +2114,9 @@ with advanced_col2:
     )
     st.markdown('<div class="generate-5000-wrapper">', unsafe_allow_html=True)
     generate_5000_btn = st.button(
-        "Generate 5000 & Show Top 500",
+        "Generate 1500 & Show Top 500",
         key="btn_generate_5000",
-        help="Automatically generates 5000 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 5 iterations only for this button and shows the top 500 most deviating configurations with full analysis."
+        help="Automatically generates 1500 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 50 iterations only for this button and shows the top 500 most deviating configurations with full analysis."
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2491,6 +2491,44 @@ def get_movable_indices() -> list[int]:
     """Get list of flat indices for movable (non-fixed) points only."""
     return [i for i in range(n_total_points) if not is_fixed_point(i)]
 
+def _build_d2_change_weights(movable_indices: list[int]) -> dict[int, float]:
+    """Build per-index weights based on local d2 (y) change magnitude."""
+    weights: dict[int, float] = {}
+    eps = 1e-6
+    for flat_idx in movable_indices:
+        o_id = all_obj_ids_flat[flat_idx]
+        local_idx = all_local_idx_flat[flat_idx]
+        pts = all_points_plot.get(o_id)
+        if pts is None or pts.shape[0] <= 1:
+            weights[flat_idx] = 1.0
+            continue
+
+        y_vals = pts[:, 1]
+        n_pts = y_vals.shape[0]
+        if local_idx <= 0:
+            strength = abs(float(y_vals[1] - y_vals[0]))
+        elif local_idx >= n_pts - 1:
+            strength = abs(float(y_vals[-1] - y_vals[-2]))
+        else:
+            prev_jump = abs(float(y_vals[local_idx] - y_vals[local_idx - 1]))
+            next_jump = abs(float(y_vals[local_idx + 1] - y_vals[local_idx]))
+            strength = 0.5 * (prev_jump + next_jump)
+        weights[flat_idx] = strength + eps
+    return weights
+
+def _weighted_pick(indices: list[int], count: int, weights_map: dict[int, float]) -> list[int]:
+    """Weighted sampling without replacement over candidate flat indices."""
+    if not indices or count <= 0:
+        return []
+    count = min(count, len(indices))
+    weights = np.array([max(0.0, float(weights_map.get(idx, 1.0))) for idx in indices], dtype=float)
+    if weights.sum() <= 0.0:
+        selected_uniform = np.random.choice(indices, size=count, replace=False)
+        return [int(i) for i in selected_uniform]
+    probs = weights / weights.sum()
+    selected = np.random.choice(indices, size=count, replace=False, p=probs)
+    return [int(i) for i in selected]
+
 def select_points_for_iteration() -> list[int]:
     """
     Select points to move in this iteration based on the point selection mode.
@@ -2499,17 +2537,24 @@ def select_points_for_iteration() -> list[int]:
     movable_indices = get_movable_indices()
     if not movable_indices:
         return []
+
+    prefer_high_d2_change = bool(st.session_state.get("_prefer_high_d2_change_sampling", False))
+    d2_weights = _build_d2_change_weights(movable_indices) if prefer_high_d2_change else {}
     
     point_selection_mode = st.session_state.get("cfg_point_selection_mode", "Single point")
     
     if point_selection_mode == "Single point":
         # Current default behavior: select one random point
+        if prefer_high_d2_change:
+            return _weighted_pick(movable_indices, 1, d2_weights)
         return [int(np.random.choice(movable_indices))]
     
     elif point_selection_mode == "Multiple random points":
         # Select N random points
         num_points = int(st.session_state.get("cfg_num_random_points", 2))
         num_points = min(num_points, len(movable_indices))  # Can't select more than available
+        if prefer_high_d2_change:
+            return _weighted_pick(movable_indices, num_points, d2_weights)
         selected = list(np.random.choice(movable_indices, size=num_points, replace=False))
         return [int(idx) for idx in selected]
     
@@ -2536,7 +2581,24 @@ def select_points_for_iteration() -> list[int]:
         
         # Clamp first_timestamp_idx to valid range
         max_start = max(0, len(indices_for_object) - num_timestamps)
-        first_timestamp_idx = min(first_timestamp_idx, max_start)
+        if prefer_high_d2_change and max_start > 0:
+            start_candidates = list(range(max_start + 1))
+            start_scores: list[float] = []
+            for s in start_candidates:
+                end_s = min(len(indices_for_object), s + num_timestamps)
+                window_indices = [indices_for_object[j][0] for j in range(s, end_s)]
+                if not window_indices:
+                    start_scores.append(1.0)
+                else:
+                    start_scores.append(float(np.mean([d2_weights.get(idx, 1.0) for idx in window_indices])))
+            score_arr = np.array(start_scores, dtype=float)
+            if score_arr.sum() > 0:
+                probs = score_arr / score_arr.sum()
+                first_timestamp_idx = int(np.random.choice(start_candidates, p=probs))
+            else:
+                first_timestamp_idx = min(first_timestamp_idx, max_start)
+        else:
+            first_timestamp_idx = min(first_timestamp_idx, max_start)
         
         # Select consecutive points starting from first_timestamp_idx
         selected_indices = []
@@ -5033,11 +5095,11 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
 
 if st.session_state.get("_generate_5000_requested", False) and not st.session_state.get("_generate_5000_results", None):
     st.markdown("---")
-    st.markdown("### Generating 5000 Configurations...")
+    st.markdown("### Generating 1500 Configurations...")
     st.caption("This may take several minutes. Progress is shown below.")
     
-    # Store current settings (iterations forced to 5 for this button)
-    current_iterations = 5
+    # Store current settings (iterations forced to 50 for this button)
+    current_iterations = 50
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
     buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
@@ -5048,51 +5110,55 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
     max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
     
-    # Generate 5000 configurations
+    # Generate 1500 configurations
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     all_generated_configs: list[dict[str, Any]] = []
-    
-    for config_idx in range(5000):
-        status_text.text(f"Generating configuration {config_idx + 1}/5000...")
-        
-        # Generate one configuration using the core logic
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        
-        # Use the first variant
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        
-        # Run iterations
-        for iteration in range(current_iterations):
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y
-            )
-        
-        # Store configuration
-        if successful_points:
-            config_data = {
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": current_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold
-            }
-            all_generated_configs.append(config_data)
-        
-        progress_bar.progress((config_idx + 1) / 5000)
+    previous_weighted_sampling = bool(st.session_state.get("_prefer_high_d2_change_sampling", False))
+    st.session_state["_prefer_high_d2_change_sampling"] = True
+    try:
+        for config_idx in range(1500):
+            status_text.text(f"Generating configuration {config_idx + 1}/1500...")
+            
+            # Generate one configuration using the core logic
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            
+            # Use the first variant
+            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+            
+            # Run iterations
+            for iteration in range(current_iterations):
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y
+                )
+            
+            # Store configuration
+            if successful_points:
+                config_data = {
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": current_iterations,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold
+                }
+                all_generated_configs.append(config_data)
+            
+            progress_bar.progress((config_idx + 1) / 1500)
+    finally:
+        st.session_state["_prefer_high_d2_change_sampling"] = previous_weighted_sampling
     
     progress_bar.empty()
     status_text.empty()
@@ -5143,7 +5209,7 @@ if st.session_state.get("_generate_30_results", None):
 - **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps. Values range from 0° (parallel) to 180° (opposite direction).
 - **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps. This captures variations in vehicle speed or trajectory compression/expansion.
 
-Configurations are ranked by average deviation (highest first). Each visualization shows the complete generated trajectory with lane markings for context.""")
+Configurations are ranked by average deviation (highest first). Each visualization shows a focused 9-timestamp window around the largest deviation, with original and generated trajectories aligned on the same axes.""")
     
     # Store metrics for summary chart
     config_metrics: list[dict[str, Any]] = []
@@ -5228,116 +5294,156 @@ Configurations are ranked by average deviation (highest first). Each visualizati
             else:
                 threshold_display = str(int(max_threshold))
             
-            # Create visualization - only right plot for download
-            fig = Figure(figsize=(6, 5.5), dpi=120)
-            canvas = FigureCanvas(fig)
-            
-            # Single subplot: generated (right)
-            ax_right = fig.add_subplot(111)
-            
-            # Setup axis
-            ax_right.set_xlim(*XLIM)
-            ax_right.set_ylim(*YLIM)
-            ax_right.set_aspect("equal", adjustable="box")
-            for sp in ax_right.spines.values():
-                sp.set_linewidth(0.9)
-                sp.set_color("#222")
-            ax_right.tick_params(axis="both", labelsize=9, width=0.8, color="#222")
-            ax_right.set_xlabel("d1", fontsize=11, labelpad=8)
-            ax_right.set_ylabel("d2", fontsize=11, labelpad=8)
-            
-            # Add banner text inside the top of right subplot (two lines)
-            banner_line1 = f"Variant 1/1 ({pdp_variant}) | Config {config_num} | Iteration {iterations}"
-            banner_line2 = f"Max threshold {threshold_display}"
-            banner_text = f"{banner_line1}\n{banner_line2}"
-            ax_right.text(0.5, 0.97, banner_text, 
-                        transform=ax_right.transAxes,
-                        ha='center', va='top', 
-                        fontsize=8, fontweight='bold',
-                        bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5DEB3', edgecolor='black', linewidth=1.5))
-            
-            # Define colors locally
-            obj_colors = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
-            
-            # Calculate average vehicle y-position for lane positioning
-            all_y_coords = []
-            for o_id in sorted(all_points_plot.keys()):
-                pts = all_points_plot[o_id]
-                if pts.shape[0] > 0:
-                    all_y_coords.extend(pts[:, 1].tolist())
-            
-            avg_y = float(np.mean(all_y_coords)) if all_y_coords else 0.0
-            lane_width = 3.0
-            
-            # Draw generated on right
-            ax_right.set_title(f"Generated (Config #{config_num})", fontsize=12, fontweight='bold')
-            
-            # Draw lanes positioned at vehicle location
-            lane_offsets = [-lane_width, 0.0, lane_width]
-            for offset in lane_offsets:
-                lane_y = avg_y + offset
-                ax_right.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
-            
-            # Build the generated configuration
+            # Build generated coordinate map
             successful_points = config.get("successful_points", [])
-            
-            # Create a mapping from original_parent_idx to generated coordinates
             generated_coords_map: dict[int, np.ndarray] = {}
             for sp in successful_points:
-                orig_idx = sp["original_parent_idx"]
-                gen_coord = sp["point"]
-                generated_coords_map[orig_idx] = gen_coord
-            
-            # Build complete point set for visualization (all objects, all timestamps)
+                orig_idx = int(sp["original_parent_idx"])
+                generated_coords_map[orig_idx] = sp["point"]
+
+            # Focus window: 9 timestamps around the point with largest deviation from original
+            max_dev_flat_idx: int | None = None
+            max_dev_value = -1.0
+            for flat_idx, gen_coord in generated_coords_map.items():
+                if 0 <= flat_idx < len(all_pts_flat):
+                    dev = float(np.linalg.norm(np.array(gen_coord) - np.array(all_pts_flat[flat_idx])))
+                    if dev > max_dev_value:
+                        max_dev_value = dev
+                        max_dev_flat_idx = flat_idx
+
+            sorted_obj_ids = sorted(all_points_plot.keys())
+            if max_dev_flat_idx is not None and 0 <= max_dev_flat_idx < len(all_obj_ids_flat):
+                focus_object_id = all_obj_ids_flat[max_dev_flat_idx]
+                focus_local_idx = all_local_idx_flat[max_dev_flat_idx]
+            else:
+                focus_object_id = sorted_obj_ids[0] if sorted_obj_ids else 0
+                focus_local_idx = 0
+
+            focus_n = all_points_plot.get(focus_object_id, np.empty((0, 2))).shape[0]
+            focus_window_size = min(9, focus_n) if focus_n > 0 else 0
+            if focus_window_size > 0:
+                focus_start = max(0, focus_local_idx - focus_window_size // 2)
+                focus_end = min(focus_n, focus_start + focus_window_size)
+                focus_start = max(0, focus_end - focus_window_size)
+                focus_ts = all_vals_plot[focus_object_id][focus_start:focus_end]
+                focus_ts_set = set(float(t) for t in focus_ts)
+            else:
+                focus_start = 0
+                focus_end = 0
+                focus_ts_set = set(float(t) for t in all_ts_flat.tolist())
+
+            # Build focused original and generated trajectories using the same timestamp window
+            original_points_dict: dict[int, list[tuple[np.ndarray, float]]] = {}
             generated_points_dict: dict[int, list[tuple[np.ndarray, float]]] = {}
-            
             global_idx = 0
-            for oid in sorted(all_points_plot.keys()):
+            for oid in sorted_obj_ids:
                 n_pts = all_points_plot[oid].shape[0]
                 vals = all_vals_plot[oid]
-                
-                if oid not in generated_points_dict:
-                    generated_points_dict[oid] = []
-                
                 for local_idx in range(n_pts):
-                    # Use generated coordinate if available, otherwise use original
-                    if global_idx in generated_coords_map:
-                        coord = generated_coords_map[global_idx]
-                    else:
-                        coord = all_points_plot[oid][local_idx]
-                    
                     t_val = float(vals[local_idx])
-                    generated_points_dict[oid].append((coord, t_val))
+                    orig_coord = all_points_plot[oid][local_idx]
+                    gen_coord = generated_coords_map.get(global_idx, orig_coord)
+                    if t_val in focus_ts_set:
+                        original_points_dict.setdefault(oid, []).append((orig_coord, t_val))
+                        generated_points_dict.setdefault(oid, []).append((np.array(gen_coord), t_val))
                     global_idx += 1
-            
-            # Draw generated trajectories
-            for i, o_id in enumerate(sorted(generated_points_dict.keys())):
-                points_list = generated_points_dict[o_id]
-                # Sort by timestamp
-                points_list.sort(key=lambda x: x[1])
-                pts_array = np.array([p[0] for p in points_list])
-                vals_array = np.array([p[1] for p in points_list])
-                
+
+            # Shared focused axis limits for original/generated alignment
+            x_all: list[float] = []
+            y_all: list[float] = []
+            for points_dict in (original_points_dict, generated_points_dict):
+                for pts_list in points_dict.values():
+                    for coord, _ in pts_list:
+                        x_all.append(float(coord[0]))
+                        y_all.append(float(coord[1]))
+
+            if x_all and y_all:
+                x_min, x_max = min(x_all), max(x_all)
+                y_min, y_max = min(y_all), max(y_all)
+                x_margin = max(1.0, 0.15 * (x_max - x_min))
+                y_margin = max(1.0, 0.15 * (y_max - y_min))
+                focused_xlim = (x_min - x_margin, x_max + x_margin)
+                focused_ylim = (y_min - y_margin, y_max + y_margin)
+            else:
+                focused_xlim = XLIM
+                focused_ylim = YLIM
+
+            # Create side-by-side visualization with aligned focused window
+            fig = Figure(figsize=(12, 5.5), dpi=120)
+            canvas = FigureCanvas(fig)
+            ax_left = fig.add_subplot(121)
+            ax_right = fig.add_subplot(122)
+
+            for ax in (ax_left, ax_right):
+                ax.set_xlim(*focused_xlim)
+                ax.set_ylim(*focused_ylim)
+                ax.set_aspect("equal", adjustable="box")
+                for axis_spine in ax.spines.values():
+                    axis_spine.set_linewidth(0.9)
+                    axis_spine.set_color("#222")
+                ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")
+                ax.set_xlabel("d1", fontsize=11, labelpad=8)
+                ax.set_ylabel("d2", fontsize=11, labelpad=8)
+
+            ax_left.set_title("Original (Focused)", fontsize=12, fontweight='bold')
+            ax_right.set_title(f"Generated (Config #{config_num}, Focused)", fontsize=12, fontweight='bold')
+
+            banner_line1 = f"Variant 1/1 ({pdp_variant}) | Config {config_num} | Iteration {iterations}"
+            if focus_n > 0 and focus_end > focus_start:
+                focus_t0 = all_vals_plot[focus_object_id][focus_start]
+                focus_t1 = all_vals_plot[focus_object_id][focus_end - 1]
+                banner_line2 = f"Max threshold {threshold_display} | Focus window: t={focus_t0:g}..{focus_t1:g} ({focus_end - focus_start} timestamps)"
+            else:
+                banner_line2 = f"Max threshold {threshold_display}"
+            banner_text = f"{banner_line1}\n{banner_line2}"
+            ax_right.text(
+                0.5,
+                0.97,
+                banner_text,
+                transform=ax_right.transAxes,
+                ha='center',
+                va='top',
+                fontsize=8,
+                fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5DEB3', edgecolor='black', linewidth=1.5)
+            )
+
+            obj_colors = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
+            avg_y = float(np.mean(y_all)) if y_all else 0.0
+            lane_width = 3.0
+            lane_offsets = [-lane_width, 0.0, lane_width]
+            for ax in (ax_left, ax_right):
+                for offset in lane_offsets:
+                    lane_y = avg_y + offset
+                    ax.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
+
+            # Draw both original and generated using the same focused timestamps
+            offsets = [(3, 3), (3, -8), (-8, 3)]
+            for i, o_id in enumerate(sorted_obj_ids):
+                original_list = sorted(original_points_dict.get(o_id, []), key=lambda x: x[1])
+                generated_list = sorted(generated_points_dict.get(o_id, []), key=lambda x: x[1])
+                if not original_list or not generated_list:
+                    continue
+
+                original_pts = np.array([p[0] for p in original_list])
+                original_vals = np.array([p[1] for p in original_list])
+                generated_pts = np.array([p[0] for p in generated_list])
+                generated_vals = np.array([p[1] for p in generated_list])
+
                 color = obj_colors[i % len(obj_colors)]
                 label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-                ax_right.plot(pts_array[:, 0], pts_array[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
-                
-                # Add point annotations
-                offsets = [(3, 3), (3, -8), (-8, 3)]
-                for j, ((x, y), tval) in enumerate(zip(pts_array, vals_array)):
-                    ax_right.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
+                ax_left.plot(original_pts[:, 0], original_pts[:, 1], '-', color=color, linewidth=1.5, alpha=0.7)
+                ax_right.plot(generated_pts[:, 0], generated_pts[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
+
+                for j, ((x, y), tval) in enumerate(zip(original_pts, original_vals)):
+                    ax_left.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
                     off = offsets[j % len(offsets)]
-                    try:
-                        tnum = float(tval)
-                    except Exception:
-                        tnum = float(np.array(tval, dtype=float))
+                    tnum = float(tval)
                     lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
-                    # Only add label if both label and lbl are valid
                     if label and lbl:
                         try:
-                            label_text = f"$\\mathit{{{label}}}_{{{lbl}}}$"
-                            ax_right.annotate(
-                                label_text,
+                            ax_left.annotate(
+                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
                                 xy=(x, y),
                                 xytext=off,
                                 textcoords="offset points",
@@ -5347,7 +5453,26 @@ Configurations are ranked by average deviation (highest first). Each visualizati
                                 va="center",
                             )
                         except Exception:
-                            # If LaTeX fails, skip this label
+                            pass
+
+                for j, ((x, y), tval) in enumerate(zip(generated_pts, generated_vals)):
+                    ax_right.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
+                    off = offsets[j % len(offsets)]
+                    tnum = float(tval)
+                    lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
+                    if label and lbl:
+                        try:
+                            ax_right.annotate(
+                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
+                                xy=(x, y),
+                                xytext=off,
+                                textcoords="offset points",
+                                fontsize=8,
+                                color=color,
+                                ha="center",
+                                va="center",
+                            )
+                        except Exception:
                             pass
             
             try:
@@ -5506,7 +5631,7 @@ if st.session_state.get("_generate_5000_results", None):
     top_500 = st.session_state["_generate_5000_results"]
     
     st.markdown("---")
-    st.markdown("### Top 500 Most Deviating Configurations (from 5000 generated)")
+    st.markdown("### Top 500 Most Deviating Configurations (from 1500 generated)")
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
 **Deviation Metrics (calculated per configuration):**
@@ -5775,10 +5900,10 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     
     # Display data table
     st.markdown("### Top 500 Configurations - Detailed Metrics")
-    st.caption("""Complete metrics for the 500 most deviating configurations (selected from 5000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
+    st.caption("""Complete metrics for the 500 most deviating configurations (selected from 1500 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
     
 - **Rank**: Position in descending order of average deviation (1 = highest deviation)
-- **Config #**: Unique configuration identifier from the generation batch (1-5000)
+- **Config #**: Unique configuration identifier from the generation batch (1-1500)
 - **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
 - **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
 - **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
@@ -5810,7 +5935,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     st.markdown("---")
     
     # Display summary metrics chart
-    st.markdown("### Maximum Deviations Summary (Top 500 from 5000 generated)")
+    st.markdown("### Maximum Deviations Summary (Top 500 from 1500 generated)")
     st.caption("""Visual comparison of maximum deviations across the top 500 configurations. Red dashed line indicates the mean value calculated from these 500 configurations.
     
 - **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
