@@ -1386,7 +1386,7 @@ if not _t_common:
     st.stop()
 
 n_timepoints = len(_t_common)
-default_window = min(140, n_timepoints)
+default_window = min(150, n_timepoints)
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
