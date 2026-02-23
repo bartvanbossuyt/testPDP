@@ -56,17 +56,49 @@ st.set_page_config(
 def check_password():
     """Returns `True` if the user had the correct password."""
 
+    auth_qp_key = "pdp_auth"
+
+    def has_query_auth_flag() -> bool:
+        try:
+            return str(st.query_params.get(auth_qp_key, "0")) == "1"
+        except Exception:
+            return False
+
+    def set_query_auth_flag(enabled: bool) -> None:
+        try:
+            if enabled:
+                st.query_params[auth_qp_key] = "1"
+            elif auth_qp_key in st.query_params:
+                del st.query_params[auth_qp_key]
+        except Exception:
+            pass
+
+    # If already authenticated in this session, keep access on reruns.
+    if bool(st.session_state.get("password_correct", False)):
+        set_query_auth_flag(True)
+        return True
+
+    # If query flag is present, restore authenticated state for this session.
+    if has_query_auth_flag():
+        st.session_state["password_correct"] = True
+        return True
+
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         # Use .get() to safely access the password key, avoiding KeyError if not present
-        entered_password = st.session_state.get("password", "")
+        entered_password = str(st.session_state.get("password", "")).strip()
+        if not entered_password:
+            return
         if entered_password == "pdp2025":
             st.session_state["password_correct"] = True
+            set_query_auth_flag(True)
             # Safely delete password from state if it exists
             if "password" in st.session_state:
                 del st.session_state["password"]  # don't store password
         else:
+            # Only mark explicit failed login attempts as False.
             st.session_state["password_correct"] = False
+            set_query_auth_flag(False)
 
     if "password_correct" not in st.session_state:
         # First run, show input for password.
@@ -79,7 +111,7 @@ def check_password():
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
-        st.error("ðŸ˜• Password incorrect")
+        st.error("Password incorrect")
         return False
     else:
         # Password correct.
@@ -1386,7 +1418,7 @@ if not _t_common:
     st.stop()
 
 n_timepoints = len(_t_common)
-default_window = min(150, n_timepoints)
+default_window = min(160, n_timepoints)
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
@@ -1863,18 +1895,33 @@ st.markdown("""
     .auto-detect-bounds-wrapper button p {
         color: #ffffff !important;
     }
-    /* Style Generate 1500 button: solid red background */
-    .generate-5000-wrapper button {
+    /* Style Generate 5 button: solid red background */
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] > button,
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] button,
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] > button[kind="primary"],
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] button[kind="primary"],
+    .generate-5000-marker ~ div[data-testid="stButton"] > button[kind="primary"],
+    .generate-5000-marker ~ div[data-testid="stButton"] button[kind="primary"] {
         background-color: #dc2626 !important;
         color: #ffffff !important;
         border: 1px solid #dc2626 !important;
     }
-    .generate-5000-wrapper button:hover:not(:disabled) {
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] > button:hover:not(:disabled),
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] button:hover:not(:disabled),
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] > button[kind="primary"]:hover:not(:disabled),
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] button[kind="primary"]:hover:not(:disabled),
+    .generate-5000-marker ~ div[data-testid="stButton"] > button[kind="primary"]:hover:not(:disabled),
+    .generate-5000-marker ~ div[data-testid="stButton"] button[kind="primary"]:hover:not(:disabled) {
         background-color: #b91c1c !important;
         color: #ffffff !important;
         border: 1px solid #b91c1c !important;
     }
-    .generate-5000-wrapper button p {
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] > button p,
+    .element-container:has(.generate-5000-marker) + div[data-testid="stButton"] button p,
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] > button[kind="primary"] p,
+    .element-container:has(.generate-5000-marker) ~ div[data-testid="stButton"] button[kind="primary"] p,
+    .generate-5000-marker ~ div[data-testid="stButton"] > button[kind="primary"] p,
+    .generate-5000-marker ~ div[data-testid="stButton"] button[kind="primary"] p {
         color: #ffffff !important;
     }
 </style>
@@ -2112,13 +2159,18 @@ with advanced_col2:
         key="btn_generate_30",
         help="Automatically generates 1000 configurations using your current settings (iterations, PDP variant, buffer, roughness, threshold). Displays detailed analysis of the 100 configurations that deviate most from the original, including visualizations, statistics, and downloadable data."
     )
-    st.markdown('<div class="generate-5000-wrapper">', unsafe_allow_html=True)
+    st.markdown('<div class="generate-5000-marker"></div>', unsafe_allow_html=True)
     generate_5000_btn = st.button(
-        "Generate 1500 & Show Top 500",
+        "Generate 1 and show",
         key="btn_generate_5000",
-        help="Automatically generates 1500 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 50 iterations only for this button and shows the top 500 most deviating configurations with full analysis."
+        type="primary",
+        help="Automatically generates 5 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 50 iterations only for this button and shows the most deviating configurations with full analysis."
     )
-    st.markdown('</div>', unsafe_allow_html=True)
+    generate_50_btn = st.button(
+        "Generate 50 & Show Top 5 (reinsertion)",
+        key="btn_generate_50",
+        help="Generates 50 configurations with 125 iterations each, focused on the reinsertion zone (t=131). Shows the 5 most deviating configurations."
+    )
 
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
@@ -4993,6 +5045,10 @@ if generate_5000_btn:
     # Store in session state that we want to generate 5000
     st.session_state["_generate_5000_requested"] = True
 
+if generate_50_btn:
+    # Store in session state that we want to generate 50 configs (reinsertion)
+    st.session_state["_generate_50_requested"] = True
+
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
     st.markdown("---")
@@ -5095,7 +5151,7 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
 
 if st.session_state.get("_generate_5000_requested", False) and not st.session_state.get("_generate_5000_results", None):
     st.markdown("---")
-    st.markdown("### Generating 1500 Configurations...")
+    st.markdown("### Generating 5 Configurations...")
     st.caption("This may take several minutes. Progress is shown below.")
     
     # Store current settings (iterations forced to 50 for this button)
@@ -5110,55 +5166,54 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
     max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
     
-    # Generate 1500 configurations
+    # Generate 5 configurations
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     all_generated_configs: list[dict[str, Any]] = []
-    previous_weighted_sampling = bool(st.session_state.get("_prefer_high_d2_change_sampling", False))
-    st.session_state["_prefer_high_d2_change_sampling"] = True
-    try:
-        for config_idx in range(1500):
-            status_text.text(f"Generating configuration {config_idx + 1}/1500...")
-            
-            # Generate one configuration using the core logic
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            
-            # Use the first variant
-            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-            
-            # Run iterations
-            for iteration in range(current_iterations):
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y
-                )
-            
-            # Store configuration
-            if successful_points:
-                config_data = {
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": current_iterations,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold
-                }
-                all_generated_configs.append(config_data)
-            
-            progress_bar.progress((config_idx + 1) / 1500)
-    finally:
-        st.session_state["_prefer_high_d2_change_sampling"] = previous_weighted_sampling
+    st.session_state["_prefer_high_d2_change_sampling"] = False
+    for config_idx in range(5):
+        status_text.text(f"Generating configuration {config_idx + 1}/5 | iteration 0/{current_iterations}...")
+        
+        # Generate one configuration using the core logic
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        
+        # Use the first variant
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        
+        # Run iterations
+        for iteration in range(current_iterations):
+            status_text.text(
+                f"Generating configuration {config_idx + 1}/5 | iteration {iteration + 1}/{current_iterations}..."
+            )
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y
+            )
+        
+        # Store configuration
+        if successful_points:
+            config_data = {
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": current_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold
+            }
+            all_generated_configs.append(config_data)
+        
+        progress_bar.progress((config_idx + 1) / 5)
     
     progress_bar.empty()
     status_text.empty()
@@ -5194,6 +5249,109 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
         
         # Store results in session state
         st.session_state["_generate_5000_results"] = top_500
+        st.rerun()
+
+# ============= Generate 50 configs x 125 iterations (reinsertion) ============
+if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 50 Configurations (reinsertion preset, 125 iterations each)...")
+    st.caption("This may take several minutes. Progress is shown below.")
+    
+    # Use current settings but force 125 iterations
+    current_iterations = 125
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    
+    # Get threshold settings
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    
+    # Generate 50 configurations
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_generated_configs: list[dict[str, Any]] = []
+    st.session_state["_prefer_high_d2_change_sampling"] = False
+    for config_idx in range(50):
+        status_text.text(f"Generating configuration {config_idx + 1}/50 | iteration 0/{current_iterations}...")
+        
+        # Generate one configuration using the core logic
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        
+        # Use the first variant
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        
+        # Run iterations
+        for iteration in range(current_iterations):
+            status_text.text(
+                f"Generating configuration {config_idx + 1}/50 | iteration {iteration + 1}/{current_iterations}..."
+            )
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y
+            )
+        
+        # Store configuration
+        if successful_points:
+            config_data = {
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": current_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold
+            }
+            all_generated_configs.append(config_data)
+        
+        progress_bar.progress((config_idx + 1) / 50)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_50_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        
+        # Calculate deviation for each configuration
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        
+        for config in all_generated_configs:
+            total_deviation = 0.0
+            num_points = 0
+            
+            successful_points = config.get("successful_points", [])
+            for sp in successful_points:
+                parent_coord = sp["parent_point"]
+                generated_coord = sp["point"]
+                distance = float(np.linalg.norm(generated_coord - parent_coord))
+                total_deviation += distance
+                num_points += 1
+            
+            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, avg_deviation, config))
+        
+        # Sort by deviation (descending) and take top 5
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_5 = deviations[:5]
+        
+        # Store results in session state
+        st.session_state["_generate_50_results"] = top_5
         st.rerun()
 
 # Display results if they exist
@@ -5631,7 +5789,7 @@ if st.session_state.get("_generate_5000_results", None):
     top_500 = st.session_state["_generate_5000_results"]
     
     st.markdown("---")
-    st.markdown("### Top 500 Most Deviating Configurations (from 1500 generated)")
+    st.markdown("### Top 500 Most Deviating Configurations (from 5 generated)")
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
 **Deviation Metrics (calculated per configuration):**
@@ -5900,10 +6058,10 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     
     # Display data table
     st.markdown("### Top 500 Configurations - Detailed Metrics")
-    st.caption("""Complete metrics for the 500 most deviating configurations (selected from 1500 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
+    st.caption("""Complete metrics for the most deviating configurations (selected from 5 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
     
 - **Rank**: Position in descending order of average deviation (1 = highest deviation)
-- **Config #**: Unique configuration identifier from the generation batch (1-1500)
+- **Config #**: Unique configuration identifier from the generation batch (1-5)
 - **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
 - **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
 - **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
@@ -5935,7 +6093,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     st.markdown("---")
     
     # Display summary metrics chart
-    st.markdown("### Maximum Deviations Summary (Top 500 from 1500 generated)")
+    st.markdown("### Maximum Deviations Summary (Top 500 from 5 generated)")
     st.caption("""Visual comparison of maximum deviations across the top 500 configurations. Red dashed line indicates the mean value calculated from these 500 configurations.
     
 - **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
@@ -5994,6 +6152,164 @@ These metrics help identify configurations with extreme local variations, even i
     if st.button("Clear Results & Cache", key="clear_top500_results"):
         st.session_state["_generate_5000_requested"] = False
         st.session_state["_generate_5000_results"] = None
+        st.cache_data.clear()
+        st.rerun()
+
+# Display results for 50-config reinsertion generation if they exist
+if st.session_state.get("_generate_50_results", None):
+    top_5 = st.session_state["_generate_50_results"]
+    
+    st.markdown("---")
+    st.markdown("### Top 5 Most Deviating Configurations (from 50 generated, 125 iterations each)")
+    st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
+    
+**Generation settings**: 50 configurations × 125 iterations, focused on the reinsertion zone.
+
+**Deviation Metrics (calculated per configuration):**
+- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Configurations are ranked by average deviation (highest first).""")
+    
+    # Store metrics for summary chart
+    config_metrics: list[dict[str, Any]] = []
+    
+    # Display each of the top 5
+    for rank, (config_num, deviation, config) in enumerate(top_5, 1):
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
+            
+            # Get configuration characteristics
+            pdp_variant = config.get("pdp_variant", "fundamental")
+            iterations = config.get("iterations", "N/A")
+            threshold_mode = config.get("threshold_mode", "Percentage")
+            max_threshold = config.get("max_threshold", 0.0)
+            
+            # Calculate angle and distance deviations
+            successful_points = config.get("successful_points", [])
+            
+            # Create mapping from original_parent_idx to generated coordinates
+            generated_coords_map: dict[int, np.ndarray] = {}
+            for sp in successful_points:
+                orig_idx = sp["original_parent_idx"]
+                gen_coord = sp["point"]
+                generated_coords_map[orig_idx] = gen_coord
+            
+            max_angle_deviation = 0.0
+            max_distance_deviation = 0.0
+            
+            # Process each object
+            global_idx = 0
+            for oid in sorted(all_points_plot.keys()):
+                n_pts = all_points_plot[oid].shape[0]
+                original_pts = all_points_plot[oid]
+                
+                # Build generated trajectory for this object
+                gen_pts = original_pts.copy()
+                for local_i in range(n_pts):
+                    gi = global_idx + local_i
+                    if gi in generated_coords_map:
+                        gen_pts[local_i] = generated_coords_map[gi]
+                
+                # Calculate angle deviations between consecutive timestamps
+                for i in range(1, n_pts):
+                    orig_dx = original_pts[i, 0] - original_pts[i-1, 0]
+                    orig_dy = original_pts[i, 1] - original_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
+                    
+                    orig_angle = np.arctan2(orig_dy, orig_dx)
+                    gen_angle = np.arctan2(gen_dy, gen_dx)
+                    angle_diff = abs(np.degrees(orig_angle - gen_angle))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    max_angle_deviation = max(max_angle_deviation, angle_diff)
+                    
+                    orig_dist = np.linalg.norm([orig_dx, orig_dy])
+                    gen_dist = np.linalg.norm([gen_dx, gen_dy])
+                    dist_diff = abs(gen_dist - orig_dist)
+                    max_distance_deviation = max(max_distance_deviation, dist_diff)
+                
+                global_idx += n_pts
+            
+            # Store metrics
+            config_metrics.append({
+                "config_num": config_num,
+                "rank": rank,
+                "avg_deviation": deviation,
+                "max_angle_deviation": max_angle_deviation,
+                "max_distance_deviation": max_distance_deviation
+            })
+            
+            # Display summary metrics
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Avg Deviation", f"{deviation:.2f}m")
+            mc2.metric("Max Angle Δ", f"{max_angle_deviation:.1f}°")
+            mc3.metric("Max Distance Δ", f"{max_distance_deviation:.2f}m")
+            mc4.metric("Iterations", f"{iterations}")
+            
+            # Draw trajectory plot
+            fig_gen = Figure(figsize=(12, 4))
+            ax_gen = fig_gen.add_subplot(111)
+            
+            global_idx = 0
+            for oid in sorted(all_points_plot.keys()):
+                n_pts = all_points_plot[oid].shape[0]
+                original_pts = all_points_plot[oid]
+                
+                # Build generated trajectory
+                gen_pts = original_pts.copy()
+                for local_i in range(n_pts):
+                    gi = global_idx + local_i
+                    if gi in generated_coords_map:
+                        gen_pts[local_i] = generated_coords_map[gi]
+                
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                
+                # Draw original
+                ax_gen.plot(original_pts[:, 0], original_pts[:, 1],
+                           linewidth=1.0, color=color, alpha=0.3, linestyle='--',
+                           label=f"{label} original")
+                # Draw generated
+                ax_gen.plot(gen_pts[:, 0], gen_pts[:, 1],
+                           linewidth=1.5, color=color, alpha=1.0,
+                           label=f"{label} generated")
+                
+                global_idx += n_pts
+            
+            ax_gen.legend(fontsize=7, loc='upper left')
+            ax_gen.set_xlabel("x (m)")
+            ax_gen.set_ylabel("y (m)")
+            ax_gen.set_title(f"Config #{config_num} — Avg deviation: {deviation:.2f}m")
+            ax_gen.set_aspect('equal')
+            fig_gen.tight_layout()
+            
+            buf = io.BytesIO()
+            fig_gen.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            st.image(buf, use_container_width=True)
+            
+            st.markdown("---")
+    
+    # Summary metrics table
+    if config_metrics:
+        st.markdown("#### Summary")
+        metrics_df = pd.DataFrame(config_metrics)
+        st.dataframe(metrics_df[["rank", "config_num", "avg_deviation", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "avg_deviation": "Avg Deviation (m)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)"
+            }
+        ), use_container_width=True)
+    
+    # Clear button
+    if st.button("Clear Results & Cache", key="clear_top5_results"):
+        st.session_state["_generate_50_requested"] = False
+        st.session_state["_generate_50_results"] = None
         st.cache_data.clear()
         st.rerun()
 

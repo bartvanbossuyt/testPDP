@@ -46,8 +46,8 @@ LANE_CONFIGURATIONS[68] = {
     "lane_width": 3.0,
     "offset": 0.0,
     "centerline_y": -5.0,
-    "bounds": {"x": (0, 2000), "y": (-10.0, -0.5)},
+    "bounds": {"x": (0, 2800), "y": (-10.0, -0.5)},
     "force_horizontal": True,
-    "description": "Straight 2-lane overtaking maneuver",
+    "description": "Straight 2-lane overtaking maneuver (160 timestamps, 8-step reinsertion)",
 }
 
