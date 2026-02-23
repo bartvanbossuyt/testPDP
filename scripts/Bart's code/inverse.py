@@ -1419,6 +1419,12 @@ if not _t_common:
 
 n_timepoints = len(_t_common)
 default_window = min(160, n_timepoints)
+
+# Apply reinsertion preset if pending (must happen BEFORE widgets render)
+if st.session_state.pop("_reinsertion_preset_pending", False):
+    st.session_state["cfg_start_t"] = 131
+    st.session_state["cfg_k"] = 8
+
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
     if n_timepoints > 1:
@@ -5048,10 +5054,9 @@ if generate_5000_btn:
 if generate_50_btn:
     # Store in session state that we want to generate 50 configs (reinsertion)
     st.session_state["_generate_50_requested"] = True
-    # Pre-set the time window to the reinsertion zone (t=131, 8 timestamps)
-    # This ensures the generation uses only the reinsertion timestamps
-    st.session_state["cfg_start_t"] = 131
-    st.session_state["cfg_k"] = 8
+    # Flag to apply reinsertion preset on next rerun (before widgets render)
+    st.session_state["_reinsertion_preset_pending"] = True
+    st.rerun()
 
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
