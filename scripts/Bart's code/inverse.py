@@ -2169,7 +2169,7 @@ with advanced_col2:
     generate_50_btn = st.button(
         "Generate 50 & Show Top 5 (reinsertion)",
         key="btn_generate_50",
-        help="Generates 50 configurations with 125 iterations each, using only 20 timestamps starting at t=131 (reinsertion zone). Shows the 5 most deviating configurations."
+        help="Generates 50 configurations with 125 iterations each, using 8 timestamps from t=131 to t=138 (reinsertion zone). Shows the 5 most deviating configurations."
     )
 
 # Handle Reset button click for both modes
@@ -5048,10 +5048,10 @@ if generate_5000_btn:
 if generate_50_btn:
     # Store in session state that we want to generate 50 configs (reinsertion)
     st.session_state["_generate_50_requested"] = True
-    # Pre-set the time window to the reinsertion zone (t=131, 20 timestamps)
+    # Pre-set the time window to the reinsertion zone (t=131, 8 timestamps)
     # This ensures the generation uses only the reinsertion timestamps
     st.session_state["cfg_start_t"] = 131
-    st.session_state["cfg_k"] = 20
+    st.session_state["cfg_k"] = 8
 
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
@@ -5258,8 +5258,8 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
 # ============= Generate 50 configs x 125 iterations (reinsertion) ============
 if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
     st.markdown("---")
-    st.markdown("### Generating 50 Configurations (reinsertion zone: t=131–150, 125 iterations each)...")
-    st.caption("Using 20 timestamps from the reinsertion zone. This may take several minutes.")
+    st.markdown("### Generating 50 Configurations (reinsertion zone: t=131–138, 125 iterations each)...")
+    st.caption("Using 8 timestamps from the reinsertion zone. This may take several minutes.")
     
     # Use current settings but force 125 iterations
     current_iterations = 125
