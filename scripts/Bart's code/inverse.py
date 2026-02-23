@@ -6257,9 +6257,15 @@ Configurations are ranked by average deviation (highest first).""")
             mc3.metric("Max Distance Δ", f"{max_distance_deviation:.2f}m")
             mc4.metric("Iterations", f"{iterations}")
             
-            # Draw trajectory plot
+            # Draw trajectory plot — zoomed into most deviant area
             fig_gen = Figure(figsize=(12, 4))
             ax_gen = fig_gen.add_subplot(111)
+            
+            # First pass: find the most deviant point to center the view
+            max_dev_dist = 0.0
+            max_dev_orig = np.array([0.0, 0.0])
+            max_dev_gen = np.array([0.0, 0.0])
+            all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []  # (original, generated) per object
             
             global_idx = 0
             for oid in sorted(all_points_plot.keys()):
@@ -6273,6 +6279,45 @@ Configurations are ranked by average deviation (highest first).""")
                     if gi in generated_coords_map:
                         gen_pts[local_i] = generated_coords_map[gi]
                 
+                all_plot_data.append((original_pts, gen_pts))
+                
+                # Track most deviant point
+                for local_i in range(n_pts):
+                    d = np.linalg.norm(gen_pts[local_i] - original_pts[local_i])
+                    if d > max_dev_dist:
+                        max_dev_dist = d
+                        max_dev_orig = original_pts[local_i].copy()
+                        max_dev_gen = gen_pts[local_i].copy()
+                
+                global_idx += n_pts
+            
+            # Compute zoom window centered on the most deviant point
+            center_x = (max_dev_orig[0] + max_dev_gen[0]) / 2
+            center_y = (max_dev_orig[1] + max_dev_gen[1]) / 2
+            # Show ±150m in x around the most deviant point
+            x_half = 150.0
+            x_lo, x_hi = center_x - x_half, center_x + x_half
+            
+            # Compute y range from all data within the x window, then add padding
+            y_vals_in_window: list[float] = []
+            for orig_pts, g_pts in all_plot_data:
+                for pts in [orig_pts, g_pts]:
+                    mask = (pts[:, 0] >= x_lo) & (pts[:, 0] <= x_hi)
+                    if mask.any():
+                        y_vals_in_window.extend(pts[mask, 1].tolist())
+            
+            if y_vals_in_window:
+                y_min_data = min(y_vals_in_window)
+                y_max_data = max(y_vals_in_window)
+                y_pad = max((y_max_data - y_min_data) * 0.3, 1.0)  # at least 1m padding
+                y_lo = y_min_data - y_pad
+                y_hi = y_max_data + y_pad
+            else:
+                y_lo, y_hi = -10.0, 0.0
+            
+            # Second pass: draw trajectories
+            for idx_oid, oid in enumerate(sorted(all_points_plot.keys())):
+                original_pts, gen_pts = all_plot_data[idx_oid]
                 label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
                 color = f"C{oid}"
                 
@@ -6284,14 +6329,22 @@ Configurations are ranked by average deviation (highest first).""")
                 ax_gen.plot(gen_pts[:, 0], gen_pts[:, 1],
                            linewidth=1.5, color=color, alpha=1.0,
                            label=f"{label} generated")
-                
-                global_idx += n_pts
             
+            # Mark most deviant point
+            ax_gen.annotate(
+                f"max Δ={max_dev_dist:.2f}m",
+                xy=(max_dev_gen[0], max_dev_gen[1]),
+                xytext=(10, 10), textcoords='offset points',
+                fontsize=7, color='red',
+                arrowprops=dict(arrowstyle='->', color='red', lw=0.8),
+            )
+            
+            ax_gen.set_xlim(x_lo, x_hi)
+            ax_gen.set_ylim(y_lo, y_hi)
             ax_gen.legend(fontsize=7, loc='upper left')
             ax_gen.set_xlabel("x (m)")
             ax_gen.set_ylabel("y (m)")
-            ax_gen.set_title(f"Config #{config_num} — Avg deviation: {deviation:.2f}m")
-            ax_gen.set_aspect('equal')
+            ax_gen.set_title(f"Config #{config_num} — Avg deviation: {deviation:.2f}m (zoomed to max deviation)")
             fig_gen.tight_layout()
             
             buf = io.BytesIO()
