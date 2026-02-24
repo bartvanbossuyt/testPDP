@@ -3930,13 +3930,8 @@ def run_multipoint_iteration(
         # Get both threshold parameters
         _thresh, _max_mm = get_threshold_params()
         
-        # DEBUG: Print parameters being used
-        print(f"[DEBUG RUN_MULTIPOINT] variant={pdp_variant}, search_step={search_step}/{max_search_steps-1}")
-        print(f"[DEBUG RUN_MULTIPOINT] buffer_x={buffer_x}, buffer_y={buffer_y}, rough_x={rough_x}, rough_y={rough_y}")
-        
         # Apply buffer/rough parameters only for variants that use them
         if pdp_variant in ["buffer", "bufferrough", "realistic"]:
-            print(f"[DEBUG RUN_MULTIPOINT] Using variant with buffer/rough parameters")
             same_d1, same_d2 = check_pdp_match(
                 all_pts_flat,
                 test_config,
@@ -3950,7 +3945,6 @@ def run_multipoint_iteration(
             )
         else:
             # For fundamental and rough variants
-            print(f"[DEBUG RUN_MULTIPOINT] Using {pdp_variant} with buffer_x=0, buffer_y=0")
             same_d1, same_d2 = check_pdp_match(
                 all_pts_flat,
                 test_config,
@@ -3963,11 +3957,9 @@ def run_multipoint_iteration(
                 max_mismatches=_max_mm
             )
         
-        print(f"[DEBUG RUN_MULTIPOINT] Result: d1={same_d1}, d2={same_d2}")
         
         # For PDP, BOTH d1 AND d2 must match (regardless of number of objects)
         success = same_d1 and same_d2
-        print(f"[DEBUG RUN_MULTIPOINT] Order match: d1 AND d2 -> {success}")
         
         if success:
             # Success! Add all candidate points to successful_points (with damping applied)
@@ -4068,6 +4060,12 @@ def generate_exp_multipoint() -> None:
     all_configs: list[dict[str, Any]] = []
     current_points: np.ndarray = all_pts_flat.copy()
     
+    # Show progress for large point sets
+    n_total = len(all_pts_flat)
+    total_iters = len(pdp_variants_list) * num_configs * num_iterations
+    progress_bar = st.progress(0, text=f"Generating... ({n_total} points × {num_iterations} iterations)")
+    completed = 0
+    
     # Process each variant
     for variant_idx, pdp_variant in enumerate(pdp_variants_list):
         st.session_state["anim_current_variant_idx"] = variant_idx
@@ -4081,6 +4079,11 @@ def generate_exp_multipoint() -> None:
             # Run iterations for this configuration
             for iteration in range(num_iterations):
                 st.session_state["anim_completed_iterations"] = iteration
+                completed += 1
+                progress_bar.progress(
+                    completed / total_iters,
+                    text=f"Config {config_num}/{num_configs} · Iteration {iteration + 1}/{num_iterations} ({n_total} points)"
+                )
                 
                 successful_points, success = run_multipoint_iteration(
                     current_points=current_points,
@@ -4103,6 +4106,8 @@ def generate_exp_multipoint() -> None:
             })
             
             st.session_state["anim_successful_points"] = successful_points
+    
+    progress_bar.empty()
     
     # Store all configurations
     st.session_state["anim_all_configs"] = all_configs

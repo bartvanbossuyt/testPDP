@@ -35,20 +35,15 @@ def compute_inequality_matrix(points: np.ndarray, dimension: int, roughness: flo
     Returns:
         (N, N) inequality matrix
     """
-    n = len(points)
-    inequality_matrix = np.zeros((n, n))
+    values = points[:, dimension]  # (N,)
+    # diff[i, j] = values[j] - values[i]
+    diff = values[None, :] - values[:, None]  # (N, N) via broadcasting
     
-    values = points[:, dimension]
-    
-    for i in range(n):
-        for j in range(n):
-            diff = values[j] - values[i]
-            if abs(diff) <= roughness:
-                inequality_matrix[i, j] = 1  # Equal (within roughness)
-            elif diff > roughness:
-                inequality_matrix[i, j] = 0  # Greater than
-            else:
-                inequality_matrix[i, j] = 2  # Less than
+    # Default to 0 (j > i),  set 1 where equal within roughness, 2 where j < i
+    inequality_matrix = np.zeros_like(diff, dtype=float)
+    inequality_matrix[diff < -roughness] = 2.0  # j < i
+    inequality_matrix[np.abs(diff) <= roughness] = 1.0  # equal within roughness
+    # remainder stays 0.0 (j > i)
     
     return inequality_matrix
 
@@ -107,19 +102,19 @@ def apply_buffer_transformation(points: np.ndarray, buffer_x: float, buffer_y: f
         (5*N, 2) array with buffered points
     """
     n = len(points)
-    buffered = np.zeros((5 * n, 2))
+    x = points[:, 0]
+    y = points[:, 1]
     
-    for i, (x, y) in enumerate(points):
-        base_idx = i * 5
-        # Variant 0: x - buffer_x
-        buffered[base_idx + 0] = [x - buffer_x, y]
-        # Variant 1: x + buffer_x
-        buffered[base_idx + 1] = [x + buffer_x, y]
-        # Variant 2: no buffer in x
-        buffered[base_idx + 2] = [x, y]
-        # Variant 3: y - buffer_y
-        buffered[base_idx + 3] = [x, y - buffer_y]
-        # Variant 4: y + buffer_y
-        buffered[base_idx + 4] = [x, y + buffer_y]
+    buffered = np.empty((5 * n, 2))
+    buffered[0::5, 0] = x - buffer_x
+    buffered[0::5, 1] = y
+    buffered[1::5, 0] = x + buffer_x
+    buffered[1::5, 1] = y
+    buffered[2::5, 0] = x
+    buffered[2::5, 1] = y
+    buffered[3::5, 0] = x
+    buffered[3::5, 1] = y - buffer_y
+    buffered[4::5, 0] = x
+    buffered[4::5, 1] = y + buffer_y
     
     return buffered

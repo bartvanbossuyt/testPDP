@@ -112,15 +112,10 @@ def check_pdp_match(
 
     # Determine match based on mode
     if max_mismatches is not None:
-        n = original_x_matrix.shape[0]
-        d1_mismatches = 0
-        d2_mismatches = 0
-        for i in range(n):
-            for j in range(i + 1, n):
-                if original_x_matrix[i, j] != generated_x_matrix[i, j]:
-                    d1_mismatches += 1
-                if original_y_matrix[i, j] != generated_y_matrix[i, j]:
-                    d2_mismatches += 1
+        # Use upper triangle only (i < j) with vectorized comparison
+        triu_mask = np.triu(np.ones(original_x_matrix.shape, dtype=bool), k=1)
+        d1_mismatches = int(np.sum(original_x_matrix[triu_mask] != generated_x_matrix[triu_mask]))
+        d2_mismatches = int(np.sum(original_y_matrix[triu_mask] != generated_y_matrix[triu_mask]))
         total_mismatches = d1_mismatches + d2_mismatches
         d1_match = total_mismatches <= max_mismatches
         d2_match = total_mismatches <= max_mismatches
