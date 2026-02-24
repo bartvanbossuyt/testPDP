@@ -2154,7 +2154,7 @@ with advanced_col1:
     st.caption("""Generate 1000 configurations automatically and analyze the 100 most deviating from the original pattern.
     
 **Metrics explained:**
-- **Average Deviation**: Mean Euclidean distance (in meters) of all generated points from their original positions
+- **Perpendicular Variance**: Variance of the perpendicular distances (in m²) from generated points to the original trajectory path
 - **Max Angle Deviation**: Maximum change in trajectory angle (in degrees) between consecutive timestamps
 - **Max Distance Deviation**: Maximum change in distance (in meters) between consecutive timestamps
 
@@ -5042,6 +5042,54 @@ if generate_btn:
         # Run the binary search generator
         generate_binary_multipoint()
 
+# ============= Perpendicular variance helper ============
+def _perpendicular_variance(
+    all_points_plot: dict[int, np.ndarray],
+    successful_points: list[dict[str, Any]],
+) -> float:
+    """Compute variance of perpendicular distances from generated points to the original path.
+
+    For each object the original trajectory forms a polyline.  For every
+    generated point the shortest (perpendicular) distance to that polyline is
+    calculated.  The *variance* of all those distances (across all objects) is
+    returned as a single scalar.
+    """
+    # Map global flat index → generated coordinate
+    gen_map: dict[int, np.ndarray] = {}
+    for sp in successful_points:
+        gen_map[sp["original_parent_idx"]] = sp["point"]
+
+    perp_dists: list[float] = []
+    global_idx = 0
+    for oid in sorted(all_points_plot.keys()):
+        orig = all_points_plot[oid]
+        n = orig.shape[0]
+        for li in range(n):
+            gi = global_idx + li
+            if gi in gen_map:
+                pt = gen_map[gi]
+                # Shortest distance from pt to the original polyline
+                best = float("inf")
+                for j in range(n - 1):
+                    A = orig[j]
+                    B = orig[j + 1]
+                    AB = B - A
+                    AP = pt - A
+                    ab2 = float(np.dot(AB, AB))
+                    if ab2 < 1e-12:
+                        d = float(np.linalg.norm(AP))
+                    else:
+                        t = max(0.0, min(1.0, float(np.dot(AP, AB)) / ab2))
+                        d = float(np.linalg.norm(pt - (A + t * AB)))
+                    if d < best:
+                        best = d
+                perp_dists.append(best)
+        global_idx += n
+
+    if len(perp_dists) < 2:
+        return 0.0
+    return float(np.var(perp_dists))
+
 # ============= Advanced batch generation handlers ============
 if generate_30_btn:
     # Store in session state that we want to generate
@@ -5131,26 +5179,16 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
     else:
         st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
         
-        # Calculate deviation for each configuration
+        # Calculate perpendicular variance for each configuration
         deviations: list[tuple[int, float, dict[str, Any]]] = []
         
         for config in all_generated_configs:
-            total_deviation = 0.0
-            num_points = 0
-            
             successful_points = config.get("successful_points", [])
-            for sp in successful_points:
-                parent_coord = sp["parent_point"]
-                generated_coord = sp["point"]
-                distance = float(np.linalg.norm(generated_coord - parent_coord))
-                total_deviation += distance
-                num_points += 1
-            
-            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            pv = _perpendicular_variance(all_points_plot, successful_points)
             config_num = config.get("config_number", 0)
-            deviations.append((config_num, avg_deviation, config))
+            deviations.append((config_num, pv, config))
         
-        # Sort by deviation (descending) and take top 100
+        # Sort by perpendicular variance (descending) and take top 100
         deviations.sort(key=lambda x: x[1], reverse=True)
         top_100 = deviations[:100]
         
@@ -5233,26 +5271,16 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
     else:
         st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
         
-        # Calculate deviation for each configuration
+        # Calculate perpendicular variance for each configuration
         deviations: list[tuple[int, float, dict[str, Any]]] = []
         
         for config in all_generated_configs:
-            total_deviation = 0.0
-            num_points = 0
-            
             successful_points = config.get("successful_points", [])
-            for sp in successful_points:
-                parent_coord = sp["parent_point"]
-                generated_coord = sp["point"]
-                distance = float(np.linalg.norm(generated_coord - parent_coord))
-                total_deviation += distance
-                num_points += 1
-            
-            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            pv = _perpendicular_variance(all_points_plot, successful_points)
             config_num = config.get("config_number", 0)
-            deviations.append((config_num, avg_deviation, config))
+            deviations.append((config_num, pv, config))
         
-        # Sort by deviation (descending) and take top 500
+        # Sort by perpendicular variance (descending) and take top 500
         deviations.sort(key=lambda x: x[1], reverse=True)
         top_500 = deviations[:500]
         
@@ -5336,26 +5364,16 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
     else:
         st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
         
-        # Calculate deviation for each configuration
+        # Calculate perpendicular variance for each configuration
         deviations: list[tuple[int, float, dict[str, Any]]] = []
         
         for config in all_generated_configs:
-            total_deviation = 0.0
-            num_points = 0
-            
             successful_points = config.get("successful_points", [])
-            for sp in successful_points:
-                parent_coord = sp["parent_point"]
-                generated_coord = sp["point"]
-                distance = float(np.linalg.norm(generated_coord - parent_coord))
-                total_deviation += distance
-                num_points += 1
-            
-            avg_deviation = total_deviation / num_points if num_points > 0 else 0.0
+            pv = _perpendicular_variance(all_points_plot, successful_points)
             config_num = config.get("config_number", 0)
-            deviations.append((config_num, avg_deviation, config))
+            deviations.append((config_num, pv, config))
         
-        # Sort by deviation (descending) and take top 5
+        # Sort by perpendicular variance (descending) and take top 5
         deviations.sort(key=lambda x: x[1], reverse=True)
         top_5 = deviations[:5]
         
@@ -5372,18 +5390,18 @@ if st.session_state.get("_generate_30_results", None):
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
 **Deviation Metrics (calculated per configuration):**
-- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions. This measures overall spatial displacement.
+- **Perpendicular Variance (m²)**: Variance of the perpendicular (shortest) distances from each generated point to the original trajectory polyline. Higher values indicate more uneven lateral path deviation.
 - **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps. Values range from 0° (parallel) to 180° (opposite direction).
 - **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps. This captures variations in vehicle speed or trajectory compression/expansion.
 
-Configurations are ranked by average deviation (highest first). Each visualization shows a focused 9-timestamp window around the largest deviation, with original and generated trajectories aligned on the same axes.""")
+Configurations are ranked by perpendicular variance (highest first). Each visualization shows a focused 9-timestamp window around the largest deviation, with original and generated trajectories aligned on the same axes.""")
     
     # Store metrics for summary chart
     config_metrics: list[dict[str, Any]] = []
     
     # Display each of the top 100
     for rank, (config_num, deviation, config) in enumerate(top_100, 1):
-            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.3f}m)")
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Perp. variance: {deviation:.4f} m²)")
             
             # Get configuration characteristics
             pdp_variant = config.get("pdp_variant", "fundamental")
@@ -5450,7 +5468,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
             config_metrics.append({
                 "config_num": config_num,
                 "rank": rank,
-                "avg_deviation": deviation,
+                "perp_variance": deviation,
                 "max_angle_dev": max_angle_deviation,
                 "max_dist_dev": max_distance_deviation
             })
@@ -5671,14 +5689,14 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     # Calculate statistics
     angle_devs = [m['max_angle_dev'] for m in config_metrics]
     dist_devs = [m['max_dist_dev'] for m in config_metrics]
-    avg_devs = [m['avg_deviation'] for m in config_metrics]
+    pv_vals = [m['perp_variance'] for m in config_metrics]
     
     mean_angle = float(np.mean(angle_devs))
     std_angle = float(np.std(angle_devs))
     mean_dist = float(np.mean(dist_devs))
     std_dist = float(np.std(dist_devs))
-    mean_avg = float(np.mean(avg_devs))
-    std_avg = float(np.std(avg_devs))
+    mean_pv = float(np.mean(pv_vals))
+    std_pv = float(np.std(pv_vals))
     
     # Display statistics summary
     st.markdown("### Statistics Summary (Top 100 configurations)")
@@ -5686,7 +5704,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Avg Deviation", f"{mean_avg:.2f}m ± {std_avg:.2f}m")
+        st.metric("Perp. Variance", f"{mean_pv:.4f} m² ± {std_pv:.4f}")
     with col2:
         st.metric("Max Angle Dev", f"{mean_angle:.1f}° ± {std_angle:.1f}°")
     with col3:
@@ -5698,19 +5716,19 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     st.markdown("### Top 100 Configurations - Detailed Metrics")
     st.caption("""Complete metrics for the 100 most deviating configurations (selected from 1000 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
     
-- **Rank**: Position in descending order of average deviation (1 = highest deviation)
+- **Rank**: Position in descending order of perpendicular variance (1 = highest variance)
 - **Config #**: Unique configuration identifier from the generation batch (1-1000)
-- **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
+- **Perp. Variance (m²)**: Variance of perpendicular distances from generated points to the original path
 - **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
 - **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
     
     # Create DataFrame for display
     df_metrics = pd.DataFrame(config_metrics)
-    df_metrics = df_metrics[['rank', 'config_num', 'avg_deviation', 'max_angle_dev', 'max_dist_dev']]
-    df_metrics.columns = ['Rank', 'Config #', 'Avg Deviation (m)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
+    df_metrics = df_metrics[['rank', 'config_num', 'perp_variance', 'max_angle_dev', 'max_dist_dev']]
+    df_metrics.columns = ['Rank', 'Config #', 'Perp. Variance (m²)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
     
     # Format numeric columns
-    df_metrics['Avg Deviation (m)'] = df_metrics['Avg Deviation (m)'].apply(lambda x: f"{x:.2f}")
+    df_metrics['Perp. Variance (m²)'] = df_metrics['Perp. Variance (m²)'].apply(lambda x: f"{x:.4f}")
     df_metrics['Max Angle Dev (°)'] = df_metrics['Max Angle Dev (°)'].apply(lambda x: f"{x:.1f}")
     df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.2f}")
     
@@ -5737,7 +5755,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
 - **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
 - **Right chart**: Maximum distance deviation shows the largest speed/spacing variation in any trajectory segment
 
-These metrics help identify configurations with extreme local variations, even if their average deviation is moderate.""")
+These metrics help identify configurations with extreme local variations, even if their perpendicular variance is moderate.""")
     
     # Create bar chart
     fig_metrics = Figure(figsize=(12, 5), dpi=100)
@@ -5802,18 +5820,18 @@ if st.session_state.get("_generate_5000_results", None):
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
 **Deviation Metrics (calculated per configuration):**
-- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions. This measures overall spatial displacement.
+- **Perpendicular Variance (m²)**: Variance of the perpendicular (shortest) distances from each generated point to the original trajectory polyline. Higher values indicate more uneven lateral path deviation.
 - **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps. Values range from 0° (parallel) to 180° (opposite direction).
 - **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps. This captures variations in vehicle speed or trajectory compression/expansion.
 
-Configurations are ranked by average deviation (highest first). Each visualization shows the complete generated trajectory with lane markings for context.""")
+Configurations are ranked by perpendicular variance (highest first). Each visualization shows the complete generated trajectory with lane markings for context.""")
     
     # Store metrics for summary chart
     config_metrics: list[dict[str, Any]] = []
     
     # Display each of the top 500
     for rank, (config_num, deviation, config) in enumerate(top_500, 1):
-            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Perp. variance: {deviation:.4f} m²)")
             
             # Get configuration characteristics
             pdp_variant = config.get("pdp_variant", "fundamental")
@@ -5880,7 +5898,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
             config_metrics.append({
                 "config_num": config_num,
                 "rank": rank,
-                "avg_deviation": deviation,
+                "perp_variance": deviation,
                 "max_angle_dev": max_angle_deviation,
                 "max_dist_dev": max_distance_deviation
             })
@@ -6042,14 +6060,14 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     # Calculate statistics
     angle_devs = [m['max_angle_dev'] for m in config_metrics]
     dist_devs = [m['max_dist_dev'] for m in config_metrics]
-    avg_devs = [m['avg_deviation'] for m in config_metrics]
+    pv_vals = [m['perp_variance'] for m in config_metrics]
     
     mean_angle = float(np.mean(angle_devs))
     std_angle = float(np.std(angle_devs))
     mean_dist = float(np.mean(dist_devs))
     std_dist = float(np.std(dist_devs))
-    mean_avg = float(np.mean(avg_devs))
-    std_avg = float(np.std(avg_devs))
+    mean_pv = float(np.mean(pv_vals))
+    std_pv = float(np.std(pv_vals))
     
     # Display statistics summary
     st.markdown("### Statistics Summary (Top 500 configurations)")
@@ -6057,7 +6075,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Avg Deviation", f"{mean_avg:.3f}m ± {std_avg:.3f}m")
+        st.metric("Perp. Variance", f"{mean_pv:.4f} m² ± {std_pv:.4f}")
     with col2:
         st.metric("Max Angle Dev", f"{mean_angle:.3f}° ± {std_angle:.3f}°")
     with col3:
@@ -6069,19 +6087,19 @@ Configurations are ranked by average deviation (highest first). Each visualizati
     st.markdown("### Top 500 Configurations - Detailed Metrics")
     st.caption("""Complete metrics for the most deviating configurations (selected from 5 generated). Select cells and copy (Ctrl+C) to paste into Excel, PowerPoint, or other applications.
     
-- **Rank**: Position in descending order of average deviation (1 = highest deviation)
+- **Rank**: Position in descending order of perpendicular variance (1 = highest variance)
 - **Config #**: Unique configuration identifier from the generation batch (1-5)
-- **Avg Deviation (m)**: Mean distance of generated points from originals (calculated per configuration)
+- **Perp. Variance (m²)**: Variance of perpendicular distances from generated points to the original path
 - **Max Angle Dev (°)**: Largest trajectory angle change between consecutive timestamps (per configuration)
 - **Max Distance Dev (m)**: Largest inter-point spacing change between consecutive timestamps (per configuration)""")
     
     # Create DataFrame for display
     df_metrics = pd.DataFrame(config_metrics)
-    df_metrics = df_metrics[['rank', 'config_num', 'avg_deviation', 'max_angle_dev', 'max_dist_dev']]
-    df_metrics.columns = ['Rank', 'Config #', 'Avg Deviation (m)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
+    df_metrics = df_metrics[['rank', 'config_num', 'perp_variance', 'max_angle_dev', 'max_dist_dev']]
+    df_metrics.columns = ['Rank', 'Config #', 'Perp. Variance (m²)', 'Max Angle Dev (°)', 'Max Distance Dev (m)']
     
     # Format numeric columns
-    df_metrics['Avg Deviation (m)'] = df_metrics['Avg Deviation (m)'].apply(lambda x: f"{x:.3f}")
+    df_metrics['Perp. Variance (m²)'] = df_metrics['Perp. Variance (m²)'].apply(lambda x: f"{x:.4f}")
     df_metrics['Max Angle Dev (°)'] = df_metrics['Max Angle Dev (°)'].apply(lambda x: f"{x:.3f}")
     df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.3f}")
     
@@ -6108,7 +6126,7 @@ Configurations are ranked by average deviation (highest first). Each visualizati
 - **Left chart**: Maximum angle deviation shows the largest directional change in any trajectory segment
 - **Right chart**: Maximum distance deviation shows the largest speed/spacing variation in any trajectory segment
 
-These metrics help identify configurations with extreme local variations, even if their average deviation is moderate.""")
+These metrics help identify configurations with extreme local variations, even if their perpendicular variance is moderate.""")
     
     # Create bar chart
     fig_metrics = Figure(figsize=(12, 5), dpi=100)
@@ -6175,18 +6193,18 @@ if st.session_state.get("_generate_50_results", None):
 **Generation settings**: 50 configurations × 125 iterations, focused on the reinsertion zone.
 
 **Deviation Metrics (calculated per configuration):**
-- **Average Deviation (m)**: Mean Euclidean distance of all generated points from their original parent positions.
+- **Perpendicular Variance (m²)**: Variance of the perpendicular (shortest) distances from each generated point to the original trajectory polyline. Higher values indicate more uneven lateral path deviation.
 - **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
 - **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
 
-Configurations are ranked by average deviation (highest first).""")
+Configurations are ranked by perpendicular variance (highest first).""")
     
     # Store metrics for summary chart
     config_metrics: list[dict[str, Any]] = []
     
     # Display each of the top 5
     for rank, (config_num, deviation, config) in enumerate(top_5, 1):
-            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Avg deviation: {deviation:.2f}m)")
+            st.markdown(f"#### Rank {rank}: Configuration #{config_num} (Perp. variance: {deviation:.4f} m²)")
             
             # Get configuration characteristics
             pdp_variant = config.get("pdp_variant", "fundamental")
@@ -6245,14 +6263,14 @@ Configurations are ranked by average deviation (highest first).""")
             config_metrics.append({
                 "config_num": config_num,
                 "rank": rank,
-                "avg_deviation": deviation,
+                "perp_variance": deviation,
                 "max_angle_deviation": max_angle_deviation,
                 "max_distance_deviation": max_distance_deviation
             })
             
             # Display summary metrics
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("Avg Deviation", f"{deviation:.2f}m")
+            mc1.metric("Perp. Variance", f"{deviation:.4f} m²")
             mc2.metric("Max Angle Δ", f"{max_angle_deviation:.1f}°")
             mc3.metric("Max Distance Δ", f"{max_distance_deviation:.2f}m")
             mc4.metric("Iterations", f"{iterations}")
@@ -6344,7 +6362,7 @@ Configurations are ranked by average deviation (highest first).""")
             ax_gen.legend(fontsize=7, loc='upper left')
             ax_gen.set_xlabel("x (m)")
             ax_gen.set_ylabel("y (m)")
-            ax_gen.set_title(f"Config #{config_num} — Avg deviation: {deviation:.2f}m (zoomed to max deviation)")
+            ax_gen.set_title(f"Config #{config_num} — Perp. variance: {deviation:.4f} m² (zoomed to max deviation)")
             fig_gen.tight_layout()
             
             buf = io.BytesIO()
@@ -6358,11 +6376,11 @@ Configurations are ranked by average deviation (highest first).""")
     if config_metrics:
         st.markdown("#### Summary")
         metrics_df = pd.DataFrame(config_metrics)
-        st.dataframe(metrics_df[["rank", "config_num", "avg_deviation", "max_angle_deviation", "max_distance_deviation"]].rename(
+        st.dataframe(metrics_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={
                 "rank": "Rank",
                 "config_num": "Config #",
-                "avg_deviation": "Avg Deviation (m)",
+                "perp_variance": "Perp. Variance (m²)",
                 "max_angle_deviation": "Max Angle Δ (°)",
                 "max_distance_deviation": "Max Distance Δ (m)"
             }
