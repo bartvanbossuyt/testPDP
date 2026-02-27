@@ -954,7 +954,7 @@ def _offset_polyline(points: np.ndarray, offset: float) -> np.ndarray:
 
     return points + offset * normals
 
-def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Tuple[float, float] = None, config_offset: float = 0.0) -> dict[str, Any] | None:
+def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count: int, xlim: Optional[Tuple[float, float]] = None, config_offset: float = 0.0) -> dict[str, Any] | None:
     """
     Build lane polylines for a configuration. Handles two cases:
     1. Vehicles traveling in same direction: creates parallel lanes
@@ -3260,8 +3260,7 @@ def _get_frenet_coordinates_for_ordering() -> Optional[dict[int, np.ndarray]]:
     Returns dict mapping object_id -> (N, 2) array of [s, n] coordinates.
     Returns None if not a curved road config or if Frenet transform fails.
     """
-    # Use the global selected_c_int which holds the current config number
-    global selected_c_int
+    # Use the module-level selected_c_int which holds the current config number
     current_config = selected_c_int
     
     # Only apply Frenet for curved road configs
