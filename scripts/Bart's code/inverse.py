@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple, Callable, IO, Optional, Any
 import io
 import time
+import traceback
 from PIL import Image as PILImage
 
 import numpy as np
@@ -3286,7 +3287,6 @@ def _get_frenet_coordinates_for_ordering() -> Optional[dict[int, np.ndarray]]:
         return frenet_coords
     except Exception as e:
         print(f"[FRENET] Exception: {e}")
-        import traceback
         traceback.print_exc()
         return None
 
