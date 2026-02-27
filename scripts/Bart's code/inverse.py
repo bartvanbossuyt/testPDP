@@ -8109,7 +8109,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             # Add a longer pause on the last frame
             _ext30_gif_buf = io.BytesIO()
             _ext30_durations = [200] * len(_ext30_gif_frames)  # 200ms per frame
-            _ext30_durations[-1] = 1500  # Pause 1.5s on last frame
+            if _ext30_durations:
+                _ext30_durations[-1] = 1500  # Pause 1.5s on last frame
             _ext30_gif_frames[0].save(
                 _ext30_gif_buf,
                 format='GIF',
@@ -8161,9 +8162,13 @@ def _display_top_n_with_gif(
 ) -> None:
     """Display top-N most deviating configs with static plot + animated GIF download."""
     st.markdown("---")
+    if not all_points_plot:
+        st.warning("No data available to display.")
+        return
     _dn_n_ts_per_obj = {oid: all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys())}
     _dn_n_ts_total = sum(_dn_n_ts_per_obj.values())
-    st.markdown(f"### {section_title} — {list(_dn_n_ts_per_obj.values())[0]} timestamps per object")
+    _dn_ts_display = list(_dn_n_ts_per_obj.values())[0] if _dn_n_ts_per_obj else 0
+    st.markdown(f"### {section_title} — {_dn_ts_display} timestamps per object")
     st.markdown(f"{section_description} | **{_dn_n_ts_total} total points** ({', '.join(f'obj {oid}: {n}' for oid, n in _dn_n_ts_per_obj.items())})")
 
     _dn_config_metrics: list[dict[str, Any]] = []
@@ -8325,7 +8330,9 @@ def _display_top_n_with_gif(
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8535,7 +8542,9 @@ if st.session_state.get("_generate_half_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8733,7 +8742,9 @@ if st.session_state.get("_generate_quarter_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8923,7 +8934,9 @@ if st.session_state.get("_generate_eighth_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9112,7 +9125,9 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9301,7 +9316,9 @@ if st.session_state.get("_generate_four_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9490,7 +9507,9 @@ if st.session_state.get("_generate_two_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames); durations[-1] = 1500
+            durations = [200] * len(gif_frames)
+            if durations:
+                durations[-1] = 1500
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
