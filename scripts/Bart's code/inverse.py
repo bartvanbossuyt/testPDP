@@ -5799,394 +5799,93 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
         st.session_state["_generate_ext30_half_results"] = top_3
         st.rerun()
 
-# ============= Generate 100 configs × 1000 iterations — ½ timestamps filtered ============
-if st.session_state.get("_generate_half_ts_requested", False) and not st.session_state.get("_generate_half_ts_results", None):
+
+# ---------------------------------------------------------------------------
+# Helper: run filtered-timestamp generation (deduplicates ½/¼/⅛/1∕16 blocks)
+# ---------------------------------------------------------------------------
+def _run_filtered_ts_generation(
+    *,
+    step: int,
+    label: str,
+    session_prefix: str,
+    state_prefix: str,
+    all_objects_points: dict[int, tuple[np.ndarray, np.ndarray]],
+    external_pts_for_window: np.ndarray,
+    external_ts_for_window: np.ndarray,
+    num_configs: int = MAX_FILTER_CONFIGS,
+    num_iterations: int = MAX_GENERATION_ITERATIONS,
+) -> None:
+    """Generate *num_configs* configurations using only every *step*-th timestamp.
+
+    The last timestamp is always kept regardless of divisibility.
+    Results (top-10 by perpendicular variance) are stored in
+    ``st.session_state[f"_generate_{session_prefix}_ts_results"]``.
+    Filtered data is stored at ``st.session_state[f"_{state_prefix}_points_plot"]``
+    and ``st.session_state[f"_{state_prefix}_vals_plot"]``.
+    """
+    global all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat
+    global all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot
+
     st.markdown("---")
-    st.markdown("### Generating 100 Configurations (½ timestamps, filtered)...")
+    st.markdown(f"### Generating {num_configs} Configurations ({label} timestamps, filtered)...")
 
-    # --- Step 1: Filter timestamps — keep even timestamps + always keep the last timestamp ---
-    _hts_sorted_oids = sorted(all_objects_points.keys())
-    _hts_points_plot: dict[int, np.ndarray] = {}
-    _hts_vals_plot: dict[int, np.ndarray] = {}
+    # --- Step 1: Filter timestamps — keep every step-th + always keep the last ---
+    sorted_oids = sorted(all_objects_points.keys())
+    filt_points: dict[int, np.ndarray] = {}
+    filt_vals: dict[int, np.ndarray] = {}
 
-    for _hts_oid in _hts_sorted_oids:
-        _hts_orig_pts, _hts_orig_ts = all_objects_points[_hts_oid]
-        # Keep even timestamps
-        _hts_even_mask = (_hts_orig_ts % 2 == 0)
-        # Always keep the last timestamp (even if odd, e.g. t=136)
-        _hts_last_mask = np.zeros(len(_hts_orig_ts), dtype=bool)
-        _hts_last_mask[-1] = True
-        _hts_keep_mask = _hts_even_mask | _hts_last_mask
-        _hts_points_plot[_hts_oid] = _hts_orig_pts[_hts_keep_mask]
-        _hts_vals_plot[_hts_oid] = _hts_orig_ts[_hts_keep_mask]
+    for oid in sorted_oids:
+        orig_pts, orig_ts = all_objects_points[oid]
+        keep_mask = (orig_ts % step == 0)
+        last_mask = np.zeros(len(orig_ts), dtype=bool)
+        last_mask[-1] = True
+        filt_points[oid] = orig_pts[keep_mask | last_mask]
+        filt_vals[oid] = orig_ts[keep_mask | last_mask]
 
     # --- Step 2: Count effective timestamps ---
-    _hts_n_ts_per_obj = {oid: _hts_points_plot[oid].shape[0] for oid in _hts_sorted_oids}
-    _hts_n_ts_total = sum(_hts_n_ts_per_obj.values())
-    _hts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _hts_n_ts_per_obj.items())
-    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_hts_ts_info}")
-    st.info(f"Aantal timestamps na filtering: {_hts_n_ts_total} totaal ({_hts_ts_info})")
+    n_ts_per_obj = {oid: filt_points[oid].shape[0] for oid in sorted_oids}
+    n_ts_total = sum(n_ts_per_obj.values())
+    ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in n_ts_per_obj.items())
+    st.caption(f"{num_configs} configs × {num_iterations} iter | exponential | PDP fundamental | {ts_info}")
+    st.info(f"Aantal timestamps na filtering: {n_ts_total} totaal ({ts_info})")
 
     # --- Step 3: Build flattened points from filtered data ---
-    _hts_pts_list: list[np.ndarray] = []
-    _hts_ts_list: list[float] = []
-    for _hts_oid in _hts_sorted_oids:
-        for _hts_li in range(_hts_points_plot[_hts_oid].shape[0]):
-            _hts_pts_list.append(_hts_points_plot[_hts_oid][_hts_li])
-            _hts_ts_list.append(float(_hts_vals_plot[_hts_oid][_hts_li]))
-    # Add external (fixed) points
-    for _hts_ext_pt, _hts_ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _hts_pts_list.append(_hts_ext_pt)
-        _hts_ts_list.append(float(_hts_ext_t))
-    _hts_pts_flat = np.array(_hts_pts_list) if _hts_pts_list else np.array([]).reshape(0, 2)
-    _hts_ts_flat = np.array(_hts_ts_list) if _hts_ts_list else np.array([])
+    pts_list: list[np.ndarray] = []
+    ts_list: list[float] = []
+    obj_ids_flat: list[int] = []
+    local_idx_flat: list[int] = []
+    is_fixed_flat: list[bool] = []
 
-    # Build tracking arrays for the filtered flat representation
-    _hts_obj_ids_flat: list[int] = []
-    _hts_local_idx_flat: list[int] = []
-    _hts_is_fixed_flat: list[bool] = []
-    for _hts_oid in _hts_sorted_oids:
-        for _hts_li in range(_hts_points_plot[_hts_oid].shape[0]):
-            _hts_obj_ids_flat.append(_hts_oid)
-            _hts_local_idx_flat.append(_hts_li)
-            _hts_is_fixed_flat.append(False)
-    for _hts_ei in range(len(external_pts_for_window)):
-        _hts_obj_ids_flat.append(-1)
-        _hts_local_idx_flat.append(_hts_ei)
-        _hts_is_fixed_flat.append(True)
+    for oid in sorted_oids:
+        for li in range(filt_points[oid].shape[0]):
+            pts_list.append(filt_points[oid][li])
+            ts_list.append(float(filt_vals[oid][li]))
+            obj_ids_flat.append(oid)
+            local_idx_flat.append(li)
+            is_fixed_flat.append(False)
+    for ext_pt, ext_t in zip(external_pts_for_window, external_ts_for_window):
+        pts_list.append(ext_pt)
+        ts_list.append(float(ext_t))
+        obj_ids_flat.append(-1)
+        local_idx_flat.append(len(pts_list) - 1)
+        is_fixed_flat.append(True)
 
-    # --- Step 4: Temporarily swap global variables so run_multipoint_iteration works with filtered data ---
-    _save_all_pts_flat = all_pts_flat
-    _save_all_ts_flat = all_ts_flat
-    _save_all_obj_ids_flat = all_obj_ids_flat
-    _save_all_local_idx_flat = all_local_idx_flat
-    _save_all_is_fixed_flat = all_is_fixed_flat
-    _save_n_total_points = n_total_points
-    _save_all_points_plot = all_points_plot
-    _save_all_vals_plot = all_vals_plot
-
-    all_pts_flat = _hts_pts_flat
-    all_ts_flat = _hts_ts_flat
-    all_obj_ids_flat = _hts_obj_ids_flat
-    all_local_idx_flat = _hts_local_idx_flat
-    all_is_fixed_flat = _hts_is_fixed_flat
-    n_total_points = _hts_pts_flat.shape[0]
-    all_points_plot = _hts_points_plot
-    all_vals_plot = _hts_vals_plot
-
-    try:
-        # --- Generate 100 configs × 1000 iterations ---
-        pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _hts_iterations = 1000
-        _hts_num_configs = 100
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        for config_idx in range(_hts_num_configs):
-            current_points = _hts_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-
-            for iteration in range(_hts_iterations):
-                status_text.text(f"½-ts filtered — config {config_idx + 1}/{_hts_num_configs} | iter {iteration + 1}/{_hts_iterations}")
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                )
-
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _hts_iterations,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                })
-
-            progress_bar.progress((config_idx + 1) / _hts_num_configs)
-
-        progress_bar.empty()
-        status_text.empty()
-    finally:
-        # --- Restore global variables (guaranteed even on exception) ---
-        all_pts_flat = _save_all_pts_flat
-        all_ts_flat = _save_all_ts_flat
-        all_obj_ids_flat = _save_all_obj_ids_flat
-        all_local_idx_flat = _save_all_local_idx_flat
-        all_is_fixed_flat = _save_all_is_fixed_flat
-        n_total_points = _save_n_total_points
-        all_points_plot = _save_all_points_plot
-        all_vals_plot = _save_all_vals_plot
-
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_half_ts_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(_hts_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_10 = deviations[:10]
-
-        # Store results AND the filtered data so display block can use them
-        st.session_state["_generate_half_ts_results"] = top_10
-        st.session_state["_hts_points_plot"] = _hts_points_plot
-        st.session_state["_hts_vals_plot"] = _hts_vals_plot
-        st.rerun()
-
-# ============= Generate 100 configs × 1000 iterations — ¼ timestamps filtered ============
-if st.session_state.get("_generate_quarter_ts_requested", False) and not st.session_state.get("_generate_quarter_ts_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (¼ timestamps, filtered)...")
-
-    # --- Step 1: Filter timestamps — keep every 4th timestamp (0,4,8,...) + always keep the last ---
-    _qts_sorted_oids = sorted(all_objects_points.keys())
-    _qts_points_plot: dict[int, np.ndarray] = {}
-    _qts_vals_plot: dict[int, np.ndarray] = {}
-
-    for _qts_oid in _qts_sorted_oids:
-        _qts_orig_pts, _qts_orig_ts = all_objects_points[_qts_oid]
-        # Keep every 4th timestamp (0, 4, 8, ..., 136)
-        _qts_step_mask = (_qts_orig_ts % 4 == 0)
-        # Always keep the last timestamp (even if not divisible by 4, e.g. t=136)
-        _qts_last_mask = np.zeros(len(_qts_orig_ts), dtype=bool)
-        _qts_last_mask[-1] = True
-        _qts_keep_mask = _qts_step_mask | _qts_last_mask
-        _qts_points_plot[_qts_oid] = _qts_orig_pts[_qts_keep_mask]
-        _qts_vals_plot[_qts_oid] = _qts_orig_ts[_qts_keep_mask]
-
-    # --- Step 2: Count effective timestamps ---
-    _qts_n_ts_per_obj = {oid: _qts_points_plot[oid].shape[0] for oid in _qts_sorted_oids}
-    _qts_n_ts_total = sum(_qts_n_ts_per_obj.values())
-    _qts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _qts_n_ts_per_obj.items())
-    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_qts_ts_info}")
-    st.info(f"Aantal timestamps na filtering: {_qts_n_ts_total} totaal ({_qts_ts_info})")
-
-    # --- Step 3: Build flattened points from filtered data ---
-    _qts_pts_list: list[np.ndarray] = []
-    _qts_ts_list: list[float] = []
-    for _qts_oid in _qts_sorted_oids:
-        for _qts_li in range(_qts_points_plot[_qts_oid].shape[0]):
-            _qts_pts_list.append(_qts_points_plot[_qts_oid][_qts_li])
-            _qts_ts_list.append(float(_qts_vals_plot[_qts_oid][_qts_li]))
-    # Add external (fixed) points
-    for _qts_ext_pt, _qts_ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _qts_pts_list.append(_qts_ext_pt)
-        _qts_ts_list.append(float(_qts_ext_t))
-    _qts_pts_flat = np.array(_qts_pts_list) if _qts_pts_list else np.array([]).reshape(0, 2)
-    _qts_ts_flat = np.array(_qts_ts_list) if _qts_ts_list else np.array([])
-
-    # Build tracking arrays for the filtered flat representation
-    _qts_obj_ids_flat: list[int] = []
-    _qts_local_idx_flat: list[int] = []
-    _qts_is_fixed_flat: list[bool] = []
-    for _qts_oid in _qts_sorted_oids:
-        for _qts_li in range(_qts_points_plot[_qts_oid].shape[0]):
-            _qts_obj_ids_flat.append(_qts_oid)
-            _qts_local_idx_flat.append(_qts_li)
-            _qts_is_fixed_flat.append(False)
-    for _qts_ei in range(len(external_pts_for_window)):
-        _qts_obj_ids_flat.append(-1)
-        _qts_local_idx_flat.append(_qts_ei)
-        _qts_is_fixed_flat.append(True)
-
-    # --- Step 4: Temporarily swap global variables so run_multipoint_iteration works with filtered data ---
-    _save_all_pts_flat = all_pts_flat
-    _save_all_ts_flat = all_ts_flat
-    _save_all_obj_ids_flat = all_obj_ids_flat
-    _save_all_local_idx_flat = all_local_idx_flat
-    _save_all_is_fixed_flat = all_is_fixed_flat
-    _save_n_total_points = n_total_points
-    _save_all_points_plot = all_points_plot
-    _save_all_vals_plot = all_vals_plot
-
-    all_pts_flat = _qts_pts_flat
-    all_ts_flat = _qts_ts_flat
-    all_obj_ids_flat = _qts_obj_ids_flat
-    all_local_idx_flat = _qts_local_idx_flat
-    all_is_fixed_flat = _qts_is_fixed_flat
-    n_total_points = _qts_pts_flat.shape[0]
-    all_points_plot = _qts_points_plot
-    all_vals_plot = _qts_vals_plot
-
-    try:
-        # --- Generate 100 configs × 1000 iterations ---
-        pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _qts_iterations = 1000
-        _qts_num_configs = 100
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        for config_idx in range(_qts_num_configs):
-            current_points = _qts_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-
-            for iteration in range(_qts_iterations):
-                status_text.text(f"¼-ts filtered — config {config_idx + 1}/{_qts_num_configs} | iter {iteration + 1}/{_qts_iterations}")
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                )
-
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _qts_iterations,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                })
-
-            progress_bar.progress((config_idx + 1) / _qts_num_configs)
-
-        progress_bar.empty()
-        status_text.empty()
-    finally:
-        # --- Restore global variables (guaranteed even on exception) ---
-        all_pts_flat = _save_all_pts_flat
-        all_ts_flat = _save_all_ts_flat
-        all_obj_ids_flat = _save_all_obj_ids_flat
-        all_local_idx_flat = _save_all_local_idx_flat
-        all_is_fixed_flat = _save_all_is_fixed_flat
-        n_total_points = _save_n_total_points
-        all_points_plot = _save_all_points_plot
-        all_vals_plot = _save_all_vals_plot
-
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_quarter_ts_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(_qts_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_10 = deviations[:10]
-
-        # Store results AND the filtered data so display block can use them
-        st.session_state["_generate_quarter_ts_results"] = top_10
-        st.session_state["_qts_points_plot"] = _qts_points_plot
-        st.session_state["_qts_vals_plot"] = _qts_vals_plot
-        st.rerun()
-
-# ============= Generate 100 configs × 1000 iterations — ⅛ timestamps filtered ============
-if st.session_state.get("_generate_eighth_ts_requested", False) and not st.session_state.get("_generate_eighth_ts_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (⅛ timestamps, filtered)...")
-
-    # --- Step 1: Filter timestamps — keep every 8th timestamp (0,8,16,...) + always keep the last ---
-    _ets_sorted_oids = sorted(all_objects_points.keys())
-    _ets_points_plot: dict[int, np.ndarray] = {}
-    _ets_vals_plot: dict[int, np.ndarray] = {}
-
-    for _ets_oid in _ets_sorted_oids:
-        _ets_orig_pts, _ets_orig_ts = all_objects_points[_ets_oid]
-        _ets_step_mask = (_ets_orig_ts % 8 == 0)
-        _ets_last_mask = np.zeros(len(_ets_orig_ts), dtype=bool)
-        _ets_last_mask[-1] = True
-        _ets_keep_mask = _ets_step_mask | _ets_last_mask
-        _ets_points_plot[_ets_oid] = _ets_orig_pts[_ets_keep_mask]
-        _ets_vals_plot[_ets_oid] = _ets_orig_ts[_ets_keep_mask]
-
-    # --- Step 2: Count effective timestamps ---
-    _ets_n_ts_per_obj = {oid: _ets_points_plot[oid].shape[0] for oid in _ets_sorted_oids}
-    _ets_n_ts_total = sum(_ets_n_ts_per_obj.values())
-    _ets_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _ets_n_ts_per_obj.items())
-    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_ets_ts_info}")
-    st.info(f"Aantal timestamps na filtering: {_ets_n_ts_total} totaal ({_ets_ts_info})")
-
-    # --- Step 3: Build flattened points from filtered data ---
-    _ets_pts_list: list[np.ndarray] = []
-    _ets_ts_list: list[float] = []
-    for _ets_oid in _ets_sorted_oids:
-        for _ets_li in range(_ets_points_plot[_ets_oid].shape[0]):
-            _ets_pts_list.append(_ets_points_plot[_ets_oid][_ets_li])
-            _ets_ts_list.append(float(_ets_vals_plot[_ets_oid][_ets_li]))
-    for _ets_ext_pt, _ets_ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _ets_pts_list.append(_ets_ext_pt)
-        _ets_ts_list.append(float(_ets_ext_t))
-    _ets_pts_flat = np.array(_ets_pts_list) if _ets_pts_list else np.array([]).reshape(0, 2)
-    _ets_ts_flat = np.array(_ets_ts_list) if _ets_ts_list else np.array([])
-
-    _ets_obj_ids_flat: list[int] = []
-    _ets_local_idx_flat: list[int] = []
-    _ets_is_fixed_flat: list[bool] = []
-    for _ets_oid in _ets_sorted_oids:
-        for _ets_li in range(_ets_points_plot[_ets_oid].shape[0]):
-            _ets_obj_ids_flat.append(_ets_oid)
-            _ets_local_idx_flat.append(_ets_li)
-            _ets_is_fixed_flat.append(False)
-    for _ets_ei in range(len(external_pts_for_window)):
-        _ets_obj_ids_flat.append(-1)
-        _ets_local_idx_flat.append(_ets_ei)
-        _ets_is_fixed_flat.append(True)
+    pts_flat = np.array(pts_list) if pts_list else np.array([]).reshape(0, 2)
+    ts_flat = np.array(ts_list) if ts_list else np.array([])
 
     # --- Step 4: Temporarily swap global variables ---
-    _save_all_pts_flat = all_pts_flat
-    _save_all_ts_flat = all_ts_flat
-    _save_all_obj_ids_flat = all_obj_ids_flat
-    _save_all_local_idx_flat = all_local_idx_flat
-    _save_all_is_fixed_flat = all_is_fixed_flat
-    _save_n_total_points = n_total_points
-    _save_all_points_plot = all_points_plot
-    _save_all_vals_plot = all_vals_plot
-
-    all_pts_flat = _ets_pts_flat
-    all_ts_flat = _ets_ts_flat
-    all_obj_ids_flat = _ets_obj_ids_flat
-    all_local_idx_flat = _ets_local_idx_flat
-    all_is_fixed_flat = _ets_is_fixed_flat
-    n_total_points = _ets_pts_flat.shape[0]
-    all_points_plot = _ets_points_plot
-    all_vals_plot = _ets_vals_plot
+    saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = pts_flat
+    all_ts_flat = ts_flat
+    all_obj_ids_flat = obj_ids_flat
+    all_local_idx_flat = local_idx_flat
+    all_is_fixed_flat = is_fixed_flat
+    n_total_points = pts_flat.shape[0]
+    all_points_plot = filt_points
+    all_vals_plot = filt_vals
 
     try:
         pdp_variant = "fundamental"
@@ -6196,18 +5895,19 @@ if st.session_state.get("_generate_eighth_ts_requested", False) and not st.sessi
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _ets_iterations = 1000
-        _ets_num_configs = 100
 
         progress_bar = st.progress(0)
         status_text = st.empty()
         all_generated_configs: list[dict[str, Any]] = []
 
-        for config_idx in range(_ets_num_configs):
-            current_points = _ets_pts_flat.copy()
+        for config_idx in range(num_configs):
+            current_points = pts_flat.copy()
             successful_points: list[SuccessfulPoint] = []
-            for iteration in range(_ets_iterations):
-                status_text.text(f"⅛-ts filtered — config {config_idx + 1}/{_ets_num_configs} | iter {iteration + 1}/{_ets_iterations}")
+            for iteration in range(num_iterations):
+                status_text.text(
+                    f"{label}-ts filtered — config {config_idx + 1}/{num_configs} "
+                    f"| iter {iteration + 1}/{num_iterations}"
+                )
                 successful_points, success = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
@@ -6222,182 +5922,69 @@ if st.session_state.get("_generate_eighth_ts_requested", False) and not st.sessi
                     "successful_points": successful_points,
                     "config_number": config_idx + 1,
                     "pdp_variant": pdp_variant,
-                    "iterations": _ets_iterations,
+                    "iterations": num_iterations,
                     "buffer_x": buffer_x, "buffer_y": buffer_y,
                     "rough_x": rough_x, "rough_y": rough_y,
                     "threshold_mode": mode, "max_threshold": max_threshold,
                 })
-            progress_bar.progress((config_idx + 1) / _ets_num_configs)
+            progress_bar.progress((config_idx + 1) / num_configs)
 
         progress_bar.empty()
         status_text.empty()
     finally:
-        # --- Restore global variables (guaranteed even on exception) ---
-        all_pts_flat = _save_all_pts_flat
-        all_ts_flat = _save_all_ts_flat
-        all_obj_ids_flat = _save_all_obj_ids_flat
-        all_local_idx_flat = _save_all_local_idx_flat
-        all_is_fixed_flat = _save_all_is_fixed_flat
-        n_total_points = _save_n_total_points
-        all_points_plot = _save_all_points_plot
-        all_vals_plot = _save_all_vals_plot
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = saved
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
-        st.session_state["_generate_eighth_ts_requested"] = False
+        st.session_state[f"_generate_{session_prefix}_ts_requested"] = False
     else:
         st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
         deviations: list[tuple[int, float, dict[str, Any]]] = []
         for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(_ets_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
+            sp = config.get("successful_points", [])
+            pv = _perpendicular_variance(filt_points, sp)
+            deviations.append((config.get("config_number", 0), pv, config))
         deviations.sort(key=lambda x: x[1], reverse=True)
         top_10 = deviations[:10]
-        st.session_state["_generate_eighth_ts_results"] = top_10
-        st.session_state["_ets_points_plot"] = _ets_points_plot
-        st.session_state["_ets_vals_plot"] = _ets_vals_plot
+        st.session_state[f"_generate_{session_prefix}_ts_results"] = top_10
+        st.session_state[f"_{state_prefix}_points_plot"] = filt_points
+        st.session_state[f"_{state_prefix}_vals_plot"] = filt_vals
         st.rerun()
 
-# ============= Generate 100 configs × 1000 iterations — 1/16 timestamps filtered ============
+
+# ============= Generate filtered-timestamp configurations (½, ¼, ⅛, 1/16) ============
+if st.session_state.get("_generate_half_ts_requested", False) and not st.session_state.get("_generate_half_ts_results", None):
+    _run_filtered_ts_generation(
+        step=2, label="½", session_prefix="half", state_prefix="hts",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+    )
+
+if st.session_state.get("_generate_quarter_ts_requested", False) and not st.session_state.get("_generate_quarter_ts_results", None):
+    _run_filtered_ts_generation(
+        step=4, label="¼", session_prefix="quarter", state_prefix="qts",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+    )
+
+if st.session_state.get("_generate_eighth_ts_requested", False) and not st.session_state.get("_generate_eighth_ts_results", None):
+    _run_filtered_ts_generation(
+        step=8, label="⅛", session_prefix="eighth", state_prefix="ets",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+    )
+
 if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.session_state.get("_generate_sixteenth_ts_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (1/16 timestamps, filtered)...")
-
-    _sts_sorted_oids = sorted(all_objects_points.keys())
-    _sts_points_plot: dict[int, np.ndarray] = {}
-    _sts_vals_plot: dict[int, np.ndarray] = {}
-
-    for _sts_oid in _sts_sorted_oids:
-        _sts_orig_pts, _sts_orig_ts = all_objects_points[_sts_oid]
-        _sts_step_mask = (_sts_orig_ts % 16 == 0)
-        _sts_last_mask = np.zeros(len(_sts_orig_ts), dtype=bool)
-        _sts_last_mask[-1] = True
-        _sts_keep_mask = _sts_step_mask | _sts_last_mask
-        _sts_points_plot[_sts_oid] = _sts_orig_pts[_sts_keep_mask]
-        _sts_vals_plot[_sts_oid] = _sts_orig_ts[_sts_keep_mask]
-
-    _sts_n_ts_per_obj = {oid: _sts_points_plot[oid].shape[0] for oid in _sts_sorted_oids}
-    _sts_n_ts_total = sum(_sts_n_ts_per_obj.values())
-    _sts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _sts_n_ts_per_obj.items())
-    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_sts_ts_info}")
-    st.info(f"Aantal timestamps na filtering: {_sts_n_ts_total} totaal ({_sts_ts_info})")
-
-    _sts_pts_list: list[np.ndarray] = []
-    _sts_ts_list: list[float] = []
-    for _sts_oid in _sts_sorted_oids:
-        for _sts_li in range(_sts_points_plot[_sts_oid].shape[0]):
-            _sts_pts_list.append(_sts_points_plot[_sts_oid][_sts_li])
-            _sts_ts_list.append(float(_sts_vals_plot[_sts_oid][_sts_li]))
-    for _sts_ext_pt, _sts_ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _sts_pts_list.append(_sts_ext_pt)
-        _sts_ts_list.append(float(_sts_ext_t))
-    _sts_pts_flat = np.array(_sts_pts_list) if _sts_pts_list else np.array([]).reshape(0, 2)
-    _sts_ts_flat = np.array(_sts_ts_list) if _sts_ts_list else np.array([])
-
-    _sts_obj_ids_flat: list[int] = []
-    _sts_local_idx_flat: list[int] = []
-    _sts_is_fixed_flat: list[bool] = []
-    for _sts_oid in _sts_sorted_oids:
-        for _sts_li in range(_sts_points_plot[_sts_oid].shape[0]):
-            _sts_obj_ids_flat.append(_sts_oid)
-            _sts_local_idx_flat.append(_sts_li)
-            _sts_is_fixed_flat.append(False)
-    for _sts_ei in range(len(external_pts_for_window)):
-        _sts_obj_ids_flat.append(-1)
-        _sts_local_idx_flat.append(_sts_ei)
-        _sts_is_fixed_flat.append(True)
-
-    _save_all_pts_flat = all_pts_flat
-    _save_all_ts_flat = all_ts_flat
-    _save_all_obj_ids_flat = all_obj_ids_flat
-    _save_all_local_idx_flat = all_local_idx_flat
-    _save_all_is_fixed_flat = all_is_fixed_flat
-    _save_n_total_points = n_total_points
-    _save_all_points_plot = all_points_plot
-    _save_all_vals_plot = all_vals_plot
-
-    all_pts_flat = _sts_pts_flat
-    all_ts_flat = _sts_ts_flat
-    all_obj_ids_flat = _sts_obj_ids_flat
-    all_local_idx_flat = _sts_local_idx_flat
-    all_is_fixed_flat = _sts_is_fixed_flat
-    n_total_points = _sts_pts_flat.shape[0]
-    all_points_plot = _sts_points_plot
-    all_vals_plot = _sts_vals_plot
-
-    try:
-        pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _sts_iterations = 1000
-        _sts_num_configs = 100
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        all_generated_configs: list[dict[str, Any]] = []
-
-        for config_idx in range(_sts_num_configs):
-            current_points = _sts_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            for iteration in range(_sts_iterations):
-                status_text.text(f"1/16-ts filtered — config {config_idx + 1}/{_sts_num_configs} | iter {iteration + 1}/{_sts_iterations}")
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                )
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _sts_iterations,
-                    "buffer_x": buffer_x, "buffer_y": buffer_y,
-                    "rough_x": rough_x, "rough_y": rough_y,
-                    "threshold_mode": mode, "max_threshold": max_threshold,
-                })
-            progress_bar.progress((config_idx + 1) / _sts_num_configs)
-
-        progress_bar.empty()
-        status_text.empty()
-    finally:
-        # --- Restore global variables (guaranteed even on exception) ---
-        all_pts_flat = _save_all_pts_flat
-        all_ts_flat = _save_all_ts_flat
-        all_obj_ids_flat = _save_all_obj_ids_flat
-        all_local_idx_flat = _save_all_local_idx_flat
-        all_is_fixed_flat = _save_all_is_fixed_flat
-        n_total_points = _save_n_total_points
-        all_points_plot = _save_all_points_plot
-        all_vals_plot = _save_all_vals_plot
-
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_sixteenth_ts_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(_sts_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_10 = deviations[:10]
-        st.session_state["_generate_sixteenth_ts_results"] = top_10
-        st.session_state["_sts_points_plot"] = _sts_points_plot
-        st.session_state["_sts_vals_plot"] = _sts_vals_plot
-        st.rerun()
+    _run_filtered_ts_generation(
+        step=16, label="1/16", session_prefix="sixteenth", state_prefix="sts",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+    )
 
 # ============= Generate 100 configs × 1000 iterations — 4 timestamps (0, 46, 92, 136) ============
 if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
