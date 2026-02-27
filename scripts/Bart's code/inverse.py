@@ -3909,7 +3909,7 @@ def run_binary_iteration(
     st.session_state["anim_had_full_match"] = had_full_match
     
     # Final placement: use the last ok_points, with damping applied
-    iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
+    iteration_num = len(successful_points) // max(1, len(selected_indices))
     for idx in selected_indices:
         final_pt = ok_points[idx]
         parent_pt = get_parent_position(idx)
@@ -4148,7 +4148,7 @@ def run_multipoint_iteration(
         
         if success:
             # Success! Add all candidate points to successful_points (with damping applied)
-            iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
+            iteration_num = len(successful_points) // max(1, len(selected_indices))
             for idx, new_pt in candidate_positions.items():
                 parent_pt = parent_positions[idx]
                 # Apply random damping factor to reduce distance from parent
@@ -4204,7 +4204,7 @@ def run_multipoint_iteration(
         parent_pt: np.ndarray = parent_pt_candidate if parent_pt_candidate is not None else np.array([0.0, 0.0])
         
         # Place exactly at parent position to preserve all orders
-        iteration_num = len([sp for sp in successful_points]) // max(1, len(selected_indices))
+        iteration_num = len(successful_points) // max(1, len(selected_indices))
         sp: SuccessfulPoint = {
             "point": parent_pt.copy(),  # Exact copy of parent position
             "parent_idx": idx,
