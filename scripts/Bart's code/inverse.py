@@ -11869,7 +11869,12 @@ if _should_process_animation:
             # Manual mode: button click already triggered, just rerun
             st.rerun()
         else:
-            time.sleep(wait_s)
+            # Non-blocking wait: sleep in short increments so Streamlit stays responsive
+            _elapsed = 0.0
+            while _elapsed < wait_s:
+                _step = min(0.1, wait_s - _elapsed)
+                time.sleep(_step)
+                _elapsed += _step
             st.rerun()
 
     # === Case 1: success (orders match) or distance collapsed to 0 ===
@@ -12822,8 +12827,12 @@ if _should_process_animation:
             # Still in the middle of a configuration - continue automatically
             st.rerun()
     else:
-        # Auto mode: sleep and auto-advance
-        time.sleep(wait_s)
+        # Auto mode: non-blocking wait in short increments so Streamlit stays responsive
+        _elapsed = 0.0
+        while _elapsed < wait_s:
+            _step = min(0.1, wait_s - _elapsed)
+            time.sleep(_step)
+            _elapsed += _step
         st.rerun()
 
 # ============= CSV Export Section ============
