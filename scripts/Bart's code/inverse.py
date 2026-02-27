@@ -41,6 +41,19 @@ LANE_CONFIGURATIONS: dict[int, dict[str, Any]]
 check_pdp_match_detailed: Callable[..., dict[str, Any]]
 check_pdp_match_frenet_detailed: Callable[..., dict[str, Any]]
 
+# ============= Named constants (avoid magic numbers) =============
+MAX_DIRECTION_ATTEMPTS: int = 50       # Max attempts to find a valid direction vector
+MAX_RESET_ATTEMPTS: int = 20           # Max attempts when resetting/placing a new point
+MAX_BINARY_SEARCH_STEPS: int = 7       # Steps in binary search for boundary finding
+MAX_GENERATION_ITERATIONS: int = 1000  # Max configs for ext30 generation
+MAX_FILTER_CONFIGS: int = 100          # Max configs for filtered timestamp generation
+GIF_FRAME_DURATION_MS: int = 200       # Milliseconds per GIF frame
+GIF_LAST_FRAME_PAUSE_MS: int = 1500    # Milliseconds to pause on the last GIF frame
+DEFAULT_BUFFER_X: float = 25.0         # Default x-axis buffer margin
+DEFAULT_BUFFER_Y: float = 10.0         # Default y-axis buffer margin
+DEFAULT_MAXDIST_FALLBACK: float = 10.0 # Fallback max distance when no pairwise data
+CURVED_ROAD_CONFIGS: list[int] = [15, 17]  # S-curve config numbers for Frenet coords
+
 # ============= Page configuration =============
 st.set_page_config(
     page_title="pdp inverse",
@@ -2882,8 +2895,8 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     try:
         pdp_variants = st.session_state.get("cfg_pdp_variants", ["fundamental"])
         if any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants):
-            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", 25.0))
-            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", 10.0))
+            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X))
+            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y))
             # For realistic variant, only x buffer is used
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
@@ -2914,7 +2927,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     if movement_direction == "Same direction":
         # All points move with the same angle - find a direction that keeps ALL points in bounds
-        max_attempts = 50
+        max_attempts = MAX_DIRECTION_ATTEMPTS
         best_angle = None
         best_in_bounds_count = 0
         
@@ -2959,7 +2972,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     else:  # Random directions
         # Each point gets its own random angle - ensure each point stays in bounds
         vectors: dict[int, tuple[float, float]] = {}
-        max_attempts = 50
+        max_attempts = MAX_DIRECTION_ATTEMPTS
         
         for idx in selected_indices:
             parent_pt = get_parent_point(idx)
@@ -3057,8 +3070,8 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
     try:
         pdp_variants = st.session_state.get("cfg_pdp_variants", ["fundamental"])
         if any(v in ["buffer", "bufferrough", "realistic"] for v in pdp_variants):
-            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", 25.0))
-            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", 10.0))
+            buffer_margin_x = float(st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X))
+            buffer_margin_y = float(st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y))
             # For realistic variant, only x buffer is used
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
@@ -3130,9 +3143,9 @@ else:
                 d: float = float(np.hypot(all_pts[i, 0] - all_pts[j, 0], 
                                           all_pts[i, 1] - all_pts[j, 1]))
                 pairwise_dists.append(d)
-        maxdist = max(pairwise_dists) if pairwise_dists else 10.0
+        maxdist = max(pairwise_dists) if pairwise_dists else DEFAULT_MAXDIST_FALLBACK
     else:
-        maxdist = 10.0  # Default fallback
+        maxdist = DEFAULT_MAXDIST_FALLBACK  # Default fallback
 
 def square_limits_with_margin(
     pts: np.ndarray, margin: float
@@ -3261,8 +3274,8 @@ def _get_frenet_coordinates_for_ordering() -> Optional[dict[int, np.ndarray]]:
     current_config = selected_c_int
     
     # Only apply Frenet for curved road configs
-    CURVED_CONFIGS = [15, 17]  # S-curve configs
-    if current_config not in CURVED_CONFIGS:
+    # Use module-level CURVED_ROAD_CONFIGS
+    if current_config not in CURVED_ROAD_CONFIGS:
         return None
     
     # Get the centerline
@@ -3535,8 +3548,8 @@ def make_d2_order_latex_generated() -> str:
 def check_pdp_match_legacy(original_k: np.ndarray, original_l: np.ndarray, 
                           generated_k: np.ndarray, generated_l: np.ndarray,
                           pdp_variant: str = "fundamental",
-                          buffer_x: float = 25.0,
-                          buffer_y: float = 10.0,
+                          buffer_x: float = DEFAULT_BUFFER_X,
+                          buffer_y: float = DEFAULT_BUFFER_Y,
                           rough_x: float = 0.0,
                           rough_y: float = 0.0,
                           debug: bool = False) -> tuple[bool, bool]:
@@ -3604,8 +3617,8 @@ def update_order_match_flags() -> None:
     # Get PDP variant parameters from session_state
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -3780,10 +3793,10 @@ def run_binary_iteration(
     rough_y: float,
     match_threshold: float = 1.0,
     max_mismatches: int | None = None,
-    max_binary_steps: int = 7
+    max_binary_steps: int = MAX_BINARY_SEARCH_STEPS
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
-    Run one iteration of multi-point generation using the 7-step binary search strategy.
+    Run one iteration of multi-point generation using binary search strategy.
     
     Binary search strategy:
     1. Start with a point at distance maxdist from the parent point
@@ -3948,8 +3961,8 @@ def generate_binary_multipoint() -> None:
     num_configs = int(st.session_state.get("anim_num_configs", default_num_configs))
     
     pdp_variants_list = st.session_state.get("anim_pdp_variants_list", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -4232,8 +4245,8 @@ def generate_exp_multipoint() -> None:
     num_configs = int(st.session_state.get("anim_num_configs", default_num_configs))
     
     pdp_variants_list = st.session_state.get("anim_pdp_variants_list", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -4376,8 +4389,8 @@ def generate_exp() -> None:
         # Get PDP variant parameters from session_state
         # Use the current variant being processed
         pdp_variant = st.session_state.get("anim_current_variant", "fundamental")
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         
@@ -4516,7 +4529,7 @@ def generate_exp() -> None:
                         parent_pt_reset = all_pts_reset[parent_idx_reset]
 
                     distance_new = maxdist
-                    max_attempts = 20
+                    max_attempts = MAX_RESET_ATTEMPTS
                     angle_local: float = 0.0  # Initialize to avoid unbound warning
                     new_x: float = parent_pt_reset[0]  # Initialize to avoid unbound warning
                     new_y: float = parent_pt_reset[1]  # Initialize to avoid unbound warning
@@ -4572,7 +4585,7 @@ def generate_exp() -> None:
                         parent_pt_reset = all_pts_reset[parent_idx_reset]
                         
                         distance_new = maxdist
-                        max_attempts = 20
+                        max_attempts = MAX_RESET_ATTEMPTS
                         angle_local: float = 0.0  # Initialize to avoid unbound warning
                         new_x: float = parent_pt_reset[0]  # Initialize to avoid unbound warning
                         new_y: float = parent_pt_reset[1]  # Initialize to avoid unbound warning
@@ -4624,7 +4637,7 @@ def generate_exp() -> None:
                     parent_idx_new = chosen_idx
 
                 distance_new = maxdist
-                max_attempts = 20
+                max_attempts = MAX_RESET_ATTEMPTS
                 angle_local: float = 0.0  # Initialize to avoid unbound warning
                 new_x: float = parent_pt_new[0]  # Initialize to avoid unbound warning
                 new_y: float = parent_pt_new[1]  # Initialize to avoid unbound warning
@@ -5356,8 +5369,8 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
     # Store current settings
     current_iterations = int(st.session_state.get("cfg_iterations", 3))
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -5371,8 +5384,8 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
     
     all_generated_configs: list[dict[str, Any]] = []
     
-    for config_idx in range(1000):
-        status_text.text(f"Generating configuration {config_idx + 1}/1000...")
+    for config_idx in range(MAX_GENERATION_ITERATIONS):
+        status_text.text(f"Generating configuration {config_idx + 1}/{MAX_GENERATION_ITERATIONS}...")
         
         # Generate one configuration using the core logic
         current_points = all_pts_flat.copy()
@@ -5445,8 +5458,8 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
     # Store current settings (iterations forced to 50 for this button)
     current_iterations = 50
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -5538,8 +5551,8 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
     # Use current settings but force 200 iterations
     current_iterations = 200
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
@@ -5629,8 +5642,8 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
     st.caption("This may take a while. Progress is shown below.")
 
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -5642,7 +5655,7 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
 
     all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(100):
+    for config_idx in range(MAX_FILTER_CONFIGS):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
         pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
@@ -5704,8 +5717,8 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
     st.caption("Zelfde als 'Generate 10 & Top 3' maar gebruikt om de andere timestamp (step=2).")
 
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -5856,8 +5869,8 @@ if st.session_state.get("_generate_half_ts_requested", False) and not st.session
     try:
         # --- Generate 100 configs × 1000 iterations ---
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6015,8 +6028,8 @@ if st.session_state.get("_generate_quarter_ts_requested", False) and not st.sess
     try:
         # --- Generate 100 configs × 1000 iterations ---
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6169,8 +6182,8 @@ if st.session_state.get("_generate_eighth_ts_requested", False) and not st.sessi
 
     try:
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6308,8 +6321,8 @@ if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.se
 
     try:
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6445,8 +6458,8 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
 
     try:
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6582,8 +6595,8 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
 
     try:
         pdp_variant = "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
         rough_y = st.session_state.get("cfg_rough_y", 0.0)
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
@@ -6680,11 +6693,11 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
     status_text = st.empty()
     all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(100):
+    for config_idx in range(MAX_FILTER_CONFIGS):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
         for iteration in range(_c68r_iters):
-            status_text.text(f"C68 Realistic — config {config_idx + 1}/100 | iter {iteration + 1}/{_c68r_iters}")
+            status_text.text(f"C68 Realistic — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68r_iters}")
             successful_points, success = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
@@ -6749,11 +6762,11 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
     status_text = st.empty()
     all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(100):
+    for config_idx in range(MAX_FILTER_CONFIGS):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
         for iteration in range(_c68f_iters):
-            status_text.text(f"C68 Fundamental — config {config_idx + 1}/100 | iter {iteration + 1}/{_c68f_iters}")
+            status_text.text(f"C68 Fundamental — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68f_iters}")
             successful_points, success = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
@@ -8103,9 +8116,9 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         if _ext30_gif_frames:
             # Add a longer pause on the last frame
             _ext30_gif_buf = io.BytesIO()
-            _ext30_durations = [200] * len(_ext30_gif_frames)  # 200ms per frame
+            _ext30_durations = [GIF_FRAME_DURATION_MS] * len(_ext30_gif_frames)  # 200ms per frame
             if _ext30_durations:
-                _ext30_durations[-1] = 1500  # Pause 1.5s on last frame
+                _ext30_durations[-1] = GIF_LAST_FRAME_PAUSE_MS  # Pause 1.5s on last frame
             _ext30_gif_frames[0].save(
                 _ext30_gif_buf,
                 format='GIF',
@@ -8325,9 +8338,9 @@ def _display_top_n_with_gif(
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8537,9 +8550,9 @@ if st.session_state.get("_generate_half_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8737,9 +8750,9 @@ if st.session_state.get("_generate_quarter_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -8929,9 +8942,9 @@ if st.session_state.get("_generate_eighth_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9120,9 +9133,9 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9311,9 +9324,9 @@ if st.session_state.get("_generate_four_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -9502,9 +9515,9 @@ if st.session_state.get("_generate_two_ts_results", None):
 
         if gif_frames:
             gif_buf = io.BytesIO()
-            durations = [200] * len(gif_frames)
+            durations = [GIF_FRAME_DURATION_MS] * len(gif_frames)
             if durations:
-                durations[-1] = 1500
+                durations[-1] = GIF_LAST_FRAME_PAUSE_MS
             gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
             gif_buf.seek(0)
             st.download_button(
@@ -11384,8 +11397,8 @@ if n_total_points > 0 and should_update_heatmaps:
     # Get PDP variant parameters from session_state
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     match_threshold = get_match_threshold()
@@ -11796,8 +11809,8 @@ if _should_process_animation:
     if not pdp_variant:
         pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
         pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
     
