@@ -4,6 +4,7 @@
 from pathlib import Path
 from typing import Tuple, Callable, IO, Optional, Any
 import io
+import logging
 import time
 import traceback
 from PIL import Image as PILImage
@@ -41,6 +42,8 @@ LANE_CONFIGURATIONS: dict[int, dict[str, Any]]
 check_pdp_match_detailed: Callable[..., dict[str, Any]]
 check_pdp_match_frenet_detailed: Callable[..., dict[str, Any]]
 
+logger = logging.getLogger(__name__)
+
 # ============= Named constants (avoid magic numbers) =============
 MAX_DIRECTION_ATTEMPTS: int = 50       # Max attempts to find a valid direction vector
 MAX_RESET_ATTEMPTS: int = 20           # Max attempts when resetting/placing a new point
@@ -72,7 +75,7 @@ def check_password():
         try:
             return str(st.query_params.get(auth_qp_key, "0")) == "1"
         except Exception as e:
-            print(f"[AUTH] Could not read query param '{auth_qp_key}': {e}")
+            logger.warning(f"[AUTH] Could not read query param '{auth_qp_key}': {e}")
             return False
 
     def set_query_auth_flag(enabled: bool) -> None:
@@ -82,7 +85,7 @@ def check_password():
             elif auth_qp_key in st.query_params:
                 del st.query_params[auth_qp_key]
         except Exception as e:
-            print(f"[AUTH] Could not set query param '{auth_qp_key}': {e}")
+            logger.warning(f"[AUTH] Could not set query param '{auth_qp_key}': {e}")
 
     # If already authenticated in this session, keep access on reruns.
     if bool(st.session_state.get("password_correct", False)):
@@ -750,7 +753,7 @@ def _calculate_vehicle_speeds(config_df: pd.DataFrame) -> dict[int, float]:
         avg_speed_kmh = avg_speed_ms * 3.6
         speeds[obj_id] = avg_speed_kmh
         
-        print(f"[SPEED] Object {obj_id}: {avg_speed_kmh:.1f} km/h")
+        logger.debug(f"[SPEED] Object {obj_id}: {avg_speed_kmh:.1f} km/h")
     
     return speeds
 
@@ -811,7 +814,7 @@ def _vehicles_same_direction(config_df: pd.DataFrame, angle_threshold: float = 4
     for obj_id in object_ids:
         direction = _determine_driving_direction(config_df, obj_id)
         directions.append(direction)  # type: ignore[arg-type]
-        print(f"[DIRECTION] Object {obj_id}: direction={direction}")
+        logger.debug(f"[DIRECTION] Object {obj_id}: direction={direction}")
     
     # Compare all pairs of directions
     angle_deg: float = 0.0  # Initialize to avoid 'possibly unbound' error
@@ -823,7 +826,7 @@ def _vehicles_same_direction(config_df: pd.DataFrame, angle_threshold: float = 4
             dot_product = np.clip(dot_product, -1.0, 1.0)
             angle_rad = np.arccos(dot_product)
             angle_deg = float(np.degrees(angle_rad))
-            print(f"[DIRECTION] Angle between obj {object_ids[i]} and obj {object_ids[j]}: {angle_deg:.1f}°")
+            logger.debug(f"[DIRECTION] Angle between obj {object_ids[i]} and obj {object_ids[j]}: {angle_deg:.1f}°")
             
             # If any pair has large angle difference, they're not in same direction
             if angle_deg > angle_threshold:
@@ -926,7 +929,7 @@ def _extract_centerline_from_data(c_value: int) -> np.ndarray | None:
         x_min = np.min(centerline[:, 0])
         x_max = np.max(centerline[:, 0])
         centerline = np.array([[x_min, avg_y], [x_max, avg_y]])
-        print(f"[CENTERLINE] Config {c_value}: Forced horizontal lanes at y={avg_y:.2f}")
+        logger.debug(f"[CENTERLINE] Config {c_value}: Forced horizontal lanes at y={avg_y:.2f}")
         return centerline
 
     # Check if the path is roughly straight (skip for curved configs)
@@ -1018,13 +1021,13 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     
     if needs_3_lanes:
         lane_count = 3
-        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 3 lanes")
+        logger.debug(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 3 lanes")
     else:
         lane_count = 2
-        print(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 2 lanes")
+        logger.debug(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 2 lanes")
     
     same_direction = _vehicles_same_direction(config_df)
-    print(f"[LANE BUILD] Config {c_value}: same_direction={same_direction}")
+    logger.debug(f"[LANE BUILD] Config {c_value}: same_direction={same_direction}")
     
     if same_direction:
         # Case 1: Same direction - use traditional parallel lane approach
@@ -1099,7 +1102,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
 
         if lock_centerline:
             offset = 0.0
-            print(f"[LANE BUILD] Config {c_value}: centerline locked at y={float(forced_centerline_y):.2f} (auto-offset disabled)")
+            logger.debug(f"[LANE BUILD] Config {c_value}: centerline locked at y={float(forced_centerline_y):.2f} (auto-offset disabled)")
         elif len(speeds) == 1:
             # Single vehicle: place it in the center lane
             single_obj = list(speeds.keys())[0]
@@ -1114,7 +1117,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             current_ref_y = float(np.mean(centerline[:, 1]))
             offset = target_ref_y - current_ref_y
             
-            print(f"[LANE BUILD] Single vehicle obj {single_obj}: vehicle_y={avg_y_vehicle:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
+            logger.debug(f"[LANE BUILD] Single vehicle obj {single_obj}: vehicle_y={avg_y_vehicle:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
             
         elif len(speeds) > 1:
             # Multiple vehicles: position reference line at average of all vehicles
@@ -1123,7 +1126,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             
             current_ref_y = float(np.mean(centerline[:, 1]))
             offset = target_ref_y - current_ref_y
-            print(f"[LANE BUILD] Multi-vehicle: avg_vehicle_y={avg_vehicle_y:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
+            logger.debug(f"[LANE BUILD] Multi-vehicle: avg_vehicle_y={avg_vehicle_y:.2f}, target_ref={target_ref_y:.2f}, offset={offset:.2f}m")
         else:
             # No vehicles
             offset = 0.0
@@ -1133,19 +1136,19 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
         # positions vehicles correctly in their lanes. The config_offset was a legacy
         # manual adjustment that is no longer needed.
         centerline[:, 1] += offset
-        print(f"[LANE BUILD] After offset (calculated={offset:.2f}m, config_offset={config_offset:.2f}m ignored), centerline y-range: [{np.min(centerline[:, 1]):.2f}, {np.max(centerline[:, 1]):.2f}]")
+        logger.debug(f"[LANE BUILD] After offset (calculated={offset:.2f}m, config_offset={config_offset:.2f}m ignored), centerline y-range: [{np.min(centerline[:, 1]):.2f}, {np.max(centerline[:, 1]):.2f}]")
 
         # half_width already calculated above, reuse it
         boundary_offsets = [-half_width + i * lane_width for i in range(lane_count + 1)]
         boundaries = [_offset_polyline(centerline, off) for off in boundary_offsets]
-        print(f"[LANE BUILD] Created {len(boundaries)} boundaries with offsets: {boundary_offsets}")
+        logger.debug(f"[LANE BUILD] Created {len(boundaries)} boundaries with offsets: {boundary_offsets}")
         if boundaries:
             for i, boundary in enumerate(boundaries):
                 y_range: list[float] = [float(np.min(boundary[:, 1])), float(np.max(boundary[:, 1]))]
-                print(f"[LANE BUILD]   Boundary {i} y-range: [{y_range[0]:.2f}, {y_range[1]:.2f}]")
+                logger.debug(f"[LANE BUILD]   Boundary {i} y-range: [{y_range[0]:.2f}, {y_range[1]:.2f}]")
         if centerline.shape[0] > 0:
             centerline_y_dbg = float(np.mean(centerline[:, 1]))
-            print(f"[LANE BUILD] Lane y-positions -> lower edge: {centerline_y_dbg - half_width:.2f}, dashed divider: {centerline_y_dbg:.2f}, upper edge: {centerline_y_dbg + half_width:.2f}")
+            logger.debug(f"[LANE BUILD] Lane y-positions -> lower edge: {centerline_y_dbg - half_width:.2f}, dashed divider: {centerline_y_dbg:.2f}, upper edge: {centerline_y_dbg + half_width:.2f}")
 
         interior_count = max(0, lane_count - 1)
         center_offsets = [-half_width + (i + 1) * lane_width for i in range(interior_count)]
@@ -1195,7 +1198,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             obj_boundaries = [_offset_polyline(road_centerline, off) for off in boundary_offsets]
             all_boundaries.extend(obj_boundaries)
             
-            print(f"[LANE BUILD] Case 2: obj {obj_id} - road offset={road_offset:.2f}m to center vehicle in rightmost lane")
+            logger.debug(f"[LANE BUILD] Case 2: obj {obj_id} - road offset={road_offset:.2f}m to center vehicle in rightmost lane")
         
         # For multi-path scenarios (different directions), don't draw center lines
         # as they would overlap/conflict where paths cross or merge
@@ -2906,7 +2909,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
     except (TypeError, ValueError) as e:
-        print(f"[WARNING] Failed to read buffer margins from session state: {e}")
+        logger.warning(f"[WARNING] Failed to read buffer margins from session state: {e}")
     
     # Adjust bounds to account for buffer transformation
     check_min_x = coord_min_x + buffer_margin_x
@@ -3081,7 +3084,7 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
     except (TypeError, ValueError) as e:
-        print(f"[WARNING] Failed to read buffer margins from session state: {e}")
+        logger.warning(f"[WARNING] Failed to read buffer margins from session state: {e}")
     
     # Adjust clipping bounds to account for buffer transformation
     clip_x_min = x_min + buffer_margin_x
@@ -3255,10 +3258,10 @@ def _compute_viz_bounds_from_data() -> tuple[tuple[float, float], tuple[float, f
 
 # Compute actual visualization bounds from the data
 XLIM, YLIM = _compute_viz_bounds_from_data()
-print(f"[BOUNDS COMPUTED] XLIM={XLIM}, YLIM={YLIM}")
-print(f"[BOUNDS COMPUTED] all_points_plot.keys()={list(all_points_plot.keys())}")
+logger.debug(f"[BOUNDS COMPUTED] XLIM={XLIM}, YLIM={YLIM}")
+logger.debug(f"[BOUNDS COMPUTED] all_points_plot.keys()={list(all_points_plot.keys())}")
 for _dbg_oid in all_points_plot:
-    print(f"[BOUNDS COMPUTED] o_id={_dbg_oid}, first_pt={all_points_plot[_dbg_oid][0] if all_points_plot[_dbg_oid].shape[0] > 0 else 'EMPTY'}")
+    logger.debug(f"[BOUNDS COMPUTED] o_id={_dbg_oid}, first_pt={all_points_plot[_dbg_oid][0] if all_points_plot[_dbg_oid].shape[0] > 0 else 'EMPTY'}")
 
 # ============= d1/d2 order strings (LaTeX) ============
 def _format_t_subscript(tval: float) -> str:
@@ -3287,7 +3290,7 @@ def _get_frenet_coordinates_for_ordering() -> Optional[dict[int, np.ndarray]]:
     try:
         centerline = _extract_centerline_from_data(current_config)
         if centerline is None or centerline.shape[0] < 2:
-            print(f"[FRENET] Centerline invalid for config {current_config}")
+            logger.warning(f"[FRENET] Centerline invalid for config {current_config}")
             return None
         
         # Create Frenet frame
@@ -3301,10 +3304,10 @@ def _get_frenet_coordinates_for_ordering() -> Optional[dict[int, np.ndarray]]:
                 frenet_pts = frenet_frame.to_frenet(pts)
                 frenet_coords[o_id] = frenet_pts
         
-        print(f"[FRENET] Successfully computed Frenet coords for {len(frenet_coords)} objects in config {current_config}")
+        logger.debug(f"[FRENET] Successfully computed Frenet coords for {len(frenet_coords)} objects in config {current_config}")
         return frenet_coords
     except Exception as e:
-        print(f"[FRENET] Exception: {e}")
+        logger.warning(f"[FRENET] Exception: {e}")
         traceback.print_exc()
         return None
 
@@ -4195,7 +4198,7 @@ def run_multipoint_iteration(
     # Max search steps reached without finding PDP match
     # Fallback: place points EXACTLY at parent position (no movement)
     # This ensures order preservation when no valid movement exists
-    print(f"[DEBUG RUN_MULTIPOINT] Max search steps reached - placing points at parent positions")
+    logger.debug("[DEBUG RUN_MULTIPOINT] Max search steps reached - placing points at parent positions")
     
     for idx in selected_indices:
         # Get parent position, ensuring it's never None
@@ -4878,7 +4881,7 @@ if animate_btn:
         st.rerun()
 
     elif strategy == "binary":
-        print(f"[DEBUG INIT BINARY] strategy={strategy}, setting anim_binary_mode=True")
+        logger.debug(f"[DEBUG INIT BINARY] strategy={strategy}, setting anim_binary_mode=True")
         num_configs_to_generate = num_anim_configs_val
 
         all_pts = all_pts_flat.copy()
@@ -4920,11 +4923,11 @@ if animate_btn:
         # Generate movement vectors for all selected points (like exponential does)
         movement_vectors = generate_movement_vectors(selected_indices, maxdist)
         
-        print(f"[DEBUG BINARY INIT] selected_indices={selected_indices}, maxdist={maxdist}")
+        logger.debug(f"[DEBUG BINARY INIT] selected_indices={selected_indices}, maxdist={maxdist}")
         for idx in selected_indices:
             vec = movement_vectors.get(idx, (0.0, 0.0))
             vec_mag = np.sqrt(vec[0]**2 + vec[1]**2)
-            print(f"[DEBUG BINARY INIT] idx={idx}, parent={all_pts[idx]}, movement_vec={vec}, magnitude={vec_mag:.4f}")
+            logger.debug(f"[DEBUG BINARY INIT] idx={idx}, parent={all_pts[idx]}, movement_vec={vec}, magnitude={vec_mag:.4f}")
         
         # Step a-f: Check if all points are within bounds, retry with new directions if not
         # Even if no perfect direction is found, use the best attempt (some points may be at bounds)
@@ -4970,18 +4973,18 @@ if animate_btn:
         movement_vectors = best_movement_vectors
         
         # DEBUG: Verify distances
-        print(f"[DEBUG BINARY INIT] found_valid={found_valid}")
+        logger.debug(f"[DEBUG BINARY INIT] found_valid={found_valid}")
         for idx in selected_indices:
             parent_pt_dbg = all_pts[idx]
             gen_pt_dbg = generated_points.get(idx, parent_pt_dbg)
             actual_dist = np.linalg.norm(gen_pt_dbg - parent_pt_dbg)
-            print(f"[DEBUG BINARY INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
+            logger.debug(f"[DEBUG BINARY INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
         
         # ALWAYS start at maxdist, even if some points may be outside bounds
         # The points will be visually shown at their calculated positions
         current_distance = maxdist
         if not found_valid:
-            print(f"[DEBUG BINARY] No perfect direction found after {max_direction_attempts} attempts, using best attempt at maxdist")
+            logger.warning(f"[DEBUG BINARY] No perfect direction found after {max_direction_attempts} attempts, using best attempt at maxdist")
         
         # Step g: Initialize correct_order with parent coordinates for all selected points
         correct_orders: dict[int, np.ndarray] = {idx: all_pts[idx].copy() for idx in selected_indices}
@@ -5050,7 +5053,7 @@ if animate_btn:
     elif strategy == "linear":
         # ============= LINEAR SEARCH STRATEGY INITIALIZATION =============
         # Same as binary but decreases by 0.1Ã—maxdist per step instead of binary search
-        print(f"[DEBUG INIT LINEAR] strategy={strategy}, setting anim_linear_mode=True")
+        logger.debug(f"[DEBUG INIT LINEAR] strategy={strategy}, setting anim_linear_mode=True")
         num_configs_to_generate = num_anim_configs_val
 
         all_pts = all_pts_flat.copy()
@@ -5112,12 +5115,12 @@ if animate_btn:
         movement_vectors = best_movement_vectors
         
         # DEBUG: Verify distances
-        print(f"[DEBUG LINEAR INIT] found_valid={found_valid}")
+        logger.debug(f"[DEBUG LINEAR INIT] found_valid={found_valid}")
         for idx in selected_indices:
             parent_pt_dbg = all_pts[idx]
             gen_pt_dbg = generated_points.get(idx, parent_pt_dbg)
             actual_dist = np.linalg.norm(gen_pt_dbg - parent_pt_dbg)
-            print(f"[DEBUG LINEAR INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
+            logger.debug(f"[DEBUG LINEAR INIT] idx={idx}, parent={parent_pt_dbg}, generated={gen_pt_dbg}, actual_distance={actual_dist:.4f}")
         
         # Start at maxdist
         current_distance = maxdist
@@ -5205,14 +5208,14 @@ if generate_btn:
     st.session_state["anim_current_variant"] = pdp_variants_list[0] if pdp_variants_list else "fundamental"
     
     # Debug: Print the PDP configuration being used
-    print(f"[DEBUG GENERATE] Selected variants: {pdp_variants_list}")
-    print(f"[DEBUG GENERATE] Current variant: {st.session_state['anim_current_variant']}")
-    print(f"[DEBUG GENERATE] buffer_x: {st.session_state.get('cfg_buffer_x', 'NOT SET')}")
-    print(f"[DEBUG GENERATE] buffer_y: {st.session_state.get('cfg_buffer_y', 'NOT SET')}")
-    print(f"[DEBUG GENERATE] rough_x: {st.session_state.get('cfg_rough_x', 'NOT SET')}")
-    print(f"[DEBUG GENERATE] rough_y: {st.session_state.get('cfg_rough_y', 'NOT SET')}")
-    print(f"[DEBUG GENERATE] Strategy selected: '{strategy}'")
-    print(f"[DEBUG GENERATE] cfg_strategy from session_state: '{st.session_state.get('cfg_strategy', 'NOT SET')}'")
+    logger.debug(f"[DEBUG GENERATE] Selected variants: {pdp_variants_list}")
+    logger.debug(f"[DEBUG GENERATE] Current variant: {st.session_state['anim_current_variant']}")
+    logger.debug(f"[DEBUG GENERATE] buffer_x: {st.session_state.get('cfg_buffer_x', 'NOT SET')}")
+    logger.debug(f"[DEBUG GENERATE] buffer_y: {st.session_state.get('cfg_buffer_y', 'NOT SET')}")
+    logger.debug(f"[DEBUG GENERATE] rough_x: {st.session_state.get('cfg_rough_x', 'NOT SET')}")
+    logger.debug(f"[DEBUG GENERATE] rough_y: {st.session_state.get('cfg_rough_y', 'NOT SET')}")
+    logger.debug(f"[DEBUG GENERATE] Strategy selected: '{strategy}'")
+    logger.debug(f"[DEBUG GENERATE] cfg_strategy from session_state: '{st.session_state.get('cfg_strategy', 'NOT SET')}'")
 
     if strategy == "exponential":
         # Set up parameters for multi-point generation
@@ -5224,8 +5227,8 @@ if generate_btn:
         # Debug: print point selection mode
         point_selection_mode = st.session_state.get("cfg_point_selection_mode", "Single point")
         movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
-        print(f"[DEBUG GENERATE] Point selection mode: {point_selection_mode}")
-        print(f"[DEBUG GENERATE] Movement direction: {movement_direction}")
+        logger.debug(f"[DEBUG GENERATE] Point selection mode: {point_selection_mode}")
+        logger.debug(f"[DEBUG GENERATE] Movement direction: {movement_direction}")
 
         # Run the new multi-point aware generator
         generate_exp_multipoint()
@@ -5239,8 +5242,8 @@ if generate_btn:
         # Debug: print point selection mode
         point_selection_mode = st.session_state.get("cfg_point_selection_mode", "Single point")
         movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
-        print(f"[DEBUG GENERATE BINARY] Point selection mode: {point_selection_mode}")
-        print(f"[DEBUG GENERATE BINARY] Movement direction: {movement_direction}")
+        logger.debug(f"[DEBUG GENERATE BINARY] Point selection mode: {point_selection_mode}")
+        logger.debug(f"[DEBUG GENERATE BINARY] Movement direction: {movement_direction}")
 
         # Run the binary search generator
         generate_binary_multipoint()
@@ -7066,7 +7069,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 va="center",
                             )
                         except Exception as e:
-                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
+                            logger.warning(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
 
                 for j, ((x, y), tval) in enumerate(zip(generated_pts, generated_vals)):
                     ax_right.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
@@ -7086,12 +7089,12 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 va="center",
                             )
                         except Exception as e:
-                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
+                            logger.warning(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
             
             try:
                 fig.tight_layout()
             except Exception as e:
-                print(f"[RENDER] tight_layout failed: {e}")
+                logger.warning(f"[RENDER] tight_layout failed: {e}")
             
             # Save to buffer
             buf = io.BytesIO()
@@ -7456,12 +7459,12 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 va="center",
                             )
                         except Exception as e:
-                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
+                            logger.warning(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
             
             try:
                 fig.tight_layout()
             except Exception as e:
-                print(f"[RENDER] tight_layout failed: {e}")
+                logger.warning(f"[RENDER] tight_layout failed: {e}")
             
             # Save to buffer
             buf = io.BytesIO()
@@ -9578,13 +9581,13 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
     except (TypeError, ValueError):
         return
     
-    print(f"[INFER_LANES] Called for config {current_config}")
+    logger.debug(f"[INFER_LANES] Called for config {current_config}")
 
     lane_cfg = LANE_CONFIGURATIONS.get(current_config)
     if not lane_cfg:
-        print(f"[INFER_LANES] No lane config found for {current_config}")
+        logger.warning(f"[INFER_LANES] No lane config found for {current_config}")
         return
-    print(f"[INFER_LANES] Lane config: {lane_cfg}")
+    logger.debug(f"[INFER_LANES] Lane config: {lane_cfg}")
 
     mode = lane_cfg.get("mode", "data_path")
     if mode == "intersection":
@@ -9598,11 +9601,11 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
     # NOTE: Offset is now calculated dynamically inside _build_lane_polylines_from_data()
     # based on actual vehicle positions to center them in lanes
     
-    print(f"[INFER_LANES] About to call _build_lane_polylines_from_data for config {current_config}")
+    logger.debug(f"[INFER_LANES] About to call _build_lane_polylines_from_data for config {current_config}")
     lane_polylines = _build_lane_polylines_from_data(current_config, lane_width, lane_count, xlim, offset)
-    print(f"[INFER_LANES] Returned from _build_lane_polylines_from_data, result: {lane_polylines is not None}")
+    logger.debug(f"[INFER_LANES] Returned from _build_lane_polylines_from_data, result: {lane_polylines is not None}")
     if not lane_polylines:
-        print(f"[INFER_LANES] No lane polylines returned")
+        logger.debug("[INFER_LANES] No lane polylines returned")
         return
 
     road_color = "none"
@@ -10549,10 +10552,10 @@ def annotate_points(
 def draw_original(ax: matplotlib.axes.Axes) -> None:
     """Draw all object curves in the left panel, including external reference points."""
     # DEBUG: Check what's being drawn
-    print(f"[DRAW_ORIGINAL] all_points_plot.keys()={list(all_points_plot.keys())}")
+    logger.debug(f"[DRAW_ORIGINAL] all_points_plot.keys()={list(all_points_plot.keys())}")
     for o_id in sorted(all_points_plot.keys()):
         pts = all_points_plot[o_id]
-        print(f"[DRAW_ORIGINAL] o_id={o_id}, shape={pts.shape}, first_pt={pts[0] if pts.shape[0] > 0 else 'EMPTY'}")
+        logger.debug(f"[DRAW_ORIGINAL] o_id={o_id}, shape={pts.shape}, first_pt={pts[0] if pts.shape[0] > 0 else 'EMPTY'}")
     
     # Draw all objects uniformly
     for i, o_id in enumerate(sorted(all_points_plot.keys())):
@@ -10963,7 +10966,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                 # Calculate actual radius as distance from parent to final position
                 red_dot_pos = np.array(sel_gen_pt)
                 circle_radius = float(np.linalg.norm(red_dot_pos - sel_parent_pt))
-                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (FINALIZED)")
+                logger.debug(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (FINALIZED)")
             elif mv is not None and (abs(mv[0]) > 1e-9 or abs(mv[1]) > 1e-9):
                 # Normalize the movement vector to get direction
                 mv_arr = np.array([float(mv[0]), float(mv[1])])
@@ -10974,14 +10977,14 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     direction = np.array([1.0, 0.0])
                 # Red dot at parent + direction Ã— circle_radius (exact distance, no clipping)
                 red_dot_pos = sel_parent_pt + direction * circle_radius
-                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f}")
+                logger.debug(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f}")
             elif sel_gen_pt is not None:
                 # Fallback: use the stored generated point position
                 red_dot_pos = np.array(sel_gen_pt)
-                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (fallback)")
+                logger.debug(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f} (fallback)")
             else:
                 red_dot_pos = None
-                print(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot=None, distance={circle_radius:.4f}")
+                logger.debug(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot=None, distance={circle_radius:.4f}")
             
             # Draw black arrow from parent point (tail) to red dot position (head)
             if red_dot_pos is not None:
@@ -11084,7 +11087,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     raise ValueError("Not enough centerline points")
             except Exception as e:
                 # Fallback: axis-aligned buffer cross (no centerline available)
-                print(f"[RENDER] Rotated buffer cross failed, using axis-aligned fallback: {e}")
+                logger.warning(f"[RENDER] Rotated buffer cross failed, using axis-aligned fallback: {e}")
                 buffer_pts = [
                     (gx - buffer_x_val, gy),  # x - buffer_x
                     (gx + buffer_x_val, gy),  # x + buffer_x
@@ -11177,7 +11180,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     raise ValueError("Not enough centerline points")
             except Exception as e:
                 # Fallback to axis-aligned rectangle if centerline computation fails
-                print(f"[RENDER] Rotated rough zone failed, using axis-aligned fallback: {e}")
+                logger.warning(f"[RENDER] Rotated rough zone failed, using axis-aligned fallback: {e}")
                 rect = matplotlib.patches.Rectangle(
                     (gx - draw_rough_x, gy - draw_rough_y),
                     2 * draw_rough_x, 2 * draw_rough_y,
@@ -12104,7 +12107,7 @@ if _should_process_animation:
         # Different behavior for binary vs linear vs exponential strategy
         
         # DEBUG: Print which strategy branch we're taking
-        print(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
+        logger.debug(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
         
         # Check if we should skip wait intervals (manual iteration/config mode)
         _skip_wait_intervals = st.session_state.get("_skip_wait_intervals", False)
@@ -12192,7 +12195,7 @@ if _should_process_animation:
                     return match_d1 and match_d2
                 
                 # Simulate all remaining binary search steps (from current step to 7)
-                print(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
+                logger.debug(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
                 
                 # Step 1: halve to 0.5Ã—maxdist if not done yet
                 if binary_step == 0:
@@ -12215,7 +12218,7 @@ if _should_process_animation:
                     else:
                         current_distance = max(current_distance - delta_term, 0.0)
                     
-                    print(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
+                    logger.debug(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
                 
                 # Finalize: set to step 7+ and trigger completion
                 st.session_state["anim_binary_step"] = 7
@@ -12232,7 +12235,7 @@ if _should_process_animation:
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
                 st.session_state["_skip_wait_intervals"] = False
-                print(f"[DEBUG INSTANT BINARY] Completed - final distance: {current_distance:.4f}")
+                logger.debug(f"[DEBUG INSTANT BINARY] Completed - final distance: {current_distance:.4f}")
             else:
                 # Normal step-by-step processing
                 binary_step += 1
@@ -12248,10 +12251,10 @@ if _should_process_animation:
             
             # Get correct_orders for all points (multi-point state)
             correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
-            print(f"[DEBUG BINARY LOAD] correct_orders from session_state: {len(correct_orders)} entries, keys={list(correct_orders.keys())}")
+            logger.debug(f"[DEBUG BINARY LOAD] correct_orders from session_state: {len(correct_orders)} entries, keys={list(correct_orders.keys())}")
             if not correct_orders:
                 # Fallback: initialize from parent positions
-                print(f"[DEBUG BINARY LOAD] correct_orders was EMPTY, initializing from parent positions")
+                logger.debug("[DEBUG BINARY LOAD] correct_orders was EMPTY, initializing from parent positions")
                 for idx in selected_indices:
                     if idx < n_total_points:
                         correct_orders[idx] = all_pts[idx].copy()
@@ -12269,7 +12272,7 @@ if _should_process_animation:
             # Check if current candidate configuration matches PDP (ALL n points together)
             current_matches = same_d1 and same_d2
             
-            print(f"[DEBUG BINARY STEP {binary_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
+            logger.debug(f"[DEBUG BINARY STEP {binary_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
             
             # Add diagnostic row
             diag_rows: list[dict[str, Any]] = st.session_state.get("diag_rows", [])
@@ -12333,17 +12336,17 @@ if _should_process_animation:
                     st.session_state["anim_had_full_match"] = True
                 
                 # DEBUG: print correct_orders contents
-                print(f"[DEBUG BINARY FINALIZE] correct_orders keys={list(correct_orders.keys())}")
+                logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders keys={list(correct_orders.keys())}")
                 for k, v in correct_orders.items():
-                    print(f"[DEBUG BINARY FINALIZE] correct_orders[{k}]={v}")
-                print(f"[DEBUG BINARY FINALIZE] had_full_match={st.session_state.get('anim_had_full_match', False)}")
+                    logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders[{k}]={v}")
+                logger.debug(f"[DEBUG BINARY FINALIZE] had_full_match={st.session_state.get('anim_had_full_match', False)}")
                 
                 # Place final points at correct_order positions (use int(idx) for key lookup)
                 final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
                 
                 # DEBUG: print final_positions
                 for k, v in final_positions.items():
-                    print(f"[DEBUG BINARY FINALIZE] final_positions[{k}]={v}")
+                    logger.debug(f"[DEBUG BINARY FINALIZE] final_positions[{k}]={v}")
                 
                 # For backwards compatibility, keep single generated_point as first one
                 first_idx = selected_indices[0] if selected_indices else parent_idx
@@ -12353,7 +12356,7 @@ if _should_process_animation:
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
-                print(f"[DEBUG BINARY] FINALIZE at correct_orders for {len(selected_indices)} points")
+                logger.debug(f"[DEBUG BINARY] FINALIZE at correct_orders for {len(selected_indices)} points")
                 
             elif binary_step == 1:
                 # Step 1: Special case - halve distance FIRST before testing
@@ -12371,7 +12374,7 @@ if _should_process_animation:
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                print(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
+                logger.debug(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
             else:
                 # Steps 2-7: Test current position, then apply +/- formula
                 # delta_term = 0.5^(binary_step) Ã— maxdist
@@ -12388,11 +12391,11 @@ if _should_process_animation:
                     st.session_state["anim_had_full_match"] = True
                     # 2. Add delta_term to distance
                     new_distance = current_distance + delta_term
-                    print(f"[DEBUG BINARY STEP {binary_step}] MATCH! distance {current_distance:.4f} + {delta_term:.4f} = {new_distance:.4f}")
+                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] MATCH! distance {current_distance:.4f} + {delta_term:.4f} = {new_distance:.4f}")
                 else:
                     # No match: subtract delta_term from distance
                     new_distance = current_distance - delta_term
-                    print(f"[DEBUG BINARY STEP {binary_step}] NO MATCH! distance {current_distance:.4f} - {delta_term:.4f} = {new_distance:.4f}")
+                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] NO MATCH! distance {current_distance:.4f} - {delta_term:.4f} = {new_distance:.4f}")
                 
                 # Ensure distance stays positive
                 new_distance = max(new_distance, 0.0)
@@ -12409,7 +12412,7 @@ if _should_process_animation:
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                print(f"[DEBUG BINARY STEP {binary_step}] Next candidates at distance {new_distance:.4f} for {len(selected_indices)} points")
+                logger.debug(f"[DEBUG BINARY STEP {binary_step}] Next candidates at distance {new_distance:.4f} for {len(selected_indices)} points")
         
         elif linear_mode:
             # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
@@ -12487,7 +12490,7 @@ if _should_process_animation:
                     return match_d1 and match_d2
                 
                 # Simulate all linear search steps until match or distance <= 0
-                print(f"[DEBUG INSTANT LINEAR] Starting instant completion from step {linear_step}")
+                logger.debug(f"[DEBUG INSTANT LINEAR] Starting instant completion from step {linear_step}")
                 max_linear_steps = 100  # Safety limit
                 
                 while linear_step < max_linear_steps and current_distance > 0:
@@ -12495,7 +12498,7 @@ if _should_process_animation:
                     test_positions = _compute_linear_positions(current_distance)
                     matches = _check_linear_match(test_positions)
                     
-                    print(f"[DEBUG INSTANT LINEAR] Step {linear_step}: match={matches}, distance={current_distance:.4f}")
+                    logger.debug(f"[DEBUG INSTANT LINEAR] Step {linear_step}: match={matches}, distance={current_distance:.4f}")
                     
                     if matches:
                         # Update correct_orders and finalize
@@ -12521,7 +12524,7 @@ if _should_process_animation:
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
                 st.session_state["_skip_wait_intervals"] = False
-                print(f"[DEBUG INSTANT LINEAR] Completed at step {linear_step}, distance: {current_distance:.4f}")
+                logger.debug(f"[DEBUG INSTANT LINEAR] Completed at step {linear_step}, distance: {current_distance:.4f}")
             else:
                 # Normal step-by-step processing
                 linear_step += 1
@@ -12556,7 +12559,7 @@ if _should_process_animation:
             # Check if current candidate configuration matches PDP (ALL n points together)
             current_matches = same_d1 and same_d2
             
-            print(f"[DEBUG LINEAR STEP {linear_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
+            logger.debug(f"[DEBUG LINEAR STEP {linear_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
             
             # Add diagnostic row
             diag_rows = st.session_state.get("diag_rows", [])
@@ -12618,7 +12621,7 @@ if _should_process_animation:
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
-                print(f"[DEBUG LINEAR] MATCH at step {linear_step}, distance {current_distance:.4f} - FINALIZE")
+                logger.debug(f"[DEBUG LINEAR] MATCH at step {linear_step}, distance {current_distance:.4f} - FINALIZE")
                 
             else:
                 # NO MATCH: decrease distance by step_size (10% of maxdist)
@@ -12635,7 +12638,7 @@ if _should_process_animation:
                     st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                     st.session_state["anim_generated_points"] = final_positions
                     st.session_state["anim_movement_vectors"] = {}
-                    print(f"[DEBUG LINEAR] Distance reached 0, snapping {len(selected_indices)} points to parents")
+                    logger.debug(f"[DEBUG LINEAR] Distance reached 0, snapping {len(selected_indices)} points to parents")
                 else:
                     # Update distance and compute new positions
                     st.session_state["anim_linear_current_distance"] = new_distance
@@ -12647,7 +12650,7 @@ if _should_process_animation:
                     st.session_state["anim_in_search"] = True
                     st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                     st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                    print(f"[DEBUG LINEAR STEP {linear_step}] NO MATCH! distance {current_distance:.4f} - {step_size:.4f} = {new_distance:.4f}")
+                    logger.debug(f"[DEBUG LINEAR STEP {linear_step}] NO MATCH! distance {current_distance:.4f} - {step_size:.4f} = {new_distance:.4f}")
 
         else:
             # ============= EXPONENTIAL SEARCH STRATEGY (MULTI-POINT) =============
@@ -12716,7 +12719,7 @@ if _should_process_animation:
                     return match_d1 and match_d2
                 
                 # Simulate all exponential search steps until match or min distance
-                print(f"[DEBUG INSTANT EXPONENTIAL] Starting instant completion from step {search_steps}")
+                logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Starting instant completion from step {search_steps}")
                 current_dist = float(distance)
                 min_distance = 1e-5
                 final_positions: dict[int, np.ndarray] = {}
@@ -12730,7 +12733,7 @@ if _should_process_animation:
                     test_positions = compute_exp_positions(current_dist)
                     matches = _check_exp_match(test_positions)
                     
-                    print(f"[DEBUG INSTANT EXPONENTIAL] Step {search_steps}: match={matches}, distance={current_dist:.4f}")
+                    logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Step {search_steps}: match={matches}, distance={current_dist:.4f}")
                     
                     if matches:
                         final_positions = {int(k): v.copy() for k, v in test_positions.items()}
@@ -12749,7 +12752,7 @@ if _should_process_animation:
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
                 st.session_state["_skip_wait_intervals"] = False
-                print(f"[DEBUG INSTANT EXPONENTIAL] Completed at step {search_steps}, distance: {current_dist:.4f}")
+                logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Completed at step {search_steps}, distance: {current_dist:.4f}")
             elif search_steps >= max_search_steps:
                 # If search did not converge, snap ALL points back to parent positions
                 final_positions: dict[int, np.ndarray] = {}
@@ -12764,7 +12767,7 @@ if _should_process_animation:
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = final_positions
                 st.session_state["anim_movement_vectors"] = {}
-                print(f"[DEBUG EXPONENTIAL] Max steps reached, snapping {len(selected_indices)} points to parents")
+                logger.debug(f"[DEBUG EXPONENTIAL] Max steps reached, snapping {len(selected_indices)} points to parents")
             else:
                 # Standard exponential search step: halve distance for ALL n points together
                 new_distance = distance / 2.0
@@ -12787,7 +12790,7 @@ if _should_process_animation:
                 st.session_state["anim_in_search"] = True
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                 st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                print(f"[DEBUG EXPONENTIAL] Halving ALL {len(selected_indices)} points: {distance:.4f} -> {new_distance:.4f}")
+                logger.debug(f"[DEBUG EXPONENTIAL] Halving ALL {len(selected_indices)} points: {distance:.4f} -> {new_distance:.4f}")
 
     # Determine rerun behavior based on animation mode
     # _manual_step_mode: pause after each step (one search iteration)
