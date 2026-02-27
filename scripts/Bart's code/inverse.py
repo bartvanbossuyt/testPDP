@@ -492,6 +492,11 @@ elif data_source == "Create random configuration":
     available_configs = [0]
     
     # Save configuration button
+    # Build CSV content once for both Save and Download buttons
+    csv_content = "header: c,t,o,x,y\n"
+    for _, row in _df_all.iterrows():
+        csv_content += f"{int(row['c'])},{int(row['t'])},{int(row['o'])},{row['x']:.{COORD_CSV_PRECISION}f},{row['y']:.{COORD_CSV_PRECISION}f}\n"
+
     save_col1, save_col2 = st.columns([1, 2])
     with save_col1:
         save_filename = st.text_input(
@@ -506,11 +511,6 @@ elif data_source == "Create random configuration":
                      help="Save the current configuration to a CSV file in the application directory."):
             try:
                 save_path = Path(__file__).parent / save_filename
-                # Create CSV content with header
-                csv_content = "header: c,t,o,x,y\n"
-                for _, row in _df_all.iterrows():
-                    csv_content += f"{int(row['c'])},{int(row['t'])},{int(row['o'])},{row['x']:.{COORD_CSV_PRECISION}f},{row['y']:.{COORD_CSV_PRECISION}f}\n"
-                
                 with open(save_path, "w", encoding="utf-8") as f:
                     f.write(csv_content)
                 
@@ -520,13 +520,9 @@ elif data_source == "Create random configuration":
         st.markdown("</div>", unsafe_allow_html=True)
     
     # Also provide download button
-    csv_download = "header: c,t,o,x,y\n"
-    for _, row in _df_all.iterrows():
-        csv_download += f"{int(row['c'])},{int(row['t'])},{int(row['o'])},{row['x']:.{COORD_CSV_PRECISION}f},{row['y']:.{COORD_CSV_PRECISION}f}\n"
-    
     st.download_button(
         label="Download Configuration as CSV",
-        data=csv_download,
+        data=csv_content,
         file_name="custom_reference.csv",
         mime="text/csv",
         key="dl_custom_config",
