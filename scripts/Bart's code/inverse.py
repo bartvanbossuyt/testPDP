@@ -754,30 +754,38 @@ def _calculate_vehicle_speeds(config_df: pd.DataFrame) -> dict[int, float]:
     
     return speeds
 
+def _safe_normalize(direction: np.ndarray, fallback: np.ndarray = None) -> np.ndarray:
+    """Normalize a direction vector, returning a fallback for zero-length or NaN vectors."""
+    if fallback is None:
+        fallback = np.array([1.0, 0.0])
+    norm = np.linalg.norm(direction)
+    if np.isfinite(norm) and norm > 1e-6:
+        return direction / norm
+    return fallback
+
+
 def _determine_driving_direction(config_df: pd.DataFrame, obj_id: int = None) -> np.ndarray:
     """
     Determine the main driving direction based on movement from timestamp 0.
     If obj_id is provided, calculate direction for that specific object.
     Returns a unit vector representing the driving direction.
     """
+    _default = np.array([1.0, 0.0])
+
     if obj_id is not None:
         obj_df = config_df[config_df['o'] == obj_id].sort_values('t')
         if len(obj_df) < 2:
-            return np.array([1.0, 0.0])
+            return _default
         
         # Use first and last position to get overall direction
         p0 = obj_df.iloc[0][['x', 'y']].to_numpy()
         p1 = obj_df.iloc[-1][['x', 'y']].to_numpy()
-        direction = p1 - p0
-        norm = np.linalg.norm(direction)
-        if norm > 1e-6:
-            return direction / norm
-        return np.array([1.0, 0.0])
+        return _safe_normalize(p1 - p0, _default)
     
     # Get positions at first two timestamps for all objects
     t_values = sorted(config_df['t'].unique())
     if len(t_values) < 2:
-        return np.array([1.0, 0.0])  # Default to x-direction
+        return _default
     
     t0_df = config_df[config_df['t'] == t_values[0]]
     t1_df = config_df[config_df['t'] == t_values[1]]
@@ -786,11 +794,7 @@ def _determine_driving_direction(config_df: pd.DataFrame, obj_id: int = None) ->
     p0 = np.array([t0_df['x'].mean(), t0_df['y'].mean()])
     p1 = np.array([t1_df['x'].mean(), t1_df['y'].mean()])
     
-    direction = p1 - p0
-    norm = np.linalg.norm(direction)
-    if norm > 1e-6:
-        return direction / norm
-    return np.array([1.0, 0.0])
+    return _safe_normalize(p1 - p0, _default)
 
 def _vehicles_same_direction(config_df: pd.DataFrame, angle_threshold: float = 45.0) -> bool:
     """
