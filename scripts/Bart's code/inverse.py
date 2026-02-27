@@ -5858,66 +5858,67 @@ if st.session_state.get("_generate_half_ts_requested", False) and not st.session
     all_points_plot = _hts_points_plot
     all_vals_plot = _hts_vals_plot
 
-    # --- Generate 100 configs × 1000 iterations ---
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _hts_iterations = 1000
-    _hts_num_configs = 100
+    try:
+        # --- Generate 100 configs × 1000 iterations ---
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _hts_iterations = 1000
+        _hts_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    all_generated_configs: list[dict[str, Any]] = []
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_hts_num_configs):
-        current_points = _hts_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
+        for config_idx in range(_hts_num_configs):
+            current_points = _hts_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
 
-        for iteration in range(_hts_iterations):
-            status_text.text(f"½-ts filtered — config {config_idx + 1}/{_hts_num_configs} | iter {iteration + 1}/{_hts_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
+            for iteration in range(_hts_iterations):
+                status_text.text(f"½-ts filtered — config {config_idx + 1}/{_hts_num_configs} | iter {iteration + 1}/{_hts_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
 
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _hts_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold,
-            })
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _hts_iterations,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                })
 
-        progress_bar.progress((config_idx + 1) / _hts_num_configs)
+            progress_bar.progress((config_idx + 1) / _hts_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    # --- Restore global variables ---
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
@@ -6016,66 +6017,67 @@ if st.session_state.get("_generate_quarter_ts_requested", False) and not st.sess
     all_points_plot = _qts_points_plot
     all_vals_plot = _qts_vals_plot
 
-    # --- Generate 100 configs × 1000 iterations ---
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _qts_iterations = 1000
-    _qts_num_configs = 100
+    try:
+        # --- Generate 100 configs × 1000 iterations ---
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _qts_iterations = 1000
+        _qts_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    all_generated_configs: list[dict[str, Any]] = []
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_qts_num_configs):
-        current_points = _qts_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
+        for config_idx in range(_qts_num_configs):
+            current_points = _qts_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
 
-        for iteration in range(_qts_iterations):
-            status_text.text(f"¼-ts filtered — config {config_idx + 1}/{_qts_num_configs} | iter {iteration + 1}/{_qts_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
+            for iteration in range(_qts_iterations):
+                status_text.text(f"¼-ts filtered — config {config_idx + 1}/{_qts_num_configs} | iter {iteration + 1}/{_qts_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
 
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _qts_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold,
-            })
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _qts_iterations,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                })
 
-        progress_bar.progress((config_idx + 1) / _qts_num_configs)
+            progress_bar.progress((config_idx + 1) / _qts_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    # --- Restore global variables ---
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
@@ -6170,58 +6172,59 @@ if st.session_state.get("_generate_eighth_ts_requested", False) and not st.sessi
     all_points_plot = _ets_points_plot
     all_vals_plot = _ets_vals_plot
 
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _ets_iterations = 1000
-    _ets_num_configs = 100
+    try:
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _ets_iterations = 1000
+        _ets_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_generated_configs: list[dict[str, Any]] = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_ets_num_configs):
-        current_points = _ets_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        for iteration in range(_ets_iterations):
-            status_text.text(f"⅛-ts filtered — config {config_idx + 1}/{_ets_num_configs} | iter {iteration + 1}/{_ets_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _ets_iterations,
-                "buffer_x": buffer_x, "buffer_y": buffer_y,
-                "rough_x": rough_x, "rough_y": rough_y,
-                "threshold_mode": mode, "max_threshold": max_threshold,
-            })
-        progress_bar.progress((config_idx + 1) / _ets_num_configs)
+        for config_idx in range(_ets_num_configs):
+            current_points = _ets_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            for iteration in range(_ets_iterations):
+                status_text.text(f"⅛-ts filtered — config {config_idx + 1}/{_ets_num_configs} | iter {iteration + 1}/{_ets_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _ets_iterations,
+                    "buffer_x": buffer_x, "buffer_y": buffer_y,
+                    "rough_x": rough_x, "rough_y": rough_y,
+                    "threshold_mode": mode, "max_threshold": max_threshold,
+                })
+            progress_bar.progress((config_idx + 1) / _ets_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    # --- Restore global variables ---
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
@@ -6308,57 +6311,59 @@ if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.se
     all_points_plot = _sts_points_plot
     all_vals_plot = _sts_vals_plot
 
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _sts_iterations = 1000
-    _sts_num_configs = 100
+    try:
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _sts_iterations = 1000
+        _sts_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_generated_configs: list[dict[str, Any]] = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_sts_num_configs):
-        current_points = _sts_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        for iteration in range(_sts_iterations):
-            status_text.text(f"1/16-ts filtered — config {config_idx + 1}/{_sts_num_configs} | iter {iteration + 1}/{_sts_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _sts_iterations,
-                "buffer_x": buffer_x, "buffer_y": buffer_y,
-                "rough_x": rough_x, "rough_y": rough_y,
-                "threshold_mode": mode, "max_threshold": max_threshold,
-            })
-        progress_bar.progress((config_idx + 1) / _sts_num_configs)
+        for config_idx in range(_sts_num_configs):
+            current_points = _sts_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            for iteration in range(_sts_iterations):
+                status_text.text(f"1/16-ts filtered — config {config_idx + 1}/{_sts_num_configs} | iter {iteration + 1}/{_sts_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _sts_iterations,
+                    "buffer_x": buffer_x, "buffer_y": buffer_y,
+                    "rough_x": rough_x, "rough_y": rough_y,
+                    "threshold_mode": mode, "max_threshold": max_threshold,
+                })
+            progress_bar.progress((config_idx + 1) / _sts_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
@@ -6443,57 +6448,59 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
     all_points_plot = _fts_points_plot
     all_vals_plot = _fts_vals_plot
 
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _fts_iterations = 1000
-    _fts_num_configs = 100
+    try:
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _fts_iterations = 1000
+        _fts_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_generated_configs: list[dict[str, Any]] = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_fts_num_configs):
-        current_points = _fts_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        for iteration in range(_fts_iterations):
-            status_text.text(f"4-ts filtered — config {config_idx + 1}/{_fts_num_configs} | iter {iteration + 1}/{_fts_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _fts_iterations,
-                "buffer_x": buffer_x, "buffer_y": buffer_y,
-                "rough_x": rough_x, "rough_y": rough_y,
-                "threshold_mode": mode, "max_threshold": max_threshold,
-            })
-        progress_bar.progress((config_idx + 1) / _fts_num_configs)
+        for config_idx in range(_fts_num_configs):
+            current_points = _fts_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            for iteration in range(_fts_iterations):
+                status_text.text(f"4-ts filtered — config {config_idx + 1}/{_fts_num_configs} | iter {iteration + 1}/{_fts_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _fts_iterations,
+                    "buffer_x": buffer_x, "buffer_y": buffer_y,
+                    "rough_x": rough_x, "rough_y": rough_y,
+                    "threshold_mode": mode, "max_threshold": max_threshold,
+                })
+            progress_bar.progress((config_idx + 1) / _fts_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
@@ -6578,57 +6585,59 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
     all_points_plot = _tts_points_plot
     all_vals_plot = _tts_vals_plot
 
-    pdp_variant = "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
-    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _tts_iterations = 1000
-    _tts_num_configs = 100
+    try:
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+        buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _tts_iterations = 1000
+        _tts_num_configs = 100
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_generated_configs: list[dict[str, Any]] = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        all_generated_configs: list[dict[str, Any]] = []
 
-    for config_idx in range(_tts_num_configs):
-        current_points = _tts_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        for iteration in range(_tts_iterations):
-            status_text.text(f"2-ts filtered — config {config_idx + 1}/{_tts_num_configs} | iter {iteration + 1}/{_tts_iterations}")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _tts_iterations,
-                "buffer_x": buffer_x, "buffer_y": buffer_y,
-                "rough_x": rough_x, "rough_y": rough_y,
-                "threshold_mode": mode, "max_threshold": max_threshold,
-            })
-        progress_bar.progress((config_idx + 1) / _tts_num_configs)
+        for config_idx in range(_tts_num_configs):
+            current_points = _tts_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            for iteration in range(_tts_iterations):
+                status_text.text(f"2-ts filtered — config {config_idx + 1}/{_tts_num_configs} | iter {iteration + 1}/{_tts_iterations}")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _tts_iterations,
+                    "buffer_x": buffer_x, "buffer_y": buffer_y,
+                    "rough_x": rough_x, "rough_y": rough_y,
+                    "threshold_mode": mode, "max_threshold": max_threshold,
+                })
+            progress_bar.progress((config_idx + 1) / _tts_num_configs)
 
-    progress_bar.empty()
-    status_text.empty()
-
-    all_pts_flat = _save_all_pts_flat
-    all_ts_flat = _save_all_ts_flat
-    all_obj_ids_flat = _save_all_obj_ids_flat
-    all_local_idx_flat = _save_all_local_idx_flat
-    all_is_fixed_flat = _save_all_is_fixed_flat
-    n_total_points = _save_n_total_points
-    all_points_plot = _save_all_points_plot
-    all_vals_plot = _save_all_vals_plot
+        progress_bar.empty()
+        status_text.empty()
+    finally:
+        # --- Restore global variables (guaranteed even on exception) ---
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
