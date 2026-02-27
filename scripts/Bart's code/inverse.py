@@ -71,7 +71,8 @@ def check_password():
     def has_query_auth_flag() -> bool:
         try:
             return str(st.query_params.get(auth_qp_key, "0")) == "1"
-        except Exception:
+        except Exception as e:
+            print(f"[AUTH] Could not read query param '{auth_qp_key}': {e}")
             return False
 
     def set_query_auth_flag(enabled: bool) -> None:
@@ -80,8 +81,8 @@ def check_password():
                 st.query_params[auth_qp_key] = "1"
             elif auth_qp_key in st.query_params:
                 del st.query_params[auth_qp_key]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[AUTH] Could not set query param '{auth_qp_key}': {e}")
 
     # If already authenticated in this session, keep access on reruns.
     if bool(st.session_state.get("password_correct", False)):
@@ -2900,8 +2901,8 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             # For realistic variant, only x buffer is used
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
-    except Exception:
-        pass
+    except (TypeError, ValueError) as e:
+        print(f"[WARNING] Failed to read buffer margins from session state: {e}")
     
     # Adjust bounds to account for buffer transformation
     check_min_x = coord_min_x + buffer_margin_x
@@ -3075,8 +3076,8 @@ def apply_movement_vectors(base_points: np.ndarray, vectors: dict[int, tuple[flo
             # For realistic variant, only x buffer is used
             if "realistic" in pdp_variants and "buffer" not in pdp_variants and "bufferrough" not in pdp_variants:
                 buffer_margin_y = 0.0
-    except Exception:
-        pass
+    except (TypeError, ValueError) as e:
+        print(f"[WARNING] Failed to read buffer margins from session state: {e}")
     
     # Adjust clipping bounds to account for buffer transformation
     clip_x_min = x_min + buffer_margin_x
@@ -3260,7 +3261,7 @@ def _format_t_subscript(tval: float) -> str:
     """Format t-value as an integer subscript if possible, otherwise as a float."""
     try:
         tnum = float(tval)
-    except Exception:
+    except (TypeError, ValueError):
         tnum = float(np.array(tval, dtype=float))
     return str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
 
@@ -7060,8 +7061,8 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 ha="center",
                                 va="center",
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
 
                 for j, ((x, y), tval) in enumerate(zip(generated_pts, generated_vals)):
                     ax_right.scatter([x], [y], s=25, zorder=10, color=color, marker='o')
@@ -7080,14 +7081,13 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 ha="center",
                                 va="center",
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
             
             try:
                 fig.tight_layout()
-            except Exception:
-                # If tight_layout fails, continue without it
-                pass
+            except Exception as e:
+                print(f"[RENDER] tight_layout failed: {e}")
             
             # Save to buffer
             buf = io.BytesIO()
@@ -7434,7 +7434,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     off = offsets[j % len(offsets)]
                     try:
                         tnum = float(tval)
-                    except Exception:
+                    except (TypeError, ValueError):
                         tnum = float(np.array(tval, dtype=float))
                     lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
                     # Only add label if both label and lbl are valid
@@ -7451,15 +7451,13 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                                 ha="center",
                                 va="center",
                             )
-                        except Exception:
-                            # If LaTeX fails, skip this label
-                            pass
+                        except Exception as e:
+                            print(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
             
             try:
                 fig.tight_layout()
-            except Exception:
-                # If tight_layout fails, continue without it
-                pass
+            except Exception as e:
+                print(f"[RENDER] tight_layout failed: {e}")
             
             # Save to buffer
             buf = io.BytesIO()
@@ -10528,7 +10526,7 @@ def annotate_points(
         off = offsets[i % len(offsets)]
         try:
             tnum = float(tval)  # type: ignore[arg-type]
-        except Exception:
+        except (TypeError, ValueError):
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
         # Use LaTeX format: italic letter with subscript number (e.g., $\mathit{k}_0$)
@@ -10648,7 +10646,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
         """Helper to build a LaTeX label with italic letter and subscript number."""
         try:
             tnum = float(tval)
-        except Exception:
+        except (TypeError, ValueError):
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
         if gen_marker:
@@ -10662,7 +10660,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
         try:
             oi = int(sp["original_parent_idx"])
             return oi
-        except Exception:
+        except (KeyError, TypeError, ValueError):
             return None
 
     # Determine which original segments should become transparent
@@ -10869,7 +10867,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             off = offsets[original_parent_idx % len(offsets)]
             try:
                 tval_f = float(tval)  # type: ignore[arg-type]
-            except Exception:
+            except (TypeError, ValueError):
                 tval_f = float(np.array(tval, dtype=float))
             label = make_label(prefix, tval_f, gen_marker)
             ax.annotate(  # type: ignore
@@ -11080,8 +11078,9 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                         raise ValueError("Centerline too short")
                 else:
                     raise ValueError("Not enough centerline points")
-            except Exception:
+            except Exception as e:
                 # Fallback: axis-aligned buffer cross (no centerline available)
+                print(f"[RENDER] Rotated buffer cross failed, using axis-aligned fallback: {e}")
                 buffer_pts = [
                     (gx - buffer_x_val, gy),  # x - buffer_x
                     (gx + buffer_x_val, gy),  # x + buffer_x
@@ -11172,8 +11171,9 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                         raise ValueError("Centerline too short")
                 else:
                     raise ValueError("Not enough centerline points")
-            except Exception:
+            except Exception as e:
                 # Fallback to axis-aligned rectangle if centerline computation fails
+                print(f"[RENDER] Rotated rough zone failed, using axis-aligned fallback: {e}")
                 rect = matplotlib.patches.Rectangle(
                     (gx - draw_rough_x, gy - draw_rough_y),
                     2 * draw_rough_x, 2 * draw_rough_y,
