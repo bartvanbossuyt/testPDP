@@ -1,15 +1,11 @@
-﻿# -*- coding: utf-8 -*- 
+# -*- coding: utf-8 -*-
 # inverse.py
-# Streamlit app with an academic look, two columns with strictly square axes.
-# Left: line + points from CSV (c=11, tâˆˆ{0,1,2}, o=0). Right: identical axes, initially empty.
-# CSV may start with literally: "header: c,t,o,x,y" â†’ that line is skipped.
-# Axis labels: d1 and d2; point labels: k0, k1, k2 (blue, smaller).
-# maxdist = max(||k0-k1||, ||k1-k2||); axes get at least maxdist margin to every border.
-
+# Streamlit app - PDP Inverse Analysis
 from pathlib import Path
 from typing import Tuple, Callable, IO, Optional, Any
 import io
 import time
+from PIL import Image as PILImage
 
 import numpy as np
 import pandas as pd
@@ -273,6 +269,17 @@ data_source = st.radio(
 _df_all = None
 available_configs = []
 selected_c_int = 0
+_is_custom_upload = (data_source == "Upload custom file")
+
+# When using custom upload, force external points off by clearing session state keys
+if _is_custom_upload:
+    if st.session_state.get("cfg_use_external_points", False):
+        st.session_state["cfg_use_external_points"] = False
+    st.session_state["use_external_points"] = False
+    if "external_points" in st.session_state:
+        del st.session_state["external_points"]
+    # Default PDP variant to fundamental for custom uploads
+    st.session_state["cfg_pdp_variants"] = ["fundamental"]
 
 if data_source == "Preset configurations":
     _df_all = _read_clean_df("voorbeeld.csv")
@@ -300,6 +307,12 @@ elif data_source == "Upload custom file":
             first_line = lines[0].strip().lower()
             
             names = ["c", "t", "o", "x", "y"]
+            # Column name aliases for common alternative naming conventions
+            _col_aliases: dict[str, str] = {
+                "conid": "c", "configid": "c", "config": "c", "configuration": "c",
+                "tstid": "t", "timestamp": "t", "time": "t",
+                "poiid": "o", "objectid": "o", "object": "o", "obj": "o",
+            }
             if first_line.startswith("header:"):
                 # Skip header line
                 from io import StringIO
@@ -308,6 +321,10 @@ elif data_source == "Upload custom file":
                 from io import StringIO
                 uploaded_file.seek(0)
                 _df_all = pd.read_csv(StringIO(content))  # type: ignore[call-overload]
+                # Auto-rename known aliases (case-insensitive)
+                _rename_map = {col: _col_aliases[col.strip().lower()] for col in _df_all.columns if col.strip().lower() in _col_aliases}
+                if _rename_map:
+                    _df_all = _df_all.rename(columns=_rename_map)  # type: ignore[assignment]
                 if not set(names).issubset(_df_all.columns):
                     _df_all = pd.read_csv(StringIO(content), header=None, names=names)  # type: ignore[call-overload]
             
@@ -355,14 +372,18 @@ elif data_source == "Create random configuration":
             help="Number of moving objects (points). Each point will have its own trajectory over time."
         )
     with rand_col2:
+        # Halve the number of timestamps (default and max)
+        orig_max_timestamps = 20
+        halved_max_timestamps = orig_max_timestamps // 2
+        halved_default = 3 // 2 if 3 > 1 else 1
         num_timestamps = st.number_input(
-            "Number of timestamps",
+            "Number of timestamps (halved)",
             min_value=1,
-            max_value=20,
-            value=3,
+            max_value=halved_max_timestamps,
+            value=halved_max_timestamps,
             step=1,
             key="rand_num_timestamps",
-            help="Number of timestamps (time moments). Each point will have a position at each timestamp."
+            help=f"Number of timestamps (time moments). Each point will have a position at each timestamp. [Halved: {halved_max_timestamps}]"
         )
     
     # Generate or load random configuration
@@ -1372,6 +1393,10 @@ st.markdown("""
   <h3>Settings</h3>
 """, unsafe_allow_html=True)
 
+# Pre-apply cfg_c for C68 presets BEFORE the widget renders
+if st.session_state.get("_c68r_preset_pending", False) or st.session_state.get("_c68f_preset_pending", False):
+    st.session_state["cfg_c"] = 68
+
 sc1, sc2, sc3 = st.columns([1,1,2], gap="small")
 with sc1:
     # Configuration selector for c (only show if multiple configs available)
@@ -1379,7 +1404,7 @@ with sc1:
         selected_c = st.selectbox(
             "Configuration (c)",
             options=available_configs,
-            index=available_configs.index(68) if 68 in available_configs else (available_configs.index(7) if 7 in available_configs else 0),
+            index=available_configs.index(7) if (not _is_custom_upload and 7 in available_configs) else (available_configs.index(0) if 0 in available_configs else 0),
             key="cfg_c",
             help="Select which configuration to use as the reference. Each configuration has its own set of k and l trajectories."
         )
@@ -1417,39 +1442,114 @@ if not _t_common:
     st.error(f"No timestamps found for configuration c={selected_c}.")
     st.stop()
 
-n_timepoints = len(_t_common)
-default_window = min(160, n_timepoints)
+    n_timepoints = len(_t_common)
+    halved_timepoints = max(1, n_timepoints // 2)
+    default_window = n_timepoints if _is_custom_upload else min(halved_timepoints, n_timepoints)
 
 # Apply reinsertion preset if pending (must happen BEFORE widgets render)
 if st.session_state.pop("_reinsertion_preset_pending", False):
     st.session_state["cfg_start_t"] = 131
     st.session_state["cfg_k"] = 8
 
+# Apply ext30-half preset: just set timestamp step to 2 (keep all other settings)
+if st.session_state.pop("_ext30_half_preset_pending", False):
+    st.session_state["_cfg_timestamp_step"] = 2
+
+# Apply Config 68 Realistic preset if pending
+if st.session_state.pop("_c68r_preset_pending", False):
+    st.session_state["cfg_start_t"] = 82
+    # timestamps 82..160 → 79 entries; with step 2 we get 40 timestamps
+    st.session_state["cfg_k"] = min(79, n_timepoints)
+    st.session_state["_cfg_timestamp_step"] = 2
+    st.session_state["cfg_pdp_variants"] = ["realistic"]
+    st.session_state["cfg_buffer_x"] = 5.0
+    st.session_state["cfg_buffer_y"] = 0.0
+    st.session_state["cfg_rough_x"] = 0.0
+    st.session_state["cfg_rough_y"] = 0.30
+    st.session_state["cfg_point_selection_mode"] = "Multiple random points"
+    st.session_state["cfg_movement_direction"] = "Same direction"
+    st.session_state["cfg_use_external_points"] = True
+    st.session_state["use_external_points"] = True
+    # Compute external points at lane centers for config 68
+    _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
+    _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
+    _c68_nlanes = int(_c68_cfg.get("lanes", 2))
+    _c68_cl_y = float(_c68_cfg.get("centerline_y", -5.0))
+    _c68_hw = (_c68_lw * _c68_nlanes) / 2.0
+    st.session_state["external_points"] = [
+        (500.0, round(_c68_cl_y - _c68_hw + (i + 0.5) * _c68_lw, 3))
+        for i in range(_c68_nlanes)
+    ]
+
+# Apply Config 68 Fundamental preset if pending
+if st.session_state.pop("_c68f_preset_pending", False):
+    # Ensure n_timepoints is defined
+    try:
+        n_timepoints
+    except NameError:
+        n_timepoints = len(_t_common) if '_t_common' in locals() else 137
+    st.session_state["cfg_start_t"] = 82
+    st.session_state["cfg_k"] = min(79, n_timepoints)
+    st.session_state["_cfg_timestamp_step"] = 2
+    st.session_state["cfg_pdp_variants"] = ["fundamental"]
+    st.session_state["cfg_buffer_x"] = 0.0
+    st.session_state["cfg_buffer_y"] = 0.0
+    st.session_state["cfg_rough_x"] = 0.0
+    st.session_state["cfg_rough_y"] = 0.0
+    st.session_state["cfg_point_selection_mode"] = "Single point"
+    st.session_state["cfg_movement_direction"] = "Same direction"
+    st.session_state["cfg_use_external_points"] = True
+    st.session_state["use_external_points"] = True
+    _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
+    _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
+    _c68_nlanes = int(_c68_cfg.get("lanes", 2))
+    _c68_cl_y = float(_c68_cfg.get("centerline_y", -5.0))
+    _c68_hw = (_c68_lw * _c68_nlanes) / 2.0
+    st.session_state["external_points"] = [
+        (500.0, round(_c68_cl_y - _c68_hw + (i + 0.5) * _c68_lw, 3))
+        for i in range(_c68_nlanes)
+    ]
+
 with sc2:
     # Number of timestamps in the sliding time window (dropdown instead of slider)
+    # Ensure n_timepoints and default_window are always defined
+    try:
+        n_timepoints
+    except NameError:
+        n_timepoints = len(_t_common) if '_t_common' in locals() else 137
+    try:
+        default_window
+    except NameError:
+        halved_timepoints = max(1, n_timepoints // 2)
+        default_window = halved_timepoints
     if n_timepoints > 1:
-        timestamp_options = list(range(2, n_timepoints + 1))
-        default_idx = timestamp_options.index(default_window) if default_window in timestamp_options else 0
+        # Allow selecting up to all timestamps (full range for custom uploads)
+        max_selectable = n_timepoints if _is_custom_upload else max(2, n_timepoints // 2)
+        timestamp_options = list(range(2, max_selectable + 1))
+        default_idx = timestamp_options.index(default_window) if default_window in timestamp_options else len(timestamp_options) - 1
         num_timestamps = st.selectbox(
-            "Number of timestamps",
+            f"Number of timestamps (max: {max_selectable})",
             options=timestamp_options,
             index=default_idx,
             key="cfg_k",
-            help="Select the number of timestamps to include in the analysis window."
+            help=f"Select the number of timestamps to include in the analysis window. [Max: {max_selectable}]"
         )
     else:
         st.markdown("**Number of timestamps**")
         st.code(str(n_timepoints))
         num_timestamps = n_timepoints
 
+
 with sc3:
     # Starting t value of the window (dropdown instead of slider)
-    valid_start_count = max(1, n_timepoints - num_timestamps + 1)
+    valid_start_count = max(1, halved_timepoints - num_timestamps + 1)
     valid_starts = _t_common[:valid_start_count]
-    
+    # Utility for halved timestamp titles
+    def _halved_ts_title(base, count):
+        return f"{base} ({count} timestamps, halved)"
     if len(valid_starts) > 1:
-        # Default to start timestamp 0 if available, otherwise use first
-        default_start_idx = valid_starts.index(0) if 0 in valid_starts else 0
+        # Default to start timestamp 38 if available, otherwise use first
+        default_start_idx = valid_starts.index(38) if 38 in valid_starts else 0
         start_t = st.selectbox(
             "Starting time (t)",
             options=valid_starts,
@@ -1461,6 +1561,17 @@ with sc3:
         st.markdown("**Starting time (t)**")
         st.code(str(valid_starts[0]))
         start_t = valid_starts[0]
+
+# Fallback: ensure start_t is always defined for later use
+try:
+    start_t
+except NameError:
+    if 'valid_starts' in locals() and len(valid_starts) > 0:
+        start_t = valid_starts[0]
+    elif '_t_common' in locals() and len(_t_common) > 0:
+        start_t = _t_common[0]
+    else:
+        start_t = 0
 
 # Strategy, iterations, configurations - on one row with 4 columns for compactness
 sc4, sc5, sc6, sc7 = st.columns([1.2, 1, 1, 1], gap="small")
@@ -1479,7 +1590,7 @@ with sc5:
     num_iterations = st.number_input(
         "Iterations",
         min_value=1,
-        max_value=100,
+        max_value=1200,
         value=15,
         step=1,
         key="cfg_iterations",
@@ -1491,7 +1602,7 @@ with sc6:
         "Configurations",
         min_value=1,
         max_value=1000,
-        value=1,
+        value=10,
         step=1,
         key="cfg_num_configs",
         help="How many independent configurations to create when clicking 'Generate configurations'. Each configuration is a complete new set of generated points (all k and l points) that preserves the original PDP pattern. Use this for batch generation without animation."
@@ -1778,9 +1889,11 @@ with st.expander("PDP Variant Configuration", expanded=False):
 
 # External (fixed) reference points - in expander for compactness
 with st.expander("External Reference Points", expanded=False):
+    # For custom uploads, force external points off by default
+    _ext_default = False if _is_custom_upload else st.session_state.get("use_external_points", True)
     use_external_points = st.checkbox(
         "Use external reference points",
-        value=st.session_state.get("use_external_points", False),
+        value=_ext_default,
         key="cfg_use_external_points",
         help="Enable fixed external reference points that constrain absolute positions. "
              "These points (e.g., corners of a tennis court, field boundaries, landmarks) "
@@ -1795,9 +1908,22 @@ with st.expander("External Reference Points", expanded=False):
         st.markdown("Define fixed reference points (these remain stationary during generation):")
         st.caption("Each row is a fixed point with coordinates (x, y). These points apply to all timestamps and constrain the absolute positions of generated configurations.")
         
-        # Initialize external points if not present (now only x, y - no timestamp)
+        # Initialize external points if not present: place one point per lane center at x=0
         if "external_points" not in st.session_state:
-            st.session_state["external_points"] = [(0.0, 0.0)]  # Default: one point at origin
+            _ext_lane_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
+            _ext_lw = float(_ext_lane_cfg.get("lane_width", 3.0))
+            # Determine lane count dynamically (same logic as _build_lane_polylines_from_data)
+            _ext_ys = [float(config_df[config_df['o'] == o]['y'].mean()) for o in all_object_ids]
+            _ext_y_span = (max(_ext_ys) - min(_ext_ys)) if len(_ext_ys) > 1 else 0.0
+            _ext_nlanes = 3 if _ext_y_span > 1.5 * _ext_lw else 2
+            # Road centerline y = average of all vehicle y-positions
+            _ext_center_y = float(config_df['y'].mean())
+            _ext_hw = (_ext_lw * _ext_nlanes) / 2.0
+            # Lane center i (0=rightmost): center_y - hw + (i + 0.5) * lw
+            st.session_state["external_points"] = [
+                (500.0, round(_ext_center_y - _ext_hw + (i + 0.5) * _ext_lw, 3))
+                for i in range(_ext_nlanes)
+            ]
         
         external_pts = st.session_state["external_points"]
         
@@ -2173,9 +2299,59 @@ with advanced_col2:
         help="Automatically generates 5 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 50 iterations only for this button and shows the most deviating configurations with full analysis."
     )
     generate_50_btn = st.button(
-        "Generate 50 & Show Top 5 (reinsertion)",
+        "Generate 200 & Show Top 25 (reinsertion)",
         key="btn_generate_50",
-        help="Generates 50 configurations with 125 iterations each, using 8 timestamps from t=131 to t=138 (reinsertion zone). Shows the 5 most deviating configurations."
+        help="Generates 200 configurations with 200 iterations each, using 8 timestamps from t=131 to t=138 (reinsertion zone). Shows the 25 most deviating configurations."
+    )
+    generate_ext30_btn = st.button(
+        "Generate 100 & Show Top 3 (with GIF)",
+        key="btn_generate_ext30",
+        help="Generates 100 configurations with 1000 iterations each. Shows the 3 most deviating configurations and lets you download an animated GIF of each."
+    )
+    generate_ext30_half_btn = st.button(
+        "Generate 10 & Top 3 GIF (½ timestamps)",
+        key="btn_generate_ext30_half",
+        help="Same als 'Generate 10 & Show Top 3 (met GIF)' maar gebruikt enkel om de andere timestamp (step=2), dus halveert het aantal datapunten."
+    )
+    generate_half_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (½ ts, filtered)",
+        key="btn_generate_half_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Filtert oneven timestamps behalve de laatste (bv. t=136). Tekent blauwe en oranje curves apart per object."
+    )
+    generate_quarter_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (¼ ts, filtered)",
+        key="btn_generate_quarter_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Houdt elke 4e timestamp (0,4,8,...,136) + laatste (136). Tekent blauwe en oranje curves apart per object."
+    )
+    generate_eighth_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (⅛ ts, filtered)",
+        key="btn_generate_eighth_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Houdt elke 8e timestamp (0,8,16,...,136) + laatste (136). ±18 timestamps per object."
+    )
+    generate_sixteenth_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (1/16 ts, filtered)",
+        key="btn_generate_sixteenth_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Houdt elke 16e timestamp (0,16,32,...,128) + laatste (136). ±9 timestamps per object."
+    )
+    generate_four_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (4 ts)",
+        key="btn_generate_four_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Slechts 4 timestamps: 0, 46, 92, 136."
+    )
+    generate_two_ts_btn = st.button(
+        "Generate 100 & Top 10 GIF (2 ts)",
+        key="btn_generate_two_ts",
+        help="100 configs × 1000 iter | exponential | PDP fundamental | Slechts 2 timestamps: 0 en 136."
+    )
+    generate_c68_realistic_btn = st.button(
+        "C68 Realistic (multi-pt, buffer+rough)",
+        key="btn_generate_c68_realistic",
+        help="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buffer 5m, d2 rough 0.30m) | External pts at lane centers | 100 configs × 1000 iterations | Top 10"
+    )
+    generate_c68_fundamental_btn = st.button(
+        "C68 Fundamental (single-pt, ext pts)",
+        key="btn_generate_c68_fundamental",
+        help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 100 configs × 1000 iterations | Top 10"
     )
 
 # Handle Reset button click for both modes
@@ -2437,7 +2613,14 @@ try:
 except ValueError:
     start_idx = 0
 end_idx = start_idx + int(num_timestamps)
-selected_ts_window = _t_common[start_idx:end_idx]
+_ts_step = int(st.session_state.get("_cfg_timestamp_step", 1))
+selected_ts_window = list(_t_common[start_idx:end_idx:_ts_step])
+# When using step > 1 (½ timestamps), always include the LAST timestamp
+# of the full window (e.g. 136) even if it would be skipped by the step.
+if _ts_step > 1:
+    _full_window_last = _t_common[min(end_idx - 1, len(_t_common) - 1)]
+    if _full_window_last not in selected_ts_window:
+        selected_ts_window.append(_full_window_last)
 selected_ts_set = set(selected_ts_window)
 
 # Filter all objects to the time window - unified structure
@@ -2546,8 +2729,10 @@ def is_fixed_point(flat_idx: int) -> bool:
     return False
 
 def get_movable_indices() -> list[int]:
-    """Get list of flat indices for movable (non-fixed) points only."""
-    return [i for i in range(n_total_points) if not is_fixed_point(i)]
+    """Get list of flat indices for movable (non-fixed) points only.
+    Also excludes any indices in session-state '_frozen_endpoints' set."""
+    frozen: set[int] = st.session_state.get("_frozen_endpoints", set())
+    return [i for i in range(n_total_points) if not is_fixed_point(i) and i not in frozen]
 
 def _build_d2_change_weights(movable_indices: list[int]) -> dict[int, float]:
     """Build per-index weights based on local d2 (y) change magnitude."""
@@ -5111,6 +5296,62 @@ if generate_50_btn:
     st.session_state["_reinsertion_preset_pending"] = True
     st.rerun()
 
+if generate_ext30_btn:
+    # Store in session state that we want to generate 30 configs x 600 iterations
+    st.session_state["_generate_ext30_requested"] = True
+
+if generate_ext30_half_btn:
+    # Same as ext30 but with step=2 (half timestamps)
+    st.session_state["_generate_ext30_half_requested"] = True
+    st.session_state["_ext30_half_preset_pending"] = True
+    st.rerun()
+
+if generate_c68_realistic_btn:
+    st.session_state["_generate_c68r_requested"] = True
+    st.session_state["_c68r_preset_pending"] = True
+    st.rerun()
+
+if generate_c68_fundamental_btn:
+    st.session_state["_generate_c68f_requested"] = True
+    st.session_state["_c68f_preset_pending"] = True
+    st.rerun()
+
+if generate_half_ts_btn:
+    st.session_state["_generate_half_ts_requested"] = True
+    st.session_state["_generate_half_ts_results"] = None
+    st.session_state.pop("_hts_points_plot", None)
+    st.session_state.pop("_hts_vals_plot", None)
+
+if generate_quarter_ts_btn:
+    st.session_state["_generate_quarter_ts_requested"] = True
+    st.session_state["_generate_quarter_ts_results"] = None
+    st.session_state.pop("_qts_points_plot", None)
+    st.session_state.pop("_qts_vals_plot", None)
+
+if generate_eighth_ts_btn:
+    st.session_state["_generate_eighth_ts_requested"] = True
+    st.session_state["_generate_eighth_ts_results"] = None
+    st.session_state.pop("_ets_points_plot", None)
+    st.session_state.pop("_ets_vals_plot", None)
+
+if generate_sixteenth_ts_btn:
+    st.session_state["_generate_sixteenth_ts_requested"] = True
+    st.session_state["_generate_sixteenth_ts_results"] = None
+    st.session_state.pop("_sts_points_plot", None)
+    st.session_state.pop("_sts_vals_plot", None)
+
+if generate_four_ts_btn:
+    st.session_state["_generate_four_ts_requested"] = True
+    st.session_state["_generate_four_ts_results"] = None
+    st.session_state.pop("_fts_points_plot", None)
+    st.session_state.pop("_fts_vals_plot", None)
+
+if generate_two_ts_btn:
+    st.session_state["_generate_two_ts_requested"] = True
+    st.session_state["_generate_two_ts_results"] = None
+    st.session_state.pop("_tts_points_plot", None)
+    st.session_state.pop("_tts_vals_plot", None)
+
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
     st.markdown("---")
@@ -5293,14 +5534,14 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
         st.session_state["_generate_5000_results"] = top_500
         st.rerun()
 
-# ============= Generate 50 configs x 125 iterations (reinsertion) ============
+# ============= Generate 200 configs x 200 iterations (reinsertion) ============
 if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
     st.markdown("---")
-    st.markdown("### Generating 50 Configurations (reinsertion zone: t=131–138, 125 iterations each)...")
+    st.markdown("### Generating 200 Configurations (reinsertion zone: t=131–138, 200 iterations each)...")
     st.caption("Using 8 timestamps from the reinsertion zone. This may take several minutes.")
     
-    # Use current settings but force 125 iterations
-    current_iterations = 125
+    # Use current settings but force 200 iterations
+    current_iterations = 200
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
     buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
@@ -5317,8 +5558,8 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
     
     all_generated_configs: list[dict[str, Any]] = []
     st.session_state["_prefer_high_d2_change_sampling"] = False
-    for config_idx in range(50):
-        status_text.text(f"Generating configuration {config_idx + 1}/50 | iteration 0/{current_iterations}...")
+    for config_idx in range(200):
+        status_text.text(f"Generating configuration {config_idx + 1}/200 | iteration 0/{current_iterations}...")
         
         # Generate one configuration using the core logic
         current_points = all_pts_flat.copy()
@@ -5330,7 +5571,7 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
         # Run iterations
         for iteration in range(current_iterations):
             status_text.text(
-                f"Generating configuration {config_idx + 1}/50 | iteration {iteration + 1}/{current_iterations}..."
+                f"Generating configuration {config_idx + 1}/200 | iteration {iteration + 1}/{current_iterations}..."
             )
             successful_points, success = run_multipoint_iteration(
                 current_points=current_points,
@@ -5358,7 +5599,7 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
             }
             all_generated_configs.append(config_data)
         
-        progress_bar.progress((config_idx + 1) / 50)
+        progress_bar.progress((config_idx + 1) / 200)
     
     progress_bar.empty()
     status_text.empty()
@@ -5378,12 +5619,1171 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
             config_num = config.get("config_number", 0)
             deviations.append((config_num, pv, config))
         
-        # Sort by perpendicular variance (descending) and take top 5
+        # Sort by perpendicular variance (descending) and take top 25
         deviations.sort(key=lambda x: x[1], reverse=True)
-        top_5 = deviations[:5]
+        top_5 = deviations[:25]
         
         # Store results in session state
         st.session_state["_generate_50_results"] = top_5
+        st.rerun()
+
+# ============= Generate 30 configs x 600 iterations (ext30) ============
+if st.session_state.get("_generate_ext30_requested", False) and not st.session_state.get("_generate_ext30_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (1000 iterations each)...")
+    st.caption("This may take a while. Progress is shown below.")
+
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _ext30_iterations = 1000
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(100):
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+
+        for iteration in range(_ext30_iterations):
+            status_text.text(f"Generating configuration {config_idx + 1}/100 | iteration {iteration + 1}/{_ext30_iterations}...")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _ext30_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold,
+            })
+
+        progress_bar.progress((config_idx + 1) / 100)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_ext30_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(all_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_3 = deviations[:3]
+
+        st.session_state["_generate_ext30_results"] = top_3
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — half timestamps (ext30_half) ============
+if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 10 Configurations (1000 iterations, ½ timestamps)...")
+    st.caption("Zelfde als 'Generate 10 & Top 3' maar gebruikt om de andere timestamp (step=2).")
+
+    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _ext30h_iterations = 1000
+
+    # Display number of timestamps after ½-filtering
+    st.info(f"Aantal timestamps na filtering: {len(selected_ts_window)}")
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    all_generated_configs: list[dict[str, Any]] = []
+
+    _ext30h_num_configs = 10
+    for config_idx in range(_ext30h_num_configs):
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+
+        for iteration in range(_ext30h_iterations):
+            status_text.text(f"½-ts — config {config_idx + 1}/{_ext30h_num_configs} | iter {iteration + 1}/{_ext30h_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _ext30h_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold,
+            })
+
+        progress_bar.progress((config_idx + 1) / _ext30h_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+    # Reset timestamp step back to 1
+    st.session_state["_cfg_timestamp_step"] = 1
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_ext30_half_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(all_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_3 = deviations[:3]
+
+        st.session_state["_generate_ext30_half_results"] = top_3
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — ½ timestamps filtered ============
+if st.session_state.get("_generate_half_ts_requested", False) and not st.session_state.get("_generate_half_ts_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (½ timestamps, filtered)...")
+
+    # --- Step 1: Filter timestamps — keep even timestamps + always keep the last timestamp ---
+    _hts_sorted_oids = sorted(all_objects_points.keys())
+    _hts_points_plot: dict[int, np.ndarray] = {}
+    _hts_vals_plot: dict[int, np.ndarray] = {}
+
+    for _hts_oid in _hts_sorted_oids:
+        _hts_orig_pts, _hts_orig_ts = all_objects_points[_hts_oid]
+        # Keep even timestamps
+        _hts_even_mask = (_hts_orig_ts % 2 == 0)
+        # Always keep the last timestamp (even if odd, e.g. t=136)
+        _hts_last_mask = np.zeros(len(_hts_orig_ts), dtype=bool)
+        _hts_last_mask[-1] = True
+        _hts_keep_mask = _hts_even_mask | _hts_last_mask
+        _hts_points_plot[_hts_oid] = _hts_orig_pts[_hts_keep_mask]
+        _hts_vals_plot[_hts_oid] = _hts_orig_ts[_hts_keep_mask]
+
+    # --- Step 2: Count effective timestamps ---
+    _hts_n_ts_per_obj = {oid: _hts_points_plot[oid].shape[0] for oid in _hts_sorted_oids}
+    _hts_n_ts_total = sum(_hts_n_ts_per_obj.values())
+    _hts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _hts_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_hts_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_hts_n_ts_total} totaal ({_hts_ts_info})")
+
+    # --- Step 3: Build flattened points from filtered data ---
+    _hts_pts_list: list[np.ndarray] = []
+    _hts_ts_list: list[float] = []
+    for _hts_oid in _hts_sorted_oids:
+        for _hts_li in range(_hts_points_plot[_hts_oid].shape[0]):
+            _hts_pts_list.append(_hts_points_plot[_hts_oid][_hts_li])
+            _hts_ts_list.append(float(_hts_vals_plot[_hts_oid][_hts_li]))
+    # Add external (fixed) points
+    for _hts_ext_pt, _hts_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _hts_pts_list.append(_hts_ext_pt)
+        _hts_ts_list.append(float(_hts_ext_t))
+    _hts_pts_flat = np.array(_hts_pts_list) if _hts_pts_list else np.array([]).reshape(0, 2)
+    _hts_ts_flat = np.array(_hts_ts_list) if _hts_ts_list else np.array([])
+
+    # Build tracking arrays for the filtered flat representation
+    _hts_obj_ids_flat: list[int] = []
+    _hts_local_idx_flat: list[int] = []
+    _hts_is_fixed_flat: list[bool] = []
+    for _hts_oid in _hts_sorted_oids:
+        for _hts_li in range(_hts_points_plot[_hts_oid].shape[0]):
+            _hts_obj_ids_flat.append(_hts_oid)
+            _hts_local_idx_flat.append(_hts_li)
+            _hts_is_fixed_flat.append(False)
+    for _hts_ei in range(len(external_pts_for_window)):
+        _hts_obj_ids_flat.append(-1)
+        _hts_local_idx_flat.append(_hts_ei)
+        _hts_is_fixed_flat.append(True)
+
+    # --- Step 4: Temporarily swap global variables so run_multipoint_iteration works with filtered data ---
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _hts_pts_flat
+    all_ts_flat = _hts_ts_flat
+    all_obj_ids_flat = _hts_obj_ids_flat
+    all_local_idx_flat = _hts_local_idx_flat
+    all_is_fixed_flat = _hts_is_fixed_flat
+    n_total_points = _hts_pts_flat.shape[0]
+    all_points_plot = _hts_points_plot
+    all_vals_plot = _hts_vals_plot
+
+    # --- Generate 100 configs × 1000 iterations ---
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _hts_iterations = 1000
+    _hts_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_hts_num_configs):
+        current_points = _hts_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+
+        for iteration in range(_hts_iterations):
+            status_text.text(f"½-ts filtered — config {config_idx + 1}/{_hts_num_configs} | iter {iteration + 1}/{_hts_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _hts_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold,
+            })
+
+        progress_bar.progress((config_idx + 1) / _hts_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # --- Restore global variables ---
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_half_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_hts_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+
+        # Store results AND the filtered data so display block can use them
+        st.session_state["_generate_half_ts_results"] = top_10
+        st.session_state["_hts_points_plot"] = _hts_points_plot
+        st.session_state["_hts_vals_plot"] = _hts_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — ¼ timestamps filtered ============
+if st.session_state.get("_generate_quarter_ts_requested", False) and not st.session_state.get("_generate_quarter_ts_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (¼ timestamps, filtered)...")
+
+    # --- Step 1: Filter timestamps — keep every 4th timestamp (0,4,8,...) + always keep the last ---
+    _qts_sorted_oids = sorted(all_objects_points.keys())
+    _qts_points_plot: dict[int, np.ndarray] = {}
+    _qts_vals_plot: dict[int, np.ndarray] = {}
+
+    for _qts_oid in _qts_sorted_oids:
+        _qts_orig_pts, _qts_orig_ts = all_objects_points[_qts_oid]
+        # Keep every 4th timestamp (0, 4, 8, ..., 136)
+        _qts_step_mask = (_qts_orig_ts % 4 == 0)
+        # Always keep the last timestamp (even if not divisible by 4, e.g. t=136)
+        _qts_last_mask = np.zeros(len(_qts_orig_ts), dtype=bool)
+        _qts_last_mask[-1] = True
+        _qts_keep_mask = _qts_step_mask | _qts_last_mask
+        _qts_points_plot[_qts_oid] = _qts_orig_pts[_qts_keep_mask]
+        _qts_vals_plot[_qts_oid] = _qts_orig_ts[_qts_keep_mask]
+
+    # --- Step 2: Count effective timestamps ---
+    _qts_n_ts_per_obj = {oid: _qts_points_plot[oid].shape[0] for oid in _qts_sorted_oids}
+    _qts_n_ts_total = sum(_qts_n_ts_per_obj.values())
+    _qts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _qts_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_qts_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_qts_n_ts_total} totaal ({_qts_ts_info})")
+
+    # --- Step 3: Build flattened points from filtered data ---
+    _qts_pts_list: list[np.ndarray] = []
+    _qts_ts_list: list[float] = []
+    for _qts_oid in _qts_sorted_oids:
+        for _qts_li in range(_qts_points_plot[_qts_oid].shape[0]):
+            _qts_pts_list.append(_qts_points_plot[_qts_oid][_qts_li])
+            _qts_ts_list.append(float(_qts_vals_plot[_qts_oid][_qts_li]))
+    # Add external (fixed) points
+    for _qts_ext_pt, _qts_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _qts_pts_list.append(_qts_ext_pt)
+        _qts_ts_list.append(float(_qts_ext_t))
+    _qts_pts_flat = np.array(_qts_pts_list) if _qts_pts_list else np.array([]).reshape(0, 2)
+    _qts_ts_flat = np.array(_qts_ts_list) if _qts_ts_list else np.array([])
+
+    # Build tracking arrays for the filtered flat representation
+    _qts_obj_ids_flat: list[int] = []
+    _qts_local_idx_flat: list[int] = []
+    _qts_is_fixed_flat: list[bool] = []
+    for _qts_oid in _qts_sorted_oids:
+        for _qts_li in range(_qts_points_plot[_qts_oid].shape[0]):
+            _qts_obj_ids_flat.append(_qts_oid)
+            _qts_local_idx_flat.append(_qts_li)
+            _qts_is_fixed_flat.append(False)
+    for _qts_ei in range(len(external_pts_for_window)):
+        _qts_obj_ids_flat.append(-1)
+        _qts_local_idx_flat.append(_qts_ei)
+        _qts_is_fixed_flat.append(True)
+
+    # --- Step 4: Temporarily swap global variables so run_multipoint_iteration works with filtered data ---
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _qts_pts_flat
+    all_ts_flat = _qts_ts_flat
+    all_obj_ids_flat = _qts_obj_ids_flat
+    all_local_idx_flat = _qts_local_idx_flat
+    all_is_fixed_flat = _qts_is_fixed_flat
+    n_total_points = _qts_pts_flat.shape[0]
+    all_points_plot = _qts_points_plot
+    all_vals_plot = _qts_vals_plot
+
+    # --- Generate 100 configs × 1000 iterations ---
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _qts_iterations = 1000
+    _qts_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_qts_num_configs):
+        current_points = _qts_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+
+        for iteration in range(_qts_iterations):
+            status_text.text(f"¼-ts filtered — config {config_idx + 1}/{_qts_num_configs} | iter {iteration + 1}/{_qts_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _qts_iterations,
+                "buffer_x": buffer_x,
+                "buffer_y": buffer_y,
+                "rough_x": rough_x,
+                "rough_y": rough_y,
+                "threshold_mode": mode,
+                "max_threshold": max_threshold,
+            })
+
+        progress_bar.progress((config_idx + 1) / _qts_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # --- Restore global variables ---
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_quarter_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_qts_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+
+        # Store results AND the filtered data so display block can use them
+        st.session_state["_generate_quarter_ts_results"] = top_10
+        st.session_state["_qts_points_plot"] = _qts_points_plot
+        st.session_state["_qts_vals_plot"] = _qts_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — ⅛ timestamps filtered ============
+if st.session_state.get("_generate_eighth_ts_requested", False) and not st.session_state.get("_generate_eighth_ts_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (⅛ timestamps, filtered)...")
+
+    # --- Step 1: Filter timestamps — keep every 8th timestamp (0,8,16,...) + always keep the last ---
+    _ets_sorted_oids = sorted(all_objects_points.keys())
+    _ets_points_plot: dict[int, np.ndarray] = {}
+    _ets_vals_plot: dict[int, np.ndarray] = {}
+
+    for _ets_oid in _ets_sorted_oids:
+        _ets_orig_pts, _ets_orig_ts = all_objects_points[_ets_oid]
+        _ets_step_mask = (_ets_orig_ts % 8 == 0)
+        _ets_last_mask = np.zeros(len(_ets_orig_ts), dtype=bool)
+        _ets_last_mask[-1] = True
+        _ets_keep_mask = _ets_step_mask | _ets_last_mask
+        _ets_points_plot[_ets_oid] = _ets_orig_pts[_ets_keep_mask]
+        _ets_vals_plot[_ets_oid] = _ets_orig_ts[_ets_keep_mask]
+
+    # --- Step 2: Count effective timestamps ---
+    _ets_n_ts_per_obj = {oid: _ets_points_plot[oid].shape[0] for oid in _ets_sorted_oids}
+    _ets_n_ts_total = sum(_ets_n_ts_per_obj.values())
+    _ets_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _ets_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_ets_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_ets_n_ts_total} totaal ({_ets_ts_info})")
+
+    # --- Step 3: Build flattened points from filtered data ---
+    _ets_pts_list: list[np.ndarray] = []
+    _ets_ts_list: list[float] = []
+    for _ets_oid in _ets_sorted_oids:
+        for _ets_li in range(_ets_points_plot[_ets_oid].shape[0]):
+            _ets_pts_list.append(_ets_points_plot[_ets_oid][_ets_li])
+            _ets_ts_list.append(float(_ets_vals_plot[_ets_oid][_ets_li]))
+    for _ets_ext_pt, _ets_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _ets_pts_list.append(_ets_ext_pt)
+        _ets_ts_list.append(float(_ets_ext_t))
+    _ets_pts_flat = np.array(_ets_pts_list) if _ets_pts_list else np.array([]).reshape(0, 2)
+    _ets_ts_flat = np.array(_ets_ts_list) if _ets_ts_list else np.array([])
+
+    _ets_obj_ids_flat: list[int] = []
+    _ets_local_idx_flat: list[int] = []
+    _ets_is_fixed_flat: list[bool] = []
+    for _ets_oid in _ets_sorted_oids:
+        for _ets_li in range(_ets_points_plot[_ets_oid].shape[0]):
+            _ets_obj_ids_flat.append(_ets_oid)
+            _ets_local_idx_flat.append(_ets_li)
+            _ets_is_fixed_flat.append(False)
+    for _ets_ei in range(len(external_pts_for_window)):
+        _ets_obj_ids_flat.append(-1)
+        _ets_local_idx_flat.append(_ets_ei)
+        _ets_is_fixed_flat.append(True)
+
+    # --- Step 4: Temporarily swap global variables ---
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _ets_pts_flat
+    all_ts_flat = _ets_ts_flat
+    all_obj_ids_flat = _ets_obj_ids_flat
+    all_local_idx_flat = _ets_local_idx_flat
+    all_is_fixed_flat = _ets_is_fixed_flat
+    n_total_points = _ets_pts_flat.shape[0]
+    all_points_plot = _ets_points_plot
+    all_vals_plot = _ets_vals_plot
+
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _ets_iterations = 1000
+    _ets_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_ets_num_configs):
+        current_points = _ets_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_ets_iterations):
+            status_text.text(f"⅛-ts filtered — config {config_idx + 1}/{_ets_num_configs} | iter {iteration + 1}/{_ets_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _ets_iterations,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / _ets_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # --- Restore global variables ---
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_eighth_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_ets_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+        st.session_state["_generate_eighth_ts_results"] = top_10
+        st.session_state["_ets_points_plot"] = _ets_points_plot
+        st.session_state["_ets_vals_plot"] = _ets_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — 1/16 timestamps filtered ============
+if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.session_state.get("_generate_sixteenth_ts_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (1/16 timestamps, filtered)...")
+
+    _sts_sorted_oids = sorted(all_objects_points.keys())
+    _sts_points_plot: dict[int, np.ndarray] = {}
+    _sts_vals_plot: dict[int, np.ndarray] = {}
+
+    for _sts_oid in _sts_sorted_oids:
+        _sts_orig_pts, _sts_orig_ts = all_objects_points[_sts_oid]
+        _sts_step_mask = (_sts_orig_ts % 16 == 0)
+        _sts_last_mask = np.zeros(len(_sts_orig_ts), dtype=bool)
+        _sts_last_mask[-1] = True
+        _sts_keep_mask = _sts_step_mask | _sts_last_mask
+        _sts_points_plot[_sts_oid] = _sts_orig_pts[_sts_keep_mask]
+        _sts_vals_plot[_sts_oid] = _sts_orig_ts[_sts_keep_mask]
+
+    _sts_n_ts_per_obj = {oid: _sts_points_plot[oid].shape[0] for oid in _sts_sorted_oids}
+    _sts_n_ts_total = sum(_sts_n_ts_per_obj.values())
+    _sts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _sts_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_sts_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_sts_n_ts_total} totaal ({_sts_ts_info})")
+
+    _sts_pts_list: list[np.ndarray] = []
+    _sts_ts_list: list[float] = []
+    for _sts_oid in _sts_sorted_oids:
+        for _sts_li in range(_sts_points_plot[_sts_oid].shape[0]):
+            _sts_pts_list.append(_sts_points_plot[_sts_oid][_sts_li])
+            _sts_ts_list.append(float(_sts_vals_plot[_sts_oid][_sts_li]))
+    for _sts_ext_pt, _sts_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _sts_pts_list.append(_sts_ext_pt)
+        _sts_ts_list.append(float(_sts_ext_t))
+    _sts_pts_flat = np.array(_sts_pts_list) if _sts_pts_list else np.array([]).reshape(0, 2)
+    _sts_ts_flat = np.array(_sts_ts_list) if _sts_ts_list else np.array([])
+
+    _sts_obj_ids_flat: list[int] = []
+    _sts_local_idx_flat: list[int] = []
+    _sts_is_fixed_flat: list[bool] = []
+    for _sts_oid in _sts_sorted_oids:
+        for _sts_li in range(_sts_points_plot[_sts_oid].shape[0]):
+            _sts_obj_ids_flat.append(_sts_oid)
+            _sts_local_idx_flat.append(_sts_li)
+            _sts_is_fixed_flat.append(False)
+    for _sts_ei in range(len(external_pts_for_window)):
+        _sts_obj_ids_flat.append(-1)
+        _sts_local_idx_flat.append(_sts_ei)
+        _sts_is_fixed_flat.append(True)
+
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _sts_pts_flat
+    all_ts_flat = _sts_ts_flat
+    all_obj_ids_flat = _sts_obj_ids_flat
+    all_local_idx_flat = _sts_local_idx_flat
+    all_is_fixed_flat = _sts_is_fixed_flat
+    n_total_points = _sts_pts_flat.shape[0]
+    all_points_plot = _sts_points_plot
+    all_vals_plot = _sts_vals_plot
+
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _sts_iterations = 1000
+    _sts_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_sts_num_configs):
+        current_points = _sts_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_sts_iterations):
+            status_text.text(f"1/16-ts filtered — config {config_idx + 1}/{_sts_num_configs} | iter {iteration + 1}/{_sts_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _sts_iterations,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / _sts_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_sixteenth_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_sts_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+        st.session_state["_generate_sixteenth_ts_results"] = top_10
+        st.session_state["_sts_points_plot"] = _sts_points_plot
+        st.session_state["_sts_vals_plot"] = _sts_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — 4 timestamps (0, 46, 92, 136) ============
+if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
+    st.markdown("---")
+    _fts_sorted_oids = sorted(all_objects_points.keys())
+    _fts_points_plot: dict[int, np.ndarray] = {}
+    _fts_vals_plot: dict[int, np.ndarray] = {}
+    _fts_keep_set = {0.0, 46.0, 92.0, 136.0}
+
+    for _fts_oid in _fts_sorted_oids:
+        _fts_orig_pts, _fts_orig_ts = all_objects_points[_fts_oid]
+        _fts_keep_mask = np.isin(_fts_orig_ts, list(_fts_keep_set))
+        _fts_points_plot[_fts_oid] = _fts_orig_pts[_fts_keep_mask]
+        _fts_vals_plot[_fts_oid] = _fts_orig_ts[_fts_keep_mask]
+
+    st.markdown("### Generating 100 Configurations (4 timestamps: 0, 46, 92, 136)...")
+
+    _fts_n_ts_per_obj = {oid: _fts_points_plot[oid].shape[0] for oid in _fts_sorted_oids}
+    _fts_n_ts_total = sum(_fts_n_ts_per_obj.values())
+    _fts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _fts_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_fts_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_fts_n_ts_total} totaal ({_fts_ts_info})")
+
+    _fts_pts_list: list[np.ndarray] = []
+    _fts_ts_list: list[float] = []
+    for _fts_oid in _fts_sorted_oids:
+        for _fts_li in range(_fts_points_plot[_fts_oid].shape[0]):
+            _fts_pts_list.append(_fts_points_plot[_fts_oid][_fts_li])
+            _fts_ts_list.append(float(_fts_vals_plot[_fts_oid][_fts_li]))
+    for _fts_ext_pt, _fts_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _fts_pts_list.append(_fts_ext_pt)
+        _fts_ts_list.append(float(_fts_ext_t))
+    _fts_pts_flat = np.array(_fts_pts_list) if _fts_pts_list else np.array([]).reshape(0, 2)
+    _fts_ts_flat = np.array(_fts_ts_list) if _fts_ts_list else np.array([])
+
+    _fts_obj_ids_flat: list[int] = []
+    _fts_local_idx_flat: list[int] = []
+    _fts_is_fixed_flat: list[bool] = []
+    for _fts_oid in _fts_sorted_oids:
+        for _fts_li in range(_fts_points_plot[_fts_oid].shape[0]):
+            _fts_obj_ids_flat.append(_fts_oid)
+            _fts_local_idx_flat.append(_fts_li)
+            _fts_is_fixed_flat.append(False)
+    for _fts_ei in range(len(external_pts_for_window)):
+        _fts_obj_ids_flat.append(-1)
+        _fts_local_idx_flat.append(_fts_ei)
+        _fts_is_fixed_flat.append(True)
+
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _fts_pts_flat
+    all_ts_flat = _fts_ts_flat
+    all_obj_ids_flat = _fts_obj_ids_flat
+    all_local_idx_flat = _fts_local_idx_flat
+    all_is_fixed_flat = _fts_is_fixed_flat
+    n_total_points = _fts_pts_flat.shape[0]
+    all_points_plot = _fts_points_plot
+    all_vals_plot = _fts_vals_plot
+
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _fts_iterations = 1000
+    _fts_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_fts_num_configs):
+        current_points = _fts_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_fts_iterations):
+            status_text.text(f"4-ts filtered — config {config_idx + 1}/{_fts_num_configs} | iter {iteration + 1}/{_fts_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _fts_iterations,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / _fts_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_four_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_fts_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+        st.session_state["_generate_four_ts_results"] = top_10
+        st.session_state["_fts_points_plot"] = _fts_points_plot
+        st.session_state["_fts_vals_plot"] = _fts_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — 2 timestamps (0, 136) ============
+if st.session_state.get("_generate_two_ts_requested", False) and not st.session_state.get("_generate_two_ts_results", None):
+    st.markdown("---")
+    _tts_sorted_oids = sorted(all_objects_points.keys())
+    _tts_points_plot: dict[int, np.ndarray] = {}
+    _tts_vals_plot: dict[int, np.ndarray] = {}
+    _tts_keep_set = {0.0, 136.0}
+
+    for _tts_oid in _tts_sorted_oids:
+        _tts_orig_pts, _tts_orig_ts = all_objects_points[_tts_oid]
+        _tts_keep_mask = np.isin(_tts_orig_ts, list(_tts_keep_set))
+        _tts_points_plot[_tts_oid] = _tts_orig_pts[_tts_keep_mask]
+        _tts_vals_plot[_tts_oid] = _tts_orig_ts[_tts_keep_mask]
+
+    st.markdown("### Generating 100 Configurations (2 timestamps: 0, 136)...")
+
+    _tts_n_ts_per_obj = {oid: _tts_points_plot[oid].shape[0] for oid in _tts_sorted_oids}
+    _tts_n_ts_total = sum(_tts_n_ts_per_obj.values())
+    _tts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _tts_n_ts_per_obj.items())
+    st.caption(f"100 configs × 1000 iter | exponential | PDP fundamental | {_tts_ts_info}")
+    st.info(f"Aantal timestamps na filtering: {_tts_n_ts_total} totaal ({_tts_ts_info})")
+
+    _tts_pts_list: list[np.ndarray] = []
+    _tts_ts_list: list[float] = []
+    for _tts_oid in _tts_sorted_oids:
+        for _tts_li in range(_tts_points_plot[_tts_oid].shape[0]):
+            _tts_pts_list.append(_tts_points_plot[_tts_oid][_tts_li])
+            _tts_ts_list.append(float(_tts_vals_plot[_tts_oid][_tts_li]))
+    for _tts_ext_pt, _tts_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _tts_pts_list.append(_tts_ext_pt)
+        _tts_ts_list.append(float(_tts_ext_t))
+    _tts_pts_flat = np.array(_tts_pts_list) if _tts_pts_list else np.array([]).reshape(0, 2)
+    _tts_ts_flat = np.array(_tts_ts_list) if _tts_ts_list else np.array([])
+
+    _tts_obj_ids_flat: list[int] = []
+    _tts_local_idx_flat: list[int] = []
+    _tts_is_fixed_flat: list[bool] = []
+    for _tts_oid in _tts_sorted_oids:
+        for _tts_li in range(_tts_points_plot[_tts_oid].shape[0]):
+            _tts_obj_ids_flat.append(_tts_oid)
+            _tts_local_idx_flat.append(_tts_li)
+            _tts_is_fixed_flat.append(False)
+    for _tts_ei in range(len(external_pts_for_window)):
+        _tts_obj_ids_flat.append(-1)
+        _tts_local_idx_flat.append(_tts_ei)
+        _tts_is_fixed_flat.append(True)
+
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _tts_pts_flat
+    all_ts_flat = _tts_ts_flat
+    all_obj_ids_flat = _tts_obj_ids_flat
+    all_local_idx_flat = _tts_local_idx_flat
+    all_is_fixed_flat = _tts_is_fixed_flat
+    n_total_points = _tts_pts_flat.shape[0]
+    all_points_plot = _tts_points_plot
+    all_vals_plot = _tts_vals_plot
+
+    pdp_variant = "fundamental"
+    buffer_x = st.session_state.get("cfg_buffer_x", 25.0)
+    buffer_y = st.session_state.get("cfg_buffer_y", 10.0)
+    rough_x = st.session_state.get("cfg_rough_x", 0.0)
+    rough_y = st.session_state.get("cfg_rough_y", 0.0)
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _tts_iterations = 1000
+    _tts_num_configs = 100
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(_tts_num_configs):
+        current_points = _tts_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_tts_iterations):
+            status_text.text(f"2-ts filtered — config {config_idx + 1}/{_tts_num_configs} | iter {iteration + 1}/{_tts_iterations}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": pdp_variant,
+                "iterations": _tts_iterations,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / _tts_num_configs)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    all_pts_flat = _save_all_pts_flat
+    all_ts_flat = _save_all_ts_flat
+    all_obj_ids_flat = _save_all_obj_ids_flat
+    all_local_idx_flat = _save_all_local_idx_flat
+    all_is_fixed_flat = _save_all_is_fixed_flat
+    n_total_points = _save_n_total_points
+    all_points_plot = _save_all_points_plot
+    all_vals_plot = _save_all_vals_plot
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_two_ts_requested"] = False
+    else:
+        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            successful_points = config.get("successful_points", [])
+            pv = _perpendicular_variance(_tts_points_plot, successful_points)
+            config_num = config.get("config_number", 0)
+            deviations.append((config_num, pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        top_10 = deviations[:10]
+        st.session_state["_generate_two_ts_results"] = top_10
+        st.session_state["_tts_points_plot"] = _tts_points_plot
+        st.session_state["_tts_vals_plot"] = _tts_vals_plot
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — Config 68 Realistic ============
+if st.session_state.get("_generate_c68r_requested", False) and not st.session_state.get("_generate_c68r_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configs (C68 Realistic, 1000 iter each)...")
+    st.caption("Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buf 5m, d2 rough 0.30m) | External pts")
+
+    _c68r_pdp = "realistic"
+    _c68r_bx, _c68r_by = 5.0, 0.0
+    _c68r_rx, _c68r_ry = 0.0, 0.30
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    _c68r_max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _c68r_iters = 1000
+
+    # Freeze first and last timestamp per object
+    _frozen = set()
+    _gi = 0
+    for oid in sorted(all_points_plot.keys()):
+        n_pts = all_points_plot[oid].shape[0]
+        if n_pts > 0:
+            _frozen.add(_gi)          # first timestamp
+            _frozen.add(_gi + n_pts - 1)  # last timestamp
+        _gi += n_pts
+    st.session_state["_frozen_endpoints"] = _frozen
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(100):
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_c68r_iters):
+            status_text.text(f"C68 Realistic — config {config_idx + 1}/100 | iter {iteration + 1}/{_c68r_iters}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=_c68r_pdp,
+                buffer_x=_c68r_bx, buffer_y=_c68r_by,
+                rough_x=_c68r_rx, rough_y=_c68r_ry,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": _c68r_pdp,
+                "iterations": _c68r_iters,
+                "buffer_x": _c68r_bx, "buffer_y": _c68r_by,
+                "rough_x": _c68r_rx, "rough_y": _c68r_ry,
+                "threshold_mode": mode, "max_threshold": _c68r_max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / 100)
+
+    progress_bar.empty()
+    status_text.empty()
+    st.session_state.pop("_frozen_endpoints", None)  # unfreeze
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_c68r_requested"] = False
+    else:
+        st.success(f"Generated {len(all_generated_configs)} configs!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            pv = _perpendicular_variance(all_points_plot, config.get("successful_points", []))
+            deviations.append((config.get("config_number", 0), pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        st.session_state["_generate_c68r_results"] = deviations[:10]
+        st.rerun()
+
+# ============= Generate 100 configs × 1000 iterations — Config 68 Fundamental ============
+if st.session_state.get("_generate_c68f_requested", False) and not st.session_state.get("_generate_c68f_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configs (C68 Fundamental, 1000 iter each)...")
+    st.caption("Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers")
+
+    _c68f_pdp = "fundamental"
+    _c68f_bx, _c68f_by = 0.0, 0.0
+    _c68f_rx, _c68f_ry = 0.0, 0.0
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    _c68f_max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _c68f_iters = 1000
+
+    # Freeze first and last timestamp per object
+    _frozen = set()
+    _gi = 0
+    for oid in sorted(all_points_plot.keys()):
+        n_pts = all_points_plot[oid].shape[0]
+        if n_pts > 0:
+            _frozen.add(_gi)          # first timestamp
+            _frozen.add(_gi + n_pts - 1)  # last timestamp
+        _gi += n_pts
+    st.session_state["_frozen_endpoints"] = _frozen
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    for config_idx in range(100):
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        for iteration in range(_c68f_iters):
+            status_text.text(f"C68 Fundamental — config {config_idx + 1}/100 | iter {iteration + 1}/{_c68f_iters}")
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=_c68f_pdp,
+                buffer_x=_c68f_bx, buffer_y=_c68f_by,
+                rough_x=_c68f_rx, rough_y=_c68f_ry,
+            )
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": _c68f_pdp,
+                "iterations": _c68f_iters,
+                "buffer_x": _c68f_bx, "buffer_y": _c68f_by,
+                "rough_x": _c68f_rx, "rough_y": _c68f_ry,
+                "threshold_mode": mode, "max_threshold": _c68f_max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / 100)
+
+    progress_bar.empty()
+    status_text.empty()
+    st.session_state.pop("_frozen_endpoints", None)  # unfreeze
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_c68f_requested"] = False
+    else:
+        st.success(f"Generated {len(all_generated_configs)} configs!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            pv = _perpendicular_variance(all_points_plot, config.get("successful_points", []))
+            deviations.append((config.get("config_number", 0), pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        st.session_state["_generate_c68f_results"] = deviations[:10]
         st.rerun()
 
 # Display results if they exist
@@ -5600,12 +7000,13 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
 
             obj_colors = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
             avg_y = float(np.mean(y_all)) if y_all else 0.0
-            lane_width = 3.0
-            lane_offsets = [-lane_width, 0.0, lane_width]
-            for ax in (ax_left, ax_right):
-                for offset in lane_offsets:
-                    lane_y = avg_y + offset
-                    ax.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
+            if not _is_custom_upload:
+                lane_width = 3.0
+                lane_offsets = [-lane_width, 0.0, lane_width]
+                for ax in (ax_left, ax_right):
+                    for offset in lane_offsets:
+                        lane_y = avg_y + offset
+                        ax.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
 
             # Draw both original and generated using the same focused timestamps
             offsets = [(3, 3), (3, -8), (-8, 3)]
@@ -5953,16 +7354,17 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     all_y_coords.extend(pts[:, 1].tolist())
             
             avg_y = float(np.mean(all_y_coords)) if all_y_coords else 0.0
-            lane_width = 3.0
             
             # Draw generated on right
             ax_right.set_title(f"Generated (Config #{config_num})", fontsize=12, fontweight='bold')
             
-            # Draw lanes positioned at vehicle location
-            lane_offsets = [-lane_width, 0.0, lane_width]
-            for offset in lane_offsets:
-                lane_y = avg_y + offset
-                ax_right.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
+            # Draw lanes positioned at vehicle location (skip for custom uploads)
+            if not _is_custom_upload:
+                lane_width = 3.0
+                lane_offsets = [-lane_width, 0.0, lane_width]
+                for offset in lane_offsets:
+                    lane_y = avg_y + offset
+                    ax_right.axhline(y=lane_y, color='black', linewidth=0.8, linestyle='-' if offset in [-lane_width, lane_width] else '--')
             
             # Build the generated configuration
             successful_points = config.get("successful_points", [])
@@ -6192,10 +7594,10 @@ if st.session_state.get("_generate_50_results", None):
     top_5 = st.session_state["_generate_50_results"]
     
     st.markdown("---")
-    st.markdown("### Top 5 Most Deviating Configurations (from 50 generated, 125 iterations each)")
+    st.markdown("### Top 25 Most Deviating Configurations (from 200 generated, 200 iterations each)")
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
-**Generation settings**: 50 configurations × 125 iterations, focused on the reinsertion zone.
+**Generation settings**: 200 configurations × 200 iterations, focused on the reinsertion zone.
 
 **Deviation Metrics (calculated per configuration):**
 - **Perpendicular Variance (m²)**: Variance of the perpendicular (shortest) distances from each generated point to the original trajectory polyline. Higher values indicate more uneven lateral path deviation.
@@ -6398,6 +7800,1736 @@ Configurations are ranked by perpendicular variance (highest first).""")
         st.cache_data.clear()
         st.rerun()
 
+# ============= Display results for ext30 (30 configs x 600 iterations, top 3, with GIF) ============
+if st.session_state.get("_generate_ext30_results", None):
+    _ext30_top3 = st.session_state["_generate_ext30_results"]
+
+    st.markdown("---")
+    _ext30_n_ts = sum(all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys()))
+    _ext30_n_ts_per_obj = {oid: all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys())}
+    st.markdown(f"### Top 3 Most Deviating Configurations (from 100 generated, 1000 iterations each) — {list(_ext30_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"""
+**Generation settings**: 100 configurations × 1000 iterations | **{_ext30_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _ext30_n_ts_per_obj.items())}).
+
+**Deviation Metrics:**
+- **Perpendicular Variance (m²)**: Variance of perpendicular distances from generated points to the original trajectory.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Each configuration includes an **animated GIF** download showing the trajectory building up over timestamps.""")
+
+    _ext30_config_metrics: list[dict[str, Any]] = []
+
+    for _ext30_rank, (_ext30_cnum, _ext30_dev, _ext30_cfg) in enumerate(_ext30_top3, 1):
+        st.markdown(f"#### Rank {_ext30_rank}: Configuration #{_ext30_cnum} (Perp. variance: {_ext30_dev:.4f} m²)")
+
+        _ext30_pdp_variant = _ext30_cfg.get("pdp_variant", "fundamental")
+        _ext30_iterations = _ext30_cfg.get("iterations", "N/A")
+        _ext30_threshold_mode = _ext30_cfg.get("threshold_mode", "Percentage")
+        _ext30_max_threshold = _ext30_cfg.get("max_threshold", 0.0)
+
+        # Build generated coordinate map
+        _ext30_sp = _ext30_cfg.get("successful_points", [])
+        _ext30_gen_map: dict[int, np.ndarray] = {}
+        for sp in _ext30_sp:
+            _ext30_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Calculate angle and distance deviations
+        _ext30_max_angle = 0.0
+        _ext30_max_dist = 0.0
+        _ext30_sorted_oids = sorted(all_points_plot.keys())
+        _ext30_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []  # (original, generated) per object
+        _ext30_ts_data: dict[int, np.ndarray | None] = {}  # filtered timestamps per object
+        filtered_counts = {}
+        _ext30_gi = 0
+        for oid in _ext30_sorted_oids:
+            orig_pts = all_points_plot[oid]
+            orig_ts = all_vals_plot[oid] if oid in all_vals_plot else None
+            n_pts = orig_pts.shape[0]
+            gen_pts = orig_pts.copy()
+            for li in range(n_pts):
+                gi = _ext30_gi + li
+                if gi in _ext30_gen_map:
+                    gen_pts[li] = _ext30_gen_map[gi]
+            # Filter alleen even tijdstippen (t=0,2,4,...)
+            if orig_ts is not None:
+                even_mask = (orig_ts % 2 == 0)
+                orig_pts_filt = orig_pts[even_mask]
+                gen_pts_filt = gen_pts[even_mask]
+                ts_filt = orig_ts[even_mask]
+                filtered_counts[oid] = len(ts_filt)
+            else:
+                orig_pts_filt = orig_pts
+                gen_pts_filt = gen_pts
+                ts_filt = None
+                filtered_counts[oid] = orig_pts.shape[0]
+            _ext30_all_plot_data.append((orig_pts_filt, gen_pts_filt))
+            _ext30_ts_data[oid] = ts_filt
+
+            # Gebruik alleen gefilterde punten voor afwijkingsberekeningen
+            if orig_pts_filt.shape[0] > 1:
+                for i in range(1, orig_pts_filt.shape[0]):
+                    orig_dx = orig_pts_filt[i, 0] - orig_pts_filt[i-1, 0]
+                    orig_dy = orig_pts_filt[i, 1] - orig_pts_filt[i-1, 1]
+                    gen_dx = gen_pts_filt[i, 0] - gen_pts_filt[i-1, 0]
+                    gen_dy = gen_pts_filt[i, 1] - gen_pts_filt[i-1, 1]
+                    angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    _ext30_max_angle = max(_ext30_max_angle, angle_diff)
+                    dist_diff = abs(np.linalg.norm([gen_dx, gen_dy]) - np.linalg.norm([orig_dx, orig_dy]))
+                    _ext30_max_dist = max(_ext30_max_dist, dist_diff)
+            _ext30_gi += n_pts
+
+        _ext30_config_metrics.append({
+            "config_num": _ext30_cnum,
+            "rank": _ext30_rank,
+            "perp_variance": _ext30_dev,
+            "max_angle_deviation": _ext30_max_angle,
+            "max_distance_deviation": _ext30_max_dist,
+        })
+
+        # Display summary metrics
+        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+        _mc1.metric("Perp. Variance", f"{_ext30_dev:.4f} m²")
+        _mc2.metric("Max Angle Δ", f"{_ext30_max_angle:.1f}°")
+        _mc3.metric("Max Distance Δ", f"{_ext30_max_dist:.2f}m")
+        _mc4.metric("Iterations", f"{_ext30_iterations}")
+
+        # ---------- Static trajectory plot (zoomed to max deviation) ----------
+        _ext30_max_dev_dist = 0.0
+        _ext30_max_dev_orig = np.array([0.0, 0.0])
+        _ext30_max_dev_gen = np.array([0.0, 0.0])
+
+        for idx_oid, oid in enumerate(_ext30_sorted_oids):
+            orig_pts, g_pts = _ext30_all_plot_data[idx_oid]
+            for li in range(orig_pts.shape[0]):
+                d = float(np.linalg.norm(g_pts[li] - orig_pts[li]))
+                if d > _ext30_max_dev_dist:
+                    _ext30_max_dev_dist = d
+                    _ext30_max_dev_orig = orig_pts[li].copy()
+                    _ext30_max_dev_gen = g_pts[li].copy()
+
+        # Compute tight axis limits from actual data (all objects, orig + gen)
+        _ext30_all_x: list[float] = []
+        _ext30_all_y: list[float] = []
+        for orig_pts, g_pts in _ext30_all_plot_data:
+            _ext30_all_x.extend(orig_pts[:, 0].tolist())
+            _ext30_all_x.extend(g_pts[:, 0].tolist())
+            _ext30_all_y.extend(orig_pts[:, 1].tolist())
+            _ext30_all_y.extend(g_pts[:, 1].tolist())
+
+        _ext30_x_lo = min(_ext30_all_x) - max((max(_ext30_all_x) - min(_ext30_all_x)) * 0.05, 1.0)
+        _ext30_x_hi = max(_ext30_all_x) + max((max(_ext30_all_x) - min(_ext30_all_x)) * 0.05, 1.0)
+        _ext30_y_lo = min(_ext30_all_y) - max((max(_ext30_all_y) - min(_ext30_all_y)) * 0.08, 0.5)
+        _ext30_y_hi = max(_ext30_all_y) + max((max(_ext30_all_y) - min(_ext30_all_y)) * 0.08, 0.5)
+
+        # Pad the shorter axis so the plot ratio is at most ~1.5:1 (like the reference image)
+        _ext30_dx = _ext30_x_hi - _ext30_x_lo
+        _ext30_dy = _ext30_y_hi - _ext30_y_lo
+        _ext30_target_ratio = 1.3  # width / height similar to the reference Configuration 1 plot
+        if _ext30_dx > _ext30_dy * _ext30_target_ratio:
+            # x range is too wide relative to y — expand y symmetrically
+            _ext30_needed_dy = _ext30_dx / _ext30_target_ratio
+            _ext30_pad = (_ext30_needed_dy - _ext30_dy) / 2
+            _ext30_y_lo -= _ext30_pad
+            _ext30_y_hi += _ext30_pad
+            _ext30_dy = _ext30_needed_dy
+        elif _ext30_dy * _ext30_target_ratio > _ext30_dx:
+            # y range is too tall relative to x — expand x symmetrically
+            _ext30_needed_dx = _ext30_dy * _ext30_target_ratio
+            _ext30_pad = (_ext30_needed_dx - _ext30_dx) / 2
+            _ext30_x_lo -= _ext30_pad
+            _ext30_x_hi += _ext30_pad
+            _ext30_dx = _ext30_needed_dx
+
+        # Figure size: 10" wide (PPT-friendly), height from data ratio, equal scale guaranteed by matching fig ratio to data ratio
+        _ext30_fig_w = 10.0
+        _ext30_fig_h = _ext30_fig_w * (_ext30_dy / _ext30_dx) if _ext30_dx > 0 else 7.5
+        _ext30_fig_h = max(3.0, min(_ext30_fig_h, 7.5))
+
+        fig_static = Figure(figsize=(_ext30_fig_w, _ext30_fig_h), dpi=150)
+        ax_s = fig_static.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_oid, oid in enumerate(_ext30_sorted_oids):
+            orig_pts, g_pts = _ext30_all_plot_data[idx_oid]
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            color = f"C{oid}"
+            orig_label = f"{label} original" if idx_oid == 0 else None
+            gen_label = f"{label} generated" if idx_oid == 0 else None
+            # Use pre-filtered timestamps (already filtered during build phase)
+            ts_filt = _ext30_ts_data.get(oid, None)
+            expected_dt = 2
+            # Plot alleen segmenten tussen gefilterde punten
+            if orig_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(orig_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [orig_pts[i, 0], orig_pts[i+1, 0]]
+                        yseg = [orig_pts[i, 1], orig_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.3, linestyle='--', label=orig_label if i == 0 else None)
+            if g_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(g_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [g_pts[i, 0], g_pts[i+1, 0]]
+                        yseg = [g_pts[i, 1], g_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.5, color=color, alpha=1.0, label=gen_label if i == 0 else None)
+        ax_s.annotate(f"max Δ={_ext30_max_dev_dist:.2f}m", xy=(_ext30_max_dev_gen[0], _ext30_max_dev_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_ext30_x_lo, _ext30_x_hi)
+        ax_s.set_ylim(_ext30_y_lo, _ext30_y_hi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        # Toon het juiste aantal timestamps per object (na filtering)
+        _ext30_ts_per_o = filtered_counts if 'filtered_counts' in locals() else {oid: all_points_plot[oid].shape[0] for oid in _ext30_sorted_oids}
+        _ext30_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o.items())
+        ax_s.set_title(f"Config #{_ext30_cnum} — PV={_ext30_dev:.4f} m² — {_ext30_ts_info} timestamps")
+        fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        _buf_s = io.BytesIO()
+        fig_static.savefig(_buf_s, format='png', dpi=150)
+        _buf_s.seek(0)
+        st.image(_buf_s, use_container_width=True)
+
+        # ---------- Animated GIF: trajectory building up over timestamps ----------
+        # Collect all timestamps across all objects (sorted)
+        _ext30_all_ts: list[float] = []
+        for oid in _ext30_sorted_oids:
+            _ext30_all_ts.extend(all_vals_plot[oid].tolist())
+        _ext30_unique_ts = sorted(set(_ext30_all_ts))
+        _ext30_n_frames = len(_ext30_unique_ts)
+
+        # Compute global axis limits from all data (original + generated)
+        _ext30_all_x: list[float] = []
+        _ext30_all_y: list[float] = []
+        for orig_pts, g_pts in _ext30_all_plot_data:
+            _ext30_all_x.extend(orig_pts[:, 0].tolist())
+            _ext30_all_x.extend(g_pts[:, 0].tolist())
+            _ext30_all_y.extend(orig_pts[:, 1].tolist())
+            _ext30_all_y.extend(g_pts[:, 1].tolist())
+        _ext30_gif_xmin = min(_ext30_all_x) - max((max(_ext30_all_x) - min(_ext30_all_x)) * 0.05, 1.0)
+        _ext30_gif_xmax = max(_ext30_all_x) + max((max(_ext30_all_x) - min(_ext30_all_x)) * 0.05, 1.0)
+        _ext30_gif_ymin = min(_ext30_all_y) - max((max(_ext30_all_y) - min(_ext30_all_y)) * 0.1, 0.5)
+        _ext30_gif_ymax = max(_ext30_all_y) + max((max(_ext30_all_y) - min(_ext30_all_y)) * 0.1, 0.5)
+
+        # Pad shorter axis for GIF (same logic as static plot)
+        _ext30_gif_dx = _ext30_gif_xmax - _ext30_gif_xmin
+        _ext30_gif_dy = _ext30_gif_ymax - _ext30_gif_ymin
+        if _ext30_gif_dx > _ext30_gif_dy * _ext30_target_ratio:
+            _g_pad = (_ext30_gif_dx / _ext30_target_ratio - _ext30_gif_dy) / 2
+            _ext30_gif_ymin -= _g_pad
+            _ext30_gif_ymax += _g_pad
+            _ext30_gif_dy = _ext30_gif_ymax - _ext30_gif_ymin
+        elif _ext30_gif_dy * _ext30_target_ratio > _ext30_gif_dx:
+            _g_pad = (_ext30_gif_dy * _ext30_target_ratio - _ext30_gif_dx) / 2
+            _ext30_gif_xmin -= _g_pad
+            _ext30_gif_xmax += _g_pad
+            _ext30_gif_dx = _ext30_gif_xmax - _ext30_gif_xmin
+
+        _ext30_gif_fw = 10.0
+        _ext30_gif_fh = _ext30_gif_fw * (_ext30_gif_dy / _ext30_gif_dx) if _ext30_gif_dx > 0 else 7.5
+        _ext30_gif_fh = max(3.0, min(_ext30_gif_fh, 7.5))
+
+        # Build per-object ordered (coord, t) lists for original and generated
+        _ext30_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _ext30_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _ext30_gi2 = 0
+        for oid in _ext30_sorted_oids:
+            n_pts = all_points_plot[oid].shape[0]
+            vals = all_vals_plot[oid]
+            _ext30_orig_by_obj[oid] = []
+            _ext30_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_val = float(vals[li])
+                orig_coord = all_points_plot[oid][li]
+                gen_coord = _ext30_gen_map.get(_ext30_gi2 + li, orig_coord)
+                _ext30_orig_by_obj[oid].append((t_val, orig_coord))
+                _ext30_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
+            _ext30_gi2 += n_pts
+
+        _ext30_gif_frames: list[PILImage.Image] = []
+        _ext30_gif_progress = st.progress(0)
+        _ext30_gif_status = st.empty()
+
+        for frame_idx, t_cutoff in enumerate(_ext30_unique_ts):
+            _ext30_gif_status.text(f"Rendering GIF frame {frame_idx + 1}/{_ext30_n_frames} (t ≤ {t_cutoff:g})...")
+            fig_frame = Figure(figsize=(_ext30_gif_fw, _ext30_gif_fh), dpi=150)
+            ax_f = fig_frame.add_subplot(111)
+            ax_f.set_xlim(_ext30_gif_xmin, _ext30_gif_xmax)
+            ax_f.set_ylim(_ext30_gif_ymin, _ext30_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            _ext30_ts_per_o2 = {oid: all_points_plot[oid].shape[0] for oid in _ext30_sorted_oids}
+            _ext30_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o2.items())
+            ax_f.set_title(f"Config #{_ext30_cnum} — t ≤ {t_cutoff:g} — {_ext30_ts_info2} ts  (PV={_ext30_dev:.4f} m²)", fontsize=9)
+
+            for idx_oid, oid in enumerate(_ext30_sorted_oids):
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                # Only plot consecutive points for this object, never connect last to first, never connect between objects
+                orig_pts_up = [coord for (t_val, coord) in _ext30_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    ax_f.plot(orig_arr[:, 0], orig_arr[:, 1], linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig")
+                # Generated trajectory up to t_cutoff
+                gen_pts_up = [coord for (t_val, coord) in _ext30_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    ax_f.plot(gen_arr[:, 0], gen_arr[:, 1], linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen")
+
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_frame.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+
+            # Render to PIL image
+            _buf_frame = io.BytesIO()
+            fig_frame.savefig(_buf_frame, format='png', dpi=150)
+            _buf_frame.seek(0)
+            _ext30_gif_frames.append(PILImage.open(_buf_frame).copy())
+            plt.close(fig_frame)
+
+            _ext30_gif_progress.progress((frame_idx + 1) / _ext30_n_frames)
+
+        _ext30_gif_progress.empty()
+        _ext30_gif_status.empty()
+
+        # Assemble GIF
+        if _ext30_gif_frames:
+            # Add a longer pause on the last frame
+            _ext30_gif_buf = io.BytesIO()
+            _ext30_durations = [200] * len(_ext30_gif_frames)  # 200ms per frame
+            _ext30_durations[-1] = 1500  # Pause 1.5s on last frame
+            _ext30_gif_frames[0].save(
+                _ext30_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_ext30_gif_frames[1:],
+                duration=_ext30_durations,
+                loop=0,
+            )
+            _ext30_gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_ext30_cnum}",
+                data=_ext30_gif_buf,
+                file_name=f"config_{_ext30_cnum}_animation.gif",
+                mime="image/gif",
+                key=f"dl_gif_ext30_{_ext30_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _ext30_config_metrics:
+        st.markdown("#### Summary")
+        _ext30_df = pd.DataFrame(_ext30_config_metrics)
+        st.dataframe(_ext30_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "perp_variance": "Perp. Variance (m²)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)",
+            }
+        ), use_container_width=True)
+
+    # Clear button
+    if st.button("Clear Results & Cache", key="clear_ext30_results"):
+        st.session_state["_generate_ext30_requested"] = False
+        st.session_state["_generate_ext30_results"] = None
+        st.cache_data.clear()
+        st.rerun()
+
+
+def _display_top_n_with_gif(
+    results: list[tuple[int, float, dict[str, Any]]],
+    section_title: str,
+    section_description: str,
+    clear_key: str,
+    requested_key: str,
+    results_key: str,
+) -> None:
+    """Display top-N most deviating configs with static plot + animated GIF download."""
+    st.markdown("---")
+    _dn_n_ts_per_obj = {oid: all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys())}
+    _dn_n_ts_total = sum(_dn_n_ts_per_obj.values())
+    st.markdown(f"### {section_title} — {list(_dn_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"{section_description} | **{_dn_n_ts_total} total points** ({', '.join(f'obj {oid}: {n}' for oid, n in _dn_n_ts_per_obj.items())})")
+
+    _dn_config_metrics: list[dict[str, Any]] = []
+    _dn_sorted_oids = sorted(all_points_plot.keys())
+
+    for _dn_rank, (_dn_cnum, _dn_dev, _dn_cfg) in enumerate(results, 1):
+        st.markdown(f"#### Rank {_dn_rank}: Configuration #{_dn_cnum} (Perp. variance: {_dn_dev:.4f} m²)")
+
+        _dn_iters = _dn_cfg.get("iterations", "N/A")
+        _dn_sp = _dn_cfg.get("successful_points", [])
+        _dn_gen_map: dict[int, np.ndarray] = {}
+        for sp in _dn_sp:
+            _dn_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Build per-object original and generated arrays
+        _dn_max_angle = 0.0
+        _dn_max_dist = 0.0
+        _dn_plot_data: list[tuple[np.ndarray, np.ndarray]] = []
+        _dn_gi = 0
+        for oid in _dn_sorted_oids:
+            n_pts = all_points_plot[oid].shape[0]
+            orig = all_points_plot[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _dn_gi + li
+                if gi in _dn_gen_map:
+                    gen[li] = _dn_gen_map[gi]
+            _dn_plot_data.append((orig, gen))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _dn_max_angle = max(_dn_max_angle, ad)
+                _dn_max_dist = max(_dn_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _dn_gi += n_pts
+
+        _dn_config_metrics.append({
+            "config_num": _dn_cnum, "rank": _dn_rank, "perp_variance": _dn_dev,
+            "max_angle_deviation": _dn_max_angle, "max_distance_deviation": _dn_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_dn_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_dn_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_dn_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_dn_iters}")
+
+        # --- Static plot ---
+        _dn_all_x: list[float] = []
+        _dn_all_y: list[float] = []
+        _dn_max_dd = 0.0
+        _dn_md_orig = np.array([0.0, 0.0])
+        _dn_md_gen = np.array([0.0, 0.0])
+        for orig, gen in _dn_plot_data:
+            _dn_all_x.extend(orig[:, 0].tolist()); _dn_all_x.extend(gen[:, 0].tolist())
+            _dn_all_y.extend(orig[:, 1].tolist()); _dn_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _dn_max_dd:
+                    _dn_max_dd = d; _dn_md_orig = orig[li].copy(); _dn_md_gen = gen[li].copy()
+
+        _dn_xlo = min(_dn_all_x) - max((max(_dn_all_x) - min(_dn_all_x)) * 0.05, 1.0)
+        _dn_xhi = max(_dn_all_x) + max((max(_dn_all_x) - min(_dn_all_x)) * 0.05, 1.0)
+        _dn_ylo = min(_dn_all_y) - max((max(_dn_all_y) - min(_dn_all_y)) * 0.08, 0.5)
+        _dn_yhi = max(_dn_all_y) + max((max(_dn_all_y) - min(_dn_all_y)) * 0.08, 0.5)
+
+        _dn_dx = _dn_xhi - _dn_xlo; _dn_dy = _dn_yhi - _dn_ylo
+        _dn_tr = 1.3
+        if _dn_dx > _dn_dy * _dn_tr:
+            pad = (_dn_dx / _dn_tr - _dn_dy) / 2; _dn_ylo -= pad; _dn_yhi += pad; _dn_dy = _dn_yhi - _dn_ylo
+        elif _dn_dy * _dn_tr > _dn_dx:
+            pad = (_dn_dy * _dn_tr - _dn_dx) / 2; _dn_xlo -= pad; _dn_xhi += pad; _dn_dx = _dn_xhi - _dn_xlo
+        _dn_fw = 10.0
+        _dn_fh = max(3.0, min(7.5, _dn_fw * (_dn_dy / _dn_dx))) if _dn_dx > 0 else 5.0
+
+        fig_s = Figure(figsize=(_dn_fw, _dn_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_dn_sorted_oids):
+            orig, gen = _dn_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} original")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} generated")
+        ax_s.annotate(f"max Δ={_dn_max_dd:.2f}m", xy=(_dn_md_gen[0], _dn_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_dn_xlo, _dn_xhi); ax_s.set_ylim(_dn_ylo, _dn_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        _dn_ts_info = ", ".join(f"obj{oid}:{all_points_plot[oid].shape[0]}" for oid in _dn_sorted_oids)
+        ax_s.set_title(f"Config #{_dn_cnum} — PV={_dn_dev:.4f} m² — {_dn_ts_info} timestamps")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        # --- Animated GIF ---
+        _dn_all_ts: list[float] = []
+        for oid in _dn_sorted_oids:
+            _dn_all_ts.extend(all_vals_plot[oid].tolist())
+        _dn_unique_ts = sorted(set(_dn_all_ts))
+        _dn_n_frames = len(_dn_unique_ts)
+
+        # GIF axis limits (same padding logic)
+        _dn_gif_xmin = _dn_xlo; _dn_gif_xmax = _dn_xhi
+        _dn_gif_ymin = _dn_ylo; _dn_gif_ymax = _dn_yhi
+        _dn_gif_fw = _dn_fw; _dn_gif_fh = _dn_fh
+
+        # Build per-object (t, coord) lists
+        _dn_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _dn_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _dn_gi2 = 0
+        for oid in _dn_sorted_oids:
+            n_pts = all_points_plot[oid].shape[0]
+            vals = all_vals_plot[oid]
+            _dn_orig_by_obj[oid] = []; _dn_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = all_points_plot[oid][li]
+                gc = _dn_gen_map.get(_dn_gi2 + li, oc)
+                _dn_orig_by_obj[oid].append((t_v, oc))
+                _dn_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _dn_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_dn_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_dn_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_dn_gif_fw, _dn_gif_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_dn_gif_xmin, _dn_gif_xmax)
+            ax_f.set_ylim(_dn_gif_ymin, _dn_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_dn_cnum} — t ≤ {tc:g}  (PV={_dn_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_dn_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _dn_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _dn_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    # Endpoint marker on last generated point
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _dn_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_dn_cnum}",
+                data=gif_buf, file_name=f"config_{_dn_cnum}_animation.gif", mime="image/gif",
+                key=f"dl_gif_{clear_key}_{_dn_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _dn_config_metrics:
+        st.markdown("#### Summary")
+        _dn_df = pd.DataFrame(_dn_config_metrics)
+        st.dataframe(_dn_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key=clear_key):
+        st.session_state[requested_key] = False
+        st.session_state[results_key] = None
+        # Reset timestamp step back to 1
+        st.session_state["_cfg_timestamp_step"] = 1
+        st.cache_data.clear()
+        st.rerun()
+
+
+# Display ext30-half results (½ timestamps)
+if st.session_state.get("_generate_ext30_half_results", None):
+    _display_top_n_with_gif(
+        results=st.session_state["_generate_ext30_half_results"],
+        section_title="Top 3 — 100 configs × 1000 iter (½ timestamps)",
+        section_description="Same settings as 'Generate 100 & Top 3' but every other timestamp (step=2)",
+        clear_key="clear_ext30_half_results",
+        requested_key="_generate_ext30_half_requested",
+        results_key="_generate_ext30_half_results",
+    )
+
+# Display ½ timestamps filtered results (new button)
+if st.session_state.get("_generate_half_ts_results", None):
+    _hts_results = st.session_state["_generate_half_ts_results"]
+    _hts_pp = st.session_state.get("_hts_points_plot", all_points_plot)
+    _hts_vp = st.session_state.get("_hts_vals_plot", all_vals_plot)
+    _hts_sorted_oids = sorted(_hts_pp.keys())
+
+    st.markdown("---")
+    _hts_n_per_obj = {oid: _hts_pp[oid].shape[0] for oid in _hts_sorted_oids}
+    _hts_n_total = sum(_hts_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (½ timestamps, filtered)")
+    st.markdown(f"Exponential | PDP fundamental | **{_hts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _hts_n_per_obj.items())})")
+
+    _hts_config_metrics: list[dict[str, Any]] = []
+
+    for _hts_rank, (_hts_cnum, _hts_dev, _hts_cfg) in enumerate(_hts_results, 1):
+        st.markdown(f"#### Rank {_hts_rank}: Configuration #{_hts_cnum} (PV={_hts_dev:.4f} m²)")
+
+        _hts_iters = _hts_cfg.get("iterations", "N/A")
+        _hts_sp = _hts_cfg.get("successful_points", [])
+        _hts_gen_map: dict[int, np.ndarray] = {}
+        for sp in _hts_sp:
+            _hts_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Build per-object original and generated arrays
+        _hts_max_angle = 0.0
+        _hts_max_dist = 0.0
+        _hts_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []  # (orig, gen, ts)
+        _hts_gi = 0
+        for oid in _hts_sorted_oids:
+            n_pts = _hts_pp[oid].shape[0]
+            orig = _hts_pp[oid]
+            ts = _hts_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _hts_gi + li
+                if gi in _hts_gen_map:
+                    gen[li] = _hts_gen_map[gi]
+            _hts_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _hts_max_angle = max(_hts_max_angle, ad)
+                _hts_max_dist = max(_hts_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _hts_gi += n_pts
+
+        _hts_config_metrics.append({
+            "config_num": _hts_cnum, "rank": _hts_rank, "perp_variance": _hts_dev,
+            "max_angle_deviation": _hts_max_angle, "max_distance_deviation": _hts_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_hts_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_hts_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_hts_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_hts_iters}")
+
+        # --- Compute axis limits ---
+        _hts_all_x: list[float] = []
+        _hts_all_y: list[float] = []
+        _hts_max_dd = 0.0
+        _hts_md_orig = np.array([0.0, 0.0])
+        _hts_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _hts_plot_data:
+            _hts_all_x.extend(orig[:, 0].tolist()); _hts_all_x.extend(gen[:, 0].tolist())
+            _hts_all_y.extend(orig[:, 1].tolist()); _hts_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _hts_max_dd:
+                    _hts_max_dd = d; _hts_md_orig = orig[li].copy(); _hts_md_gen = gen[li].copy()
+
+        _hts_xlo = min(_hts_all_x) - max((max(_hts_all_x) - min(_hts_all_x)) * 0.05, 1.0)
+        _hts_xhi = max(_hts_all_x) + max((max(_hts_all_x) - min(_hts_all_x)) * 0.05, 1.0)
+        _hts_ylo = min(_hts_all_y) - max((max(_hts_all_y) - min(_hts_all_y)) * 0.08, 0.5)
+        _hts_yhi = max(_hts_all_y) + max((max(_hts_all_y) - min(_hts_all_y)) * 0.08, 0.5)
+
+        _hts_dx = _hts_xhi - _hts_xlo; _hts_dy = _hts_yhi - _hts_ylo
+        _hts_tr = 1.3
+        if _hts_dx > _hts_dy * _hts_tr:
+            pad = (_hts_dx / _hts_tr - _hts_dy) / 2; _hts_ylo -= pad; _hts_yhi += pad; _hts_dy = _hts_yhi - _hts_ylo
+        elif _hts_dy * _hts_tr > _hts_dx:
+            pad = (_hts_dy * _hts_tr - _hts_dx) / 2; _hts_xlo -= pad; _hts_xhi += pad; _hts_dx = _hts_xhi - _hts_xlo
+        _hts_fw = 10.0
+        _hts_fh = max(3.0, min(7.5, _hts_fw * (_hts_dy / _hts_dx))) if _hts_dx > 0 else 5.0
+
+        # --- Static plot: draw each object SEPARATELY ---
+        fig_s = Figure(figsize=(_hts_fw, _hts_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_hts_sorted_oids):
+            orig, gen, ts = _hts_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            # Draw each object's orig (dashed) and gen (solid) — NOT connecting between objects
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            # Endpoint marker
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_hts_max_dd:.2f}m", xy=(_hts_md_gen[0], _hts_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_hts_xlo, _hts_xhi); ax_s.set_ylim(_hts_ylo, _hts_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_hts_cnum}  (PV={_hts_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        # --- Animated GIF: build up per object over timestamps ---
+        _hts_all_ts_vals: list[float] = []
+        for oid in _hts_sorted_oids:
+            _hts_all_ts_vals.extend(_hts_vp[oid].tolist())
+        _hts_unique_ts = sorted(set(_hts_all_ts_vals))
+        _hts_n_frames = len(_hts_unique_ts)
+
+        # Build per-object (t, coord) lists
+        _hts_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _hts_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _hts_gi2 = 0
+        for oid in _hts_sorted_oids:
+            n_pts = _hts_pp[oid].shape[0]
+            vals = _hts_vp[oid]
+            _hts_orig_by_obj[oid] = []; _hts_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _hts_pp[oid][li]
+                gc = _hts_gen_map.get(_hts_gi2 + li, oc)
+                _hts_orig_by_obj[oid].append((t_v, oc))
+                _hts_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _hts_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_hts_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_hts_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_hts_fw, _hts_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_hts_xlo, _hts_xhi)
+            ax_f.set_ylim(_hts_ylo, _hts_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_hts_cnum} — t ≤ {tc:g}  (PV={_hts_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_hts_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _hts_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _hts_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    # Endpoint marker on last generated point
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _hts_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_hts_cnum}",
+                data=gif_buf, file_name=f"config_{_hts_cnum}_half_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_half_ts_{_hts_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _hts_config_metrics:
+        st.markdown("#### Summary")
+        _hts_df = pd.DataFrame(_hts_config_metrics)
+        st.dataframe(_hts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_half_ts_results"):
+        st.session_state["_generate_half_ts_requested"] = False
+        st.session_state["_generate_half_ts_results"] = None
+        st.session_state.pop("_hts_points_plot", None)
+        st.session_state.pop("_hts_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display ¼ timestamps filtered results (new button)
+if st.session_state.get("_generate_quarter_ts_results", None):
+    _qts_results = st.session_state["_generate_quarter_ts_results"]
+    _qts_pp = st.session_state.get("_qts_points_plot", all_points_plot)
+    _qts_vp = st.session_state.get("_qts_vals_plot", all_vals_plot)
+    _qts_sorted_oids = sorted(_qts_pp.keys())
+
+    st.markdown("---")
+    _qts_n_per_obj = {oid: _qts_pp[oid].shape[0] for oid in _qts_sorted_oids}
+    _qts_n_total = sum(_qts_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (¼ timestamps, filtered)")
+    st.markdown(f"Exponential | PDP fundamental | **{_qts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _qts_n_per_obj.items())})")
+
+    _qts_config_metrics: list[dict[str, Any]] = []
+
+    for _qts_rank, (_qts_cnum, _qts_dev, _qts_cfg) in enumerate(_qts_results, 1):
+        st.markdown(f"#### Rank {_qts_rank}: Configuration #{_qts_cnum} (PV={_qts_dev:.4f} m²)")
+
+        _qts_iters = _qts_cfg.get("iterations", "N/A")
+        _qts_sp = _qts_cfg.get("successful_points", [])
+        _qts_gen_map: dict[int, np.ndarray] = {}
+        for sp in _qts_sp:
+            _qts_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Build per-object original and generated arrays
+        _qts_max_angle = 0.0
+        _qts_max_dist = 0.0
+        _qts_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []  # (orig, gen, ts)
+        _qts_gi = 0
+        for oid in _qts_sorted_oids:
+            n_pts = _qts_pp[oid].shape[0]
+            orig = _qts_pp[oid]
+            ts = _qts_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _qts_gi + li
+                if gi in _qts_gen_map:
+                    gen[li] = _qts_gen_map[gi]
+            _qts_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _qts_max_angle = max(_qts_max_angle, ad)
+                _qts_max_dist = max(_qts_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _qts_gi += n_pts
+
+        _qts_config_metrics.append({
+            "config_num": _qts_cnum, "rank": _qts_rank, "perp_variance": _qts_dev,
+            "max_angle_deviation": _qts_max_angle, "max_distance_deviation": _qts_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_qts_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_qts_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_qts_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_qts_iters}")
+
+        # --- Compute axis limits ---
+        _qts_all_x: list[float] = []
+        _qts_all_y: list[float] = []
+        _qts_max_dd = 0.0
+        _qts_md_orig = np.array([0.0, 0.0])
+        _qts_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _qts_plot_data:
+            _qts_all_x.extend(orig[:, 0].tolist()); _qts_all_x.extend(gen[:, 0].tolist())
+            _qts_all_y.extend(orig[:, 1].tolist()); _qts_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _qts_max_dd:
+                    _qts_max_dd = d; _qts_md_orig = orig[li].copy(); _qts_md_gen = gen[li].copy()
+
+        _qts_xlo = min(_qts_all_x) - max((max(_qts_all_x) - min(_qts_all_x)) * 0.05, 1.0)
+        _qts_xhi = max(_qts_all_x) + max((max(_qts_all_x) - min(_qts_all_x)) * 0.05, 1.0)
+        _qts_ylo = min(_qts_all_y) - max((max(_qts_all_y) - min(_qts_all_y)) * 0.08, 0.5)
+        _qts_yhi = max(_qts_all_y) + max((max(_qts_all_y) - min(_qts_all_y)) * 0.08, 0.5)
+
+        _qts_dx = _qts_xhi - _qts_xlo; _qts_dy = _qts_yhi - _qts_ylo
+        _qts_tr = 1.3
+        if _qts_dx > _qts_dy * _qts_tr:
+            pad = (_qts_dx / _qts_tr - _qts_dy) / 2; _qts_ylo -= pad; _qts_yhi += pad; _qts_dy = _qts_yhi - _qts_ylo
+        elif _qts_dy * _qts_tr > _qts_dx:
+            pad = (_qts_dy * _qts_tr - _qts_dx) / 2; _qts_xlo -= pad; _qts_xhi += pad; _qts_dx = _qts_xhi - _qts_xlo
+        _qts_fw = 10.0
+        _qts_fh = max(3.0, min(7.5, _qts_fw * (_qts_dy / _qts_dx))) if _qts_dx > 0 else 5.0
+
+        # --- Static plot: draw each object SEPARATELY ---
+        fig_s = Figure(figsize=(_qts_fw, _qts_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_qts_sorted_oids):
+            orig, gen, ts = _qts_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            # Draw each object's orig (dashed) and gen (solid) — NOT connecting between objects
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            # Endpoint marker
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_qts_max_dd:.2f}m", xy=(_qts_md_gen[0], _qts_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_qts_xlo, _qts_xhi); ax_s.set_ylim(_qts_ylo, _qts_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_qts_cnum}  (PV={_qts_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        # --- Animated GIF: build up per object over timestamps ---
+        _qts_all_ts_vals: list[float] = []
+        for oid in _qts_sorted_oids:
+            _qts_all_ts_vals.extend(_qts_vp[oid].tolist())
+        _qts_unique_ts = sorted(set(_qts_all_ts_vals))
+        _qts_n_frames = len(_qts_unique_ts)
+
+        # Build per-object (t, coord) lists
+        _qts_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _qts_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _qts_gi2 = 0
+        for oid in _qts_sorted_oids:
+            n_pts = _qts_pp[oid].shape[0]
+            vals = _qts_vp[oid]
+            _qts_orig_by_obj[oid] = []; _qts_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _qts_pp[oid][li]
+                gc = _qts_gen_map.get(_qts_gi2 + li, oc)
+                _qts_orig_by_obj[oid].append((t_v, oc))
+                _qts_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _qts_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_qts_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_qts_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_qts_fw, _qts_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_qts_xlo, _qts_xhi)
+            ax_f.set_ylim(_qts_ylo, _qts_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_qts_cnum} — t ≤ {tc:g}  (PV={_qts_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_qts_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _qts_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _qts_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    # Endpoint marker on last generated point
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _qts_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_qts_cnum}",
+                data=gif_buf, file_name=f"config_{_qts_cnum}_quarter_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_quarter_ts_{_qts_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _qts_config_metrics:
+        st.markdown("#### Summary")
+        _qts_df = pd.DataFrame(_qts_config_metrics)
+        st.dataframe(_qts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_quarter_ts_results"):
+        st.session_state["_generate_quarter_ts_requested"] = False
+        st.session_state["_generate_quarter_ts_results"] = None
+        st.session_state.pop("_qts_points_plot", None)
+        st.session_state.pop("_qts_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display ⅛ timestamps filtered results
+if st.session_state.get("_generate_eighth_ts_results", None):
+    _ets_results = st.session_state["_generate_eighth_ts_results"]
+    _ets_pp = st.session_state.get("_ets_points_plot", all_points_plot)
+    _ets_vp = st.session_state.get("_ets_vals_plot", all_vals_plot)
+    _ets_sorted_oids = sorted(_ets_pp.keys())
+
+    st.markdown("---")
+    _ets_n_per_obj = {oid: _ets_pp[oid].shape[0] for oid in _ets_sorted_oids}
+    _ets_n_total = sum(_ets_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (⅛ timestamps, filtered)")
+    st.markdown(f"Exponential | PDP fundamental | **{_ets_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _ets_n_per_obj.items())})")
+
+    _ets_config_metrics: list[dict[str, Any]] = []
+
+    for _ets_rank, (_ets_cnum, _ets_dev, _ets_cfg) in enumerate(_ets_results, 1):
+        st.markdown(f"#### Rank {_ets_rank}: Configuration #{_ets_cnum} (PV={_ets_dev:.4f} m²)")
+
+        _ets_iters = _ets_cfg.get("iterations", "N/A")
+        _ets_sp = _ets_cfg.get("successful_points", [])
+        _ets_gen_map: dict[int, np.ndarray] = {}
+        for sp in _ets_sp:
+            _ets_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _ets_max_angle = 0.0
+        _ets_max_dist = 0.0
+        _ets_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _ets_gi = 0
+        for oid in _ets_sorted_oids:
+            n_pts = _ets_pp[oid].shape[0]
+            orig = _ets_pp[oid]
+            ts = _ets_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _ets_gi + li
+                if gi in _ets_gen_map:
+                    gen[li] = _ets_gen_map[gi]
+            _ets_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _ets_max_angle = max(_ets_max_angle, ad)
+                _ets_max_dist = max(_ets_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _ets_gi += n_pts
+
+        _ets_config_metrics.append({
+            "config_num": _ets_cnum, "rank": _ets_rank, "perp_variance": _ets_dev,
+            "max_angle_deviation": _ets_max_angle, "max_distance_deviation": _ets_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_ets_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_ets_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_ets_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_ets_iters}")
+
+        _ets_all_x: list[float] = []
+        _ets_all_y: list[float] = []
+        _ets_max_dd = 0.0
+        _ets_md_orig = np.array([0.0, 0.0])
+        _ets_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _ets_plot_data:
+            _ets_all_x.extend(orig[:, 0].tolist()); _ets_all_x.extend(gen[:, 0].tolist())
+            _ets_all_y.extend(orig[:, 1].tolist()); _ets_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _ets_max_dd:
+                    _ets_max_dd = d; _ets_md_orig = orig[li].copy(); _ets_md_gen = gen[li].copy()
+
+        _ets_xlo = min(_ets_all_x) - max((max(_ets_all_x) - min(_ets_all_x)) * 0.05, 1.0)
+        _ets_xhi = max(_ets_all_x) + max((max(_ets_all_x) - min(_ets_all_x)) * 0.05, 1.0)
+        _ets_ylo = min(_ets_all_y) - max((max(_ets_all_y) - min(_ets_all_y)) * 0.08, 0.5)
+        _ets_yhi = max(_ets_all_y) + max((max(_ets_all_y) - min(_ets_all_y)) * 0.08, 0.5)
+
+        _ets_dx = _ets_xhi - _ets_xlo; _ets_dy = _ets_yhi - _ets_ylo
+        _ets_tr = 1.3
+        if _ets_dx > _ets_dy * _ets_tr:
+            pad = (_ets_dx / _ets_tr - _ets_dy) / 2; _ets_ylo -= pad; _ets_yhi += pad; _ets_dy = _ets_yhi - _ets_ylo
+        elif _ets_dy * _ets_tr > _ets_dx:
+            pad = (_ets_dy * _ets_tr - _ets_dx) / 2; _ets_xlo -= pad; _ets_xhi += pad; _ets_dx = _ets_xhi - _ets_xlo
+        _ets_fw = 10.0
+        _ets_fh = max(3.0, min(7.5, _ets_fw * (_ets_dy / _ets_dx))) if _ets_dx > 0 else 5.0
+
+        fig_s = Figure(figsize=(_ets_fw, _ets_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_ets_sorted_oids):
+            orig, gen, ts = _ets_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_ets_max_dd:.2f}m", xy=(_ets_md_gen[0], _ets_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_ets_xlo, _ets_xhi); ax_s.set_ylim(_ets_ylo, _ets_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_ets_cnum}  (PV={_ets_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        _ets_all_ts_vals: list[float] = []
+        for oid in _ets_sorted_oids:
+            _ets_all_ts_vals.extend(_ets_vp[oid].tolist())
+        _ets_unique_ts = sorted(set(_ets_all_ts_vals))
+        _ets_n_frames = len(_ets_unique_ts)
+
+        _ets_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _ets_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _ets_gi2 = 0
+        for oid in _ets_sorted_oids:
+            n_pts = _ets_pp[oid].shape[0]
+            vals = _ets_vp[oid]
+            _ets_orig_by_obj[oid] = []; _ets_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _ets_pp[oid][li]
+                gc = _ets_gen_map.get(_ets_gi2 + li, oc)
+                _ets_orig_by_obj[oid].append((t_v, oc))
+                _ets_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _ets_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_ets_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_ets_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_ets_fw, _ets_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_ets_xlo, _ets_xhi)
+            ax_f.set_ylim(_ets_ylo, _ets_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_ets_cnum} — t ≤ {tc:g}  (PV={_ets_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_ets_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _ets_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _ets_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _ets_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_ets_cnum}",
+                data=gif_buf, file_name=f"config_{_ets_cnum}_eighth_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_eighth_ts_{_ets_rank}",
+            )
+
+        st.markdown("---")
+
+    if _ets_config_metrics:
+        st.markdown("#### Summary")
+        _ets_df = pd.DataFrame(_ets_config_metrics)
+        st.dataframe(_ets_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_eighth_ts_results"):
+        st.session_state["_generate_eighth_ts_requested"] = False
+        st.session_state["_generate_eighth_ts_results"] = None
+        st.session_state.pop("_ets_points_plot", None)
+        st.session_state.pop("_ets_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display 1/16 timestamps filtered results
+if st.session_state.get("_generate_sixteenth_ts_results", None):
+    _sts_results = st.session_state["_generate_sixteenth_ts_results"]
+    _sts_pp = st.session_state.get("_sts_points_plot", all_points_plot)
+    _sts_vp = st.session_state.get("_sts_vals_plot", all_vals_plot)
+    _sts_sorted_oids = sorted(_sts_pp.keys())
+
+    st.markdown("---")
+    _sts_n_per_obj = {oid: _sts_pp[oid].shape[0] for oid in _sts_sorted_oids}
+    _sts_n_total = sum(_sts_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (1/16 timestamps, filtered)")
+    st.markdown(f"Exponential | PDP fundamental | **{_sts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _sts_n_per_obj.items())})")
+
+    _sts_config_metrics: list[dict[str, Any]] = []
+
+    for _sts_rank, (_sts_cnum, _sts_dev, _sts_cfg) in enumerate(_sts_results, 1):
+        st.markdown(f"#### Rank {_sts_rank}: Configuration #{_sts_cnum} (PV={_sts_dev:.4f} m²)")
+
+        _sts_iters = _sts_cfg.get("iterations", "N/A")
+        _sts_sp = _sts_cfg.get("successful_points", [])
+        _sts_gen_map: dict[int, np.ndarray] = {}
+        for sp in _sts_sp:
+            _sts_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _sts_max_angle = 0.0
+        _sts_max_dist = 0.0
+        _sts_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _sts_gi = 0
+        for oid in _sts_sorted_oids:
+            n_pts = _sts_pp[oid].shape[0]
+            orig = _sts_pp[oid]
+            ts = _sts_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _sts_gi + li
+                if gi in _sts_gen_map:
+                    gen[li] = _sts_gen_map[gi]
+            _sts_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _sts_max_angle = max(_sts_max_angle, ad)
+                _sts_max_dist = max(_sts_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _sts_gi += n_pts
+
+        _sts_config_metrics.append({
+            "config_num": _sts_cnum, "rank": _sts_rank, "perp_variance": _sts_dev,
+            "max_angle_deviation": _sts_max_angle, "max_distance_deviation": _sts_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_sts_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_sts_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_sts_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_sts_iters}")
+
+        _sts_all_x: list[float] = []
+        _sts_all_y: list[float] = []
+        _sts_max_dd = 0.0
+        _sts_md_orig = np.array([0.0, 0.0])
+        _sts_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _sts_plot_data:
+            _sts_all_x.extend(orig[:, 0].tolist()); _sts_all_x.extend(gen[:, 0].tolist())
+            _sts_all_y.extend(orig[:, 1].tolist()); _sts_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _sts_max_dd:
+                    _sts_max_dd = d; _sts_md_orig = orig[li].copy(); _sts_md_gen = gen[li].copy()
+
+        _sts_xlo = min(_sts_all_x) - max((max(_sts_all_x) - min(_sts_all_x)) * 0.05, 1.0)
+        _sts_xhi = max(_sts_all_x) + max((max(_sts_all_x) - min(_sts_all_x)) * 0.05, 1.0)
+        _sts_ylo = min(_sts_all_y) - max((max(_sts_all_y) - min(_sts_all_y)) * 0.08, 0.5)
+        _sts_yhi = max(_sts_all_y) + max((max(_sts_all_y) - min(_sts_all_y)) * 0.08, 0.5)
+
+        _sts_dx = _sts_xhi - _sts_xlo; _sts_dy = _sts_yhi - _sts_ylo
+        _sts_tr = 1.3
+        if _sts_dx > _sts_dy * _sts_tr:
+            pad = (_sts_dx / _sts_tr - _sts_dy) / 2; _sts_ylo -= pad; _sts_yhi += pad; _sts_dy = _sts_yhi - _sts_ylo
+        elif _sts_dy * _sts_tr > _sts_dx:
+            pad = (_sts_dy * _sts_tr - _sts_dx) / 2; _sts_xlo -= pad; _sts_xhi += pad; _sts_dx = _sts_xhi - _sts_xlo
+        _sts_fw = 10.0
+        _sts_fh = max(3.0, min(7.5, _sts_fw * (_sts_dy / _sts_dx))) if _sts_dx > 0 else 5.0
+
+        fig_s = Figure(figsize=(_sts_fw, _sts_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_sts_sorted_oids):
+            orig, gen, ts = _sts_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_sts_max_dd:.2f}m", xy=(_sts_md_gen[0], _sts_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_sts_xlo, _sts_xhi); ax_s.set_ylim(_sts_ylo, _sts_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_sts_cnum}  (PV={_sts_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        _sts_all_ts_vals: list[float] = []
+        for oid in _sts_sorted_oids:
+            _sts_all_ts_vals.extend(_sts_vp[oid].tolist())
+        _sts_unique_ts = sorted(set(_sts_all_ts_vals))
+        _sts_n_frames = len(_sts_unique_ts)
+
+        _sts_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _sts_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _sts_gi2 = 0
+        for oid in _sts_sorted_oids:
+            n_pts = _sts_pp[oid].shape[0]
+            vals = _sts_vp[oid]
+            _sts_orig_by_obj[oid] = []; _sts_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _sts_pp[oid][li]
+                gc = _sts_gen_map.get(_sts_gi2 + li, oc)
+                _sts_orig_by_obj[oid].append((t_v, oc))
+                _sts_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _sts_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_sts_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_sts_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_sts_fw, _sts_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_sts_xlo, _sts_xhi)
+            ax_f.set_ylim(_sts_ylo, _sts_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_sts_cnum} — t ≤ {tc:g}  (PV={_sts_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_sts_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _sts_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _sts_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _sts_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_sts_cnum}",
+                data=gif_buf, file_name=f"config_{_sts_cnum}_sixteenth_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_sixteenth_ts_{_sts_rank}",
+            )
+
+        st.markdown("---")
+
+    if _sts_config_metrics:
+        st.markdown("#### Summary")
+        _sts_df = pd.DataFrame(_sts_config_metrics)
+        st.dataframe(_sts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_sixteenth_ts_results"):
+        st.session_state["_generate_sixteenth_ts_requested"] = False
+        st.session_state["_generate_sixteenth_ts_results"] = None
+        st.session_state.pop("_sts_points_plot", None)
+        st.session_state.pop("_sts_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display 4-timestamps filtered results
+if st.session_state.get("_generate_four_ts_results", None):
+    _fts_results = st.session_state["_generate_four_ts_results"]
+    _fts_pp = st.session_state.get("_fts_points_plot", all_points_plot)
+    _fts_vp = st.session_state.get("_fts_vals_plot", all_vals_plot)
+    _fts_sorted_oids = sorted(_fts_pp.keys())
+
+    st.markdown("---")
+    _fts_n_per_obj = {oid: _fts_pp[oid].shape[0] for oid in _fts_sorted_oids}
+    _fts_n_total = sum(_fts_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (4 timestamps: 0, 46, 92, 136)")
+    st.markdown(f"Exponential | PDP fundamental | **{_fts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _fts_n_per_obj.items())})")
+
+    _fts_config_metrics: list[dict[str, Any]] = []
+
+    for _fts_rank, (_fts_cnum, _fts_dev, _fts_cfg) in enumerate(_fts_results, 1):
+        st.markdown(f"#### Rank {_fts_rank}: Configuration #{_fts_cnum} (PV={_fts_dev:.4f} m²)")
+
+        _fts_iters = _fts_cfg.get("iterations", "N/A")
+        _fts_sp = _fts_cfg.get("successful_points", [])
+        _fts_gen_map: dict[int, np.ndarray] = {}
+        for sp in _fts_sp:
+            _fts_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _fts_max_angle = 0.0
+        _fts_max_dist = 0.0
+        _fts_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _fts_gi = 0
+        for oid in _fts_sorted_oids:
+            n_pts = _fts_pp[oid].shape[0]
+            orig = _fts_pp[oid]
+            ts = _fts_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _fts_gi + li
+                if gi in _fts_gen_map:
+                    gen[li] = _fts_gen_map[gi]
+            _fts_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _fts_max_angle = max(_fts_max_angle, ad)
+                _fts_max_dist = max(_fts_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _fts_gi += n_pts
+
+        _fts_config_metrics.append({
+            "config_num": _fts_cnum, "rank": _fts_rank, "perp_variance": _fts_dev,
+            "max_angle_deviation": _fts_max_angle, "max_distance_deviation": _fts_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_fts_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_fts_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_fts_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_fts_iters}")
+
+        _fts_all_x: list[float] = []
+        _fts_all_y: list[float] = []
+        _fts_max_dd = 0.0
+        _fts_md_orig = np.array([0.0, 0.0])
+        _fts_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _fts_plot_data:
+            _fts_all_x.extend(orig[:, 0].tolist()); _fts_all_x.extend(gen[:, 0].tolist())
+            _fts_all_y.extend(orig[:, 1].tolist()); _fts_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _fts_max_dd:
+                    _fts_max_dd = d; _fts_md_orig = orig[li].copy(); _fts_md_gen = gen[li].copy()
+
+        _fts_xlo = min(_fts_all_x) - max((max(_fts_all_x) - min(_fts_all_x)) * 0.05, 1.0)
+        _fts_xhi = max(_fts_all_x) + max((max(_fts_all_x) - min(_fts_all_x)) * 0.05, 1.0)
+        _fts_ylo = min(_fts_all_y) - max((max(_fts_all_y) - min(_fts_all_y)) * 0.08, 0.5)
+        _fts_yhi = max(_fts_all_y) + max((max(_fts_all_y) - min(_fts_all_y)) * 0.08, 0.5)
+
+        _fts_dx = _fts_xhi - _fts_xlo; _fts_dy = _fts_yhi - _fts_ylo
+        _fts_tr = 1.3
+        if _fts_dx > _fts_dy * _fts_tr:
+            pad = (_fts_dx / _fts_tr - _fts_dy) / 2; _fts_ylo -= pad; _fts_yhi += pad; _fts_dy = _fts_yhi - _fts_ylo
+        elif _fts_dy * _fts_tr > _fts_dx:
+            pad = (_fts_dy * _fts_tr - _fts_dx) / 2; _fts_xlo -= pad; _fts_xhi += pad; _fts_dx = _fts_xhi - _fts_xlo
+        _fts_fw = 10.0
+        _fts_fh = max(3.0, min(7.5, _fts_fw * (_fts_dy / _fts_dx))) if _fts_dx > 0 else 5.0
+
+        fig_s = Figure(figsize=(_fts_fw, _fts_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_fts_sorted_oids):
+            orig, gen, ts = _fts_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_fts_max_dd:.2f}m", xy=(_fts_md_gen[0], _fts_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_fts_xlo, _fts_xhi); ax_s.set_ylim(_fts_ylo, _fts_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_fts_cnum}  (PV={_fts_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        _fts_all_ts_vals: list[float] = []
+        for oid in _fts_sorted_oids:
+            _fts_all_ts_vals.extend(_fts_vp[oid].tolist())
+        _fts_unique_ts = sorted(set(_fts_all_ts_vals))
+        _fts_n_frames = len(_fts_unique_ts)
+
+        _fts_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _fts_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _fts_gi2 = 0
+        for oid in _fts_sorted_oids:
+            n_pts = _fts_pp[oid].shape[0]
+            vals = _fts_vp[oid]
+            _fts_orig_by_obj[oid] = []; _fts_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _fts_pp[oid][li]
+                gc = _fts_gen_map.get(_fts_gi2 + li, oc)
+                _fts_orig_by_obj[oid].append((t_v, oc))
+                _fts_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _fts_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_fts_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_fts_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_fts_fw, _fts_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_fts_xlo, _fts_xhi)
+            ax_f.set_ylim(_fts_ylo, _fts_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_fts_cnum} — t ≤ {tc:g}  (PV={_fts_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_fts_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _fts_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _fts_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _fts_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_fts_cnum}",
+                data=gif_buf, file_name=f"config_{_fts_cnum}_four_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_four_ts_{_fts_rank}",
+            )
+
+        st.markdown("---")
+
+    if _fts_config_metrics:
+        st.markdown("#### Summary")
+        _fts_df = pd.DataFrame(_fts_config_metrics)
+        st.dataframe(_fts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_four_ts_results"):
+        st.session_state["_generate_four_ts_requested"] = False
+        st.session_state["_generate_four_ts_results"] = None
+        st.session_state.pop("_fts_points_plot", None)
+        st.session_state.pop("_fts_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display 2-timestamps filtered results
+if st.session_state.get("_generate_two_ts_results", None):
+    _tts_results = st.session_state["_generate_two_ts_results"]
+    _tts_pp = st.session_state.get("_tts_points_plot", all_points_plot)
+    _tts_vp = st.session_state.get("_tts_vals_plot", all_vals_plot)
+    _tts_sorted_oids = sorted(_tts_pp.keys())
+
+    st.markdown("---")
+    _tts_n_per_obj = {oid: _tts_pp[oid].shape[0] for oid in _tts_sorted_oids}
+    _tts_n_total = sum(_tts_n_per_obj.values())
+    st.markdown(f"### Top 10 — 100 configs × 1000 iter (2 timestamps: 0, 136)")
+    st.markdown(f"Exponential | PDP fundamental | **{_tts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _tts_n_per_obj.items())})")
+
+    _tts_config_metrics: list[dict[str, Any]] = []
+
+    for _tts_rank, (_tts_cnum, _tts_dev, _tts_cfg) in enumerate(_tts_results, 1):
+        st.markdown(f"#### Rank {_tts_rank}: Configuration #{_tts_cnum} (PV={_tts_dev:.4f} m²)")
+
+        _tts_iters = _tts_cfg.get("iterations", "N/A")
+        _tts_sp = _tts_cfg.get("successful_points", [])
+        _tts_gen_map: dict[int, np.ndarray] = {}
+        for sp in _tts_sp:
+            _tts_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _tts_max_angle = 0.0
+        _tts_max_dist = 0.0
+        _tts_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _tts_gi = 0
+        for oid in _tts_sorted_oids:
+            n_pts = _tts_pp[oid].shape[0]
+            orig = _tts_pp[oid]
+            ts = _tts_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _tts_gi + li
+                if gi in _tts_gen_map:
+                    gen[li] = _tts_gen_map[gi]
+            _tts_plot_data.append((orig, gen, ts))
+            for i in range(1, n_pts):
+                o_dx, o_dy = orig[i, 0] - orig[i-1, 0], orig[i, 1] - orig[i-1, 1]
+                g_dx, g_dy = gen[i, 0] - gen[i-1, 0], gen[i, 1] - gen[i-1, 1]
+                ad = abs(np.degrees(np.arctan2(g_dy, g_dx) - np.arctan2(o_dy, o_dx)))
+                if ad > 180: ad = 360 - ad
+                _tts_max_angle = max(_tts_max_angle, ad)
+                _tts_max_dist = max(_tts_max_dist, abs(np.linalg.norm([g_dx, g_dy]) - np.linalg.norm([o_dx, o_dy])))
+            _tts_gi += n_pts
+
+        _tts_config_metrics.append({
+            "config_num": _tts_cnum, "rank": _tts_rank, "perp_variance": _tts_dev,
+            "max_angle_deviation": _tts_max_angle, "max_distance_deviation": _tts_max_dist,
+        })
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Perp. Variance", f"{_tts_dev:.4f} m²")
+        mc2.metric("Max Angle Δ", f"{_tts_max_angle:.1f}°")
+        mc3.metric("Max Distance Δ", f"{_tts_max_dist:.2f}m")
+        mc4.metric("Iterations", f"{_tts_iters}")
+
+        _tts_all_x: list[float] = []
+        _tts_all_y: list[float] = []
+        _tts_max_dd = 0.0
+        _tts_md_orig = np.array([0.0, 0.0])
+        _tts_md_gen = np.array([0.0, 0.0])
+        for orig, gen, ts in _tts_plot_data:
+            _tts_all_x.extend(orig[:, 0].tolist()); _tts_all_x.extend(gen[:, 0].tolist())
+            _tts_all_y.extend(orig[:, 1].tolist()); _tts_all_y.extend(gen[:, 1].tolist())
+            for li in range(orig.shape[0]):
+                d = float(np.linalg.norm(gen[li] - orig[li]))
+                if d > _tts_max_dd:
+                    _tts_max_dd = d; _tts_md_orig = orig[li].copy(); _tts_md_gen = gen[li].copy()
+
+        _tts_xlo = min(_tts_all_x) - max((max(_tts_all_x) - min(_tts_all_x)) * 0.05, 1.0)
+        _tts_xhi = max(_tts_all_x) + max((max(_tts_all_x) - min(_tts_all_x)) * 0.05, 1.0)
+        _tts_ylo = min(_tts_all_y) - max((max(_tts_all_y) - min(_tts_all_y)) * 0.08, 0.5)
+        _tts_yhi = max(_tts_all_y) + max((max(_tts_all_y) - min(_tts_all_y)) * 0.08, 0.5)
+
+        _tts_dx = _tts_xhi - _tts_xlo; _tts_dy = _tts_yhi - _tts_ylo
+        _tts_tr = 1.3
+        if _tts_dx > _tts_dy * _tts_tr:
+            pad = (_tts_dx / _tts_tr - _tts_dy) / 2; _tts_ylo -= pad; _tts_yhi += pad; _tts_dy = _tts_yhi - _tts_ylo
+        elif _tts_dy * _tts_tr > _tts_dx:
+            pad = (_tts_dy * _tts_tr - _tts_dx) / 2; _tts_xlo -= pad; _tts_xhi += pad; _tts_dx = _tts_xhi - _tts_xlo
+        _tts_fw = 10.0
+        _tts_fh = max(3.0, min(7.5, _tts_fw * (_tts_dy / _tts_dx))) if _tts_dx > 0 else 5.0
+
+        fig_s = Figure(figsize=(_tts_fw, _tts_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_o, oid in enumerate(_tts_sorted_oids):
+            orig, gen, ts = _tts_plot_data[idx_o]
+            lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.3, ls='--', label=f"{lbl} orig")
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.5, color=clr, alpha=1.0, label=f"{lbl} gen")
+            ax_s.plot(gen[-1, 0], gen[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+        ax_s.annotate(f"max Δ={_tts_max_dd:.2f}m", xy=(_tts_md_gen[0], _tts_md_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_tts_xlo, _tts_xhi); ax_s.set_ylim(_tts_ylo, _tts_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)"); ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"Config #{_tts_cnum}  (PV={_tts_dev:.4f} m²)")
+        fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+
+        _tts_all_ts_vals: list[float] = []
+        for oid in _tts_sorted_oids:
+            _tts_all_ts_vals.extend(_tts_vp[oid].tolist())
+        _tts_unique_ts = sorted(set(_tts_all_ts_vals))
+        _tts_n_frames = len(_tts_unique_ts)
+
+        _tts_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _tts_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _tts_gi2 = 0
+        for oid in _tts_sorted_oids:
+            n_pts = _tts_pp[oid].shape[0]
+            vals = _tts_vp[oid]
+            _tts_orig_by_obj[oid] = []; _tts_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_v = float(vals[li])
+                oc = _tts_pp[oid][li]
+                gc = _tts_gen_map.get(_tts_gi2 + li, oc)
+                _tts_orig_by_obj[oid].append((t_v, oc))
+                _tts_gen_by_obj[oid].append((t_v, np.array(gc)))
+            _tts_gi2 += n_pts
+
+        gif_frames: list[PILImage.Image] = []
+        gif_progress = st.progress(0)
+        gif_status = st.empty()
+
+        for fi, tc in enumerate(_tts_unique_ts):
+            gif_status.text(f"Rendering GIF frame {fi + 1}/{_tts_n_frames} (t ≤ {tc:g})...")
+            fig_f = Figure(figsize=(_tts_fw, _tts_fh), dpi=150)
+            ax_f = fig_f.add_subplot(111)
+            ax_f.set_xlim(_tts_xlo, _tts_xhi)
+            ax_f.set_ylim(_tts_ylo, _tts_yhi)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            ax_f.set_title(f"Config #{_tts_cnum} — t ≤ {tc:g}  (PV={_tts_dev:.4f} m²)", fontsize=9)
+            for idx_o, oid in enumerate(_tts_sorted_oids):
+                lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
+                opu = [c for (t, c) in _tts_orig_by_obj[oid] if t <= tc]
+                if len(opu) > 1:
+                    oa = np.array(opu)
+                    ax_f.plot(oa[:, 0], oa[:, 1], lw=1.0, color=clr, alpha=0.35, ls='--', label=f"{lbl} orig")
+                gpu = [c for (t, c) in _tts_gen_by_obj[oid] if t <= tc]
+                if len(gpu) > 1:
+                    ga = np.array(gpu)
+                    ax_f.plot(ga[:, 0], ga[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+                    ax_f.plot(ga[-1, 0], ga[-1, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_f.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+            buf_f = io.BytesIO(); fig_f.savefig(buf_f, format='png', dpi=150); buf_f.seek(0)
+            gif_frames.append(PILImage.open(buf_f).copy())
+            plt.close(fig_f)
+            gif_progress.progress((fi + 1) / _tts_n_frames)
+
+        gif_progress.empty(); gif_status.empty()
+
+        if gif_frames:
+            gif_buf = io.BytesIO()
+            durations = [200] * len(gif_frames); durations[-1] = 1500
+            gif_frames[0].save(gif_buf, format='GIF', save_all=True, append_images=gif_frames[1:], duration=durations, loop=0)
+            gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_tts_cnum}",
+                data=gif_buf, file_name=f"config_{_tts_cnum}_two_ts_animation.gif", mime="image/gif",
+                key=f"dl_gif_two_ts_{_tts_rank}",
+            )
+
+        st.markdown("---")
+
+    if _tts_config_metrics:
+        st.markdown("#### Summary")
+        _tts_df = pd.DataFrame(_tts_config_metrics)
+        st.dataframe(_tts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
+                     "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
+        ), use_container_width=True)
+
+    if st.button("Clear Results & Cache", key="clear_two_ts_results"):
+        st.session_state["_generate_two_ts_requested"] = False
+        st.session_state["_generate_two_ts_results"] = None
+        st.session_state.pop("_tts_points_plot", None)
+        st.session_state.pop("_tts_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# Display C68 Realistic results
+if st.session_state.get("_generate_c68r_results", None):
+    _display_top_n_with_gif(
+        results=st.session_state["_generate_c68r_results"],
+        section_title="Top 10 — Config 68 Realistic (100 configs × 1000 iter)",
+        section_description="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buf 5m, d2 rough 0.30m) | External pts at lane centers",
+        clear_key="clear_c68r_results",
+        requested_key="_generate_c68r_requested",
+        results_key="_generate_c68r_results",
+    )
+
+# Display C68 Fundamental results
+if st.session_state.get("_generate_c68f_results", None):
+    _display_top_n_with_gif(
+        results=st.session_state["_generate_c68f_results"],
+        section_title="Top 10 — Config 68 Fundamental (100 configs × 1000 iter)",
+        section_description="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers",
+        clear_key="clear_c68f_results",
+        requested_key="_generate_c68f_requested",
+        results_key="_generate_c68f_results",
+    )
+
 # ============= Drawing (without gridlines) ============
 
 def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
@@ -6550,8 +9682,9 @@ def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim:
     ax.tick_params(axis="both", labelsize=9, width=0.8, color="#222")  # type: ignore
     ax.set_xlabel("d1", fontsize=11, labelpad=8)  # type: ignore
     ax.set_ylabel("d2", fontsize=11, labelpad=8)  # type: ignore
-    # Draw inferred lane markings on the background (for traffic configurations 0-10)
-    infer_and_draw_lanes(ax, xlim, ylim)
+    # Draw inferred lane markings on the background (skip for custom uploads)
+    if not _is_custom_upload:
+        infer_and_draw_lanes(ax, xlim, ylim)
 
 def render_square_matplotlib_figure(
     draw_fn: Callable[[matplotlib.axes.Axes], None],
@@ -6856,7 +9989,8 @@ def create_smooth_animation(
     fig = go.Figure()
     
     # Add lane markings and save them to include in every frame
-    fig = add_lane_markings_to_figure(fig, selected_c_int, xlim, ylim)
+    if not _is_custom_upload:
+        fig = add_lane_markings_to_figure(fig, selected_c_int, xlim, ylim)
     
     # Extract lane marking traces to add to every frame
     lane_marking_traces: list[Any] = [trace for trace in fig.data]
@@ -6958,6 +10092,7 @@ def create_smooth_animation(
             
             # Create cubic spline interpolation for x and y coordinates
             # Use 'natural' boundary condition for smooth ends
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
             try:
                 cs_x = CubicSpline(ts, pts[:, 0], bc_type='natural')
                 cs_y = CubicSpline(ts, pts[:, 1], bc_type='natural')
@@ -6966,20 +10101,23 @@ def create_smooth_animation(
                 x_smooth = cs_x(t_smooth)
                 y_smooth = cs_y(t_smooth)
                 
-                color = OBJECT_COLORS_PLOTLY[obj_idx % len(OBJECT_COLORS_PLOTLY)]
-                label = OBJECT_LABELS[obj_idx % len(OBJECT_LABELS)]
-                
-                all_frames_data.append({
-                    "config_name": config_name,
-                    "object_label": label,
-                    "color": color,
-                    "x_smooth": x_smooth,
-                    "y_smooth": y_smooth,
-                    "t_smooth": t_smooth,
-                    "x_keyframes": pts[:, 0],
-                    "y_keyframes": pts[:, 1],
-                    "t_keyframes": ts,
-                })
+                color = f"C{oid}"
+                # Plot original as segments between consecutive points only (never close)
+                orig_pts_up = [coord for (t_val, coord) in _ext30_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    for i in range(orig_arr.shape[0] - 1):
+                        xseg = [orig_arr[i, 0], orig_arr[i+1, 0]]
+                        yseg = [orig_arr[i, 1], orig_arr[i+1, 1]]
+                        ax_f.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig" if i == 0 else None)
+                # Generated trajectory up to t_cutoff as segments (never close)
+                gen_pts_up = [coord for (t_val, coord) in _ext30_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    for i in range(gen_arr.shape[0] - 1):
+                        xseg = [gen_arr[i, 0], gen_arr[i+1, 0]]
+                        yseg = [gen_arr[i, 1], gen_arr[i+1, 1]]
+                        ax_f.plot(xseg, yseg, linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen" if i == 0 else None)
             except Exception as e:
                 st.warning(f"Could not interpolate trajectory for {config_name} - {label}: {e}")
                 continue
@@ -7548,9 +10686,10 @@ def draw_original(ax: matplotlib.axes.Axes) -> None:
             ax.plot(pts[:, 0], pts[:, 1], linewidth=1.2, color=color)  # type: ignore
             annotate_points(ax, pts, vals, label, color)
     
-    # Draw lane markings in the original trajectory view
+    # Draw lane markings in the original trajectory view (skip for custom uploads)
     current_config = st.session_state.get("anim_current_config", 1)
-    infer_and_draw_lanes(ax, XLIM, YLIM)
+    if not _is_custom_upload:
+        infer_and_draw_lanes(ax, XLIM, YLIM)
     
     # Draw external reference points (fixed points) with a distinct marker
     if external_pts_for_window:
@@ -9918,8 +13057,9 @@ if all_configs_list or current_successful_points:
     
     fig = go.Figure()
     
-    # Add lane markings for traffic configurations (if applicable)
-    fig = add_lane_markings_to_figure(fig, selected_c_int, XLIM, YLIM)
+    # Add lane markings for traffic configurations (skip for custom uploads)
+    if not _is_custom_upload:
+        fig = add_lane_markings_to_figure(fig, selected_c_int, XLIM, YLIM)
 
     # 1. Add Original Configuration - loop through ALL objects (only if selected)
     if "Original" in selected_configs:
