@@ -1480,10 +1480,10 @@ if st.session_state.pop("_c68r_preset_pending", False):
     st.session_state["cfg_k"] = min(79, n_timepoints)
     st.session_state["_cfg_timestamp_step"] = 2
     st.session_state["cfg_pdp_variants"] = ["realistic"]
-    st.session_state["cfg_buffer_x"] = 5.0
+    st.session_state["cfg_buffer_x"] = 1.5
     st.session_state["cfg_buffer_y"] = 0.0
     st.session_state["cfg_rough_x"] = 0.0
-    st.session_state["cfg_rough_y"] = 0.30
+    st.session_state["cfg_rough_y"] = 0.40
     st.session_state["cfg_point_selection_mode"] = "Multiple random points"
     st.session_state["cfg_movement_direction"] = "Same direction"
     st.session_state["cfg_use_external_points"] = True
@@ -1836,15 +1836,15 @@ with st.expander("PDP Variant Configuration", expanded=False):
         with param_col1:
             if needs_buffer:
                 # Show buffer_x for all buffer variants including realistic
-                buffer_x_default = 10.0 if needs_realistic else 25.0
+                buffer_x_default = 1.5 if needs_realistic else 25.0
                 buffer_x = st.number_input(
                     "Buffer X (d1)",
                     min_value=0.0,
                     max_value=100.0,
-                    value=25.0,
-                    step=1.0,
+                    value=buffer_x_default,
+                    step=0.5,
                     key="cfg_buffer_x",
-                    help="Buffer distance in x-direction (d1, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road."
+                    help="Buffer distance in x-direction (d1, driving direction). Used by: buffer, bufferrough, realistic. For 'realistic' this allows variation in longitudinal position along the road. Recommended: 1–2 m for realistic alternatives."
                 )
                 # Only show buffer_y if NOT exclusively using realistic
                 needs_buffer_y = any(v in ["buffer", "bufferrough"] for v in pdp_variants_selected)
@@ -1886,15 +1886,15 @@ with st.expander("PDP Variant Configuration", expanded=False):
                         st.info("â„¹ï¸ 'realistic' uses buffer on x instead of roughness")
                 
                 # Show rough_y for all rough variants including realistic
-                rough_y_default = 1.5 if needs_realistic else 0.8
+                rough_y_default = 0.4 if needs_realistic else 0.8
                 rough_y = st.number_input(
                     "Roughness Y (d2)",
                     min_value=0.0,
                     max_value=100.0,
-                    value=0.8,
-                    step=0.1,
+                    value=rough_y_default,
+                    step=0.05,
                     key="cfg_rough_y",
-                    help="Equality tolerance in y-direction (d2, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent."
+                    help="Equality tolerance in y-direction (d2, lateral position). Used by: rough, bufferrough, realistic. For 'realistic' this defines the lane tolerance - positions within the same lane are considered equivalent. Recommended: 0.3–0.5 m for realistic alternatives."
                 )
             else:
                 rough_x = 0.0
