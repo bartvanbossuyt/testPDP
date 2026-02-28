@@ -7460,28 +7460,18 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 gi = _ext30_gi + li
                 if gi in _ext30_gen_map:
                     gen_pts[li] = _ext30_gen_map[gi]
-            # Filter alleen even tijdstippen (t=0,2,4,...)
-            if orig_ts is not None:
-                even_mask = (orig_ts % 2 == 0)
-                orig_pts_filt = orig_pts[even_mask]
-                gen_pts_filt = gen_pts[even_mask]
-                ts_filt = orig_ts[even_mask]
-                filtered_counts[oid] = len(ts_filt)
-            else:
-                orig_pts_filt = orig_pts
-                gen_pts_filt = gen_pts
-                ts_filt = None
-                filtered_counts[oid] = orig_pts.shape[0]
-            _ext30_all_plot_data.append((orig_pts_filt, gen_pts_filt))
-            _ext30_ts_data[oid] = ts_filt
+            # Geen filtering — gebruik alle timestamps
+            _ext30_all_plot_data.append((orig_pts, gen_pts))
+            _ext30_ts_data[oid] = orig_ts
+            filtered_counts[oid] = n_pts
 
-            # Gebruik alleen gefilterde punten voor afwijkingsberekeningen
-            if orig_pts_filt.shape[0] > 1:
-                for i in range(1, orig_pts_filt.shape[0]):
-                    orig_dx = orig_pts_filt[i, 0] - orig_pts_filt[i-1, 0]
-                    orig_dy = orig_pts_filt[i, 1] - orig_pts_filt[i-1, 1]
-                    gen_dx = gen_pts_filt[i, 0] - gen_pts_filt[i-1, 0]
-                    gen_dy = gen_pts_filt[i, 1] - gen_pts_filt[i-1, 1]
+            # Afwijkingsberekeningen op alle punten
+            if orig_pts.shape[0] > 1:
+                for i in range(1, orig_pts.shape[0]):
+                    orig_dx = orig_pts[i, 0] - orig_pts[i-1, 0]
+                    orig_dy = orig_pts[i, 1] - orig_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
                     angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
                     if angle_diff > 180:
                         angle_diff = 360 - angle_diff
@@ -7566,10 +7556,10 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             color = f"C{oid}"
             orig_label = f"{label} original" if idx_oid == 0 else None
             gen_label = f"{label} generated" if idx_oid == 0 else None
-            # Use pre-filtered timestamps (already filtered during build phase)
+            # Timestamps per object (geen filtering)
             ts_filt = _ext30_ts_data.get(oid, None)
-            expected_dt = 2
-            # Plot alleen segmenten tussen gefilterde punten
+            expected_dt = 1
+            # Plot alle opeenvolgende segmenten
             if orig_pts.shape[0] > 1 and ts_filt is not None:
                 for i in range(orig_pts.shape[0] - 1):
                     dt = ts_filt[i+1] - ts_filt[i]
