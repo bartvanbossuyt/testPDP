@@ -5313,8 +5313,12 @@ if generate_50_btn:
     st.rerun()
 
 if generate_ext30_btn:
-    # Store in session state that we want to generate 30 configs x 600 iterations
+    # Store in session state that we want to generate 100 configs x 1000 iterations
     st.session_state["_generate_ext30_requested"] = True
+    # Ensure full timestamps (reset step to 1 if a previous preset changed it)
+    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
+        st.session_state["_cfg_timestamp_step"] = 1
+        st.rerun()
 
 if generate_ext30_half_btn:
     # Same as ext30 but with step=2 (half timestamps)
