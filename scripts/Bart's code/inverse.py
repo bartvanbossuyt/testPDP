@@ -1541,8 +1541,8 @@ with sc2:
         halved_timepoints = max(1, n_timepoints // 2)
         default_window = halved_timepoints
     if n_timepoints > 1:
-        # Allow selecting up to all timestamps (full range for custom uploads)
-        max_selectable = n_timepoints if _is_custom_upload else max(2, n_timepoints // 2)
+        # Allow selecting up to all timestamps for any data source
+        max_selectable = n_timepoints
         timestamp_options = list(range(2, max_selectable + 1))
         default_idx = timestamp_options.index(default_window) if default_window in timestamp_options else len(timestamp_options) - 1
         num_timestamps = st.selectbox(
@@ -5315,9 +5315,15 @@ if generate_50_btn:
 if generate_ext30_btn:
     # Store in session state that we want to generate 100 configs x 1000 iterations
     st.session_state["_generate_ext30_requested"] = True
-    # Ensure full timestamps (reset step to 1 if a previous preset changed it)
+    # Ensure full timestamps: reset step to 1 and use all available timestamps
+    _needs_rerun = False
     if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
         st.session_state["_cfg_timestamp_step"] = 1
+        _needs_rerun = True
+    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
+        st.session_state["cfg_k"] = n_timepoints
+        _needs_rerun = True
+    if _needs_rerun:
         st.rerun()
 
 if generate_ext30_half_btn:
