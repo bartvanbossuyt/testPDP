@@ -5655,78 +5655,138 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
 
 # ============= Generate 30 configs x 600 iterations (ext30) ============
 if st.session_state.get("_generate_ext30_requested", False) and not st.session_state.get("_generate_ext30_results", None):
+    # We need to swap globals, but since this is top-level Streamlit code (not inside a function),
+    # we can just reassign directly — no 'global' keyword needed.
     st.markdown("---")
     st.markdown("### Generating 100 Configurations (1000 iterations each)...")
-    st.caption("This may take a while. Progress is shown below.")
+    st.caption("Using ALL timestamps — building full-range dataset first.")
 
-    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _ext30_iterations = 1000
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    _ext30_sorted_oids_gen = sorted(all_objects_points.keys())
+    _ext30_full_points: dict[int, np.ndarray] = {}
+    _ext30_full_vals: dict[int, np.ndarray] = {}
+    for _oid in _ext30_sorted_oids_gen:
+        _pts, _ts = all_objects_points[_oid]
+        _ext30_full_points[_oid] = _pts
+        _ext30_full_vals[_oid] = _ts
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    _ext30_n_ts_per_obj = {oid: _ext30_full_points[oid].shape[0] for oid in _ext30_sorted_oids_gen}
+    _ext30_n_ts_total = sum(_ext30_n_ts_per_obj.values())
+    _ext30_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _ext30_n_ts_per_obj.items())
+    st.info(f"Full timestamp data: {_ext30_n_ts_total} total points ({_ext30_ts_info_gen})")
 
-    all_generated_configs: list[dict[str, Any]] = []
+    # --- Step 2: Build flattened arrays from full data ---
+    _ext30_pts_list: list[np.ndarray] = []
+    _ext30_ts_list: list[float] = []
+    _ext30_obj_ids: list[int] = []
+    _ext30_local_idx: list[int] = []
+    _ext30_is_fixed: list[bool] = []
+    for _oid in _ext30_sorted_oids_gen:
+        for _li in range(_ext30_full_points[_oid].shape[0]):
+            _ext30_pts_list.append(_ext30_full_points[_oid][_li])
+            _ext30_ts_list.append(float(_ext30_full_vals[_oid][_li]))
+            _ext30_obj_ids.append(_oid)
+            _ext30_local_idx.append(_li)
+            _ext30_is_fixed.append(False)
+    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _ext30_pts_list.append(_ext_pt)
+        _ext30_ts_list.append(float(_ext_t))
+        _ext30_obj_ids.append(-1)
+        _ext30_local_idx.append(len(_ext30_pts_list) - 1)
+        _ext30_is_fixed.append(True)
+    _ext30_pts_flat = np.array(_ext30_pts_list) if _ext30_pts_list else np.array([]).reshape(0, 2)
+    _ext30_ts_flat = np.array(_ext30_ts_list) if _ext30_ts_list else np.array([])
 
-    for config_idx in range(MAX_FILTER_CONFIGS):
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+    # --- Step 3: Temporarily swap global variables ---
+    _ext30_saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = _ext30_pts_flat
+    all_ts_flat = _ext30_ts_flat
+    all_obj_ids_flat = _ext30_obj_ids
+    all_local_idx_flat = _ext30_local_idx
+    all_is_fixed_flat = _ext30_is_fixed
+    n_total_points = _ext30_pts_flat.shape[0]
+    all_points_plot = _ext30_full_points
+    all_vals_plot = _ext30_full_vals
 
-        for iteration in range(_ext30_iterations):
-            status_text.text(f"Generating configuration {config_idx + 1}/100 | iteration {iteration + 1}/{_ext30_iterations}...")
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
+    try:
+        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _ext30_iterations = 1000
 
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _ext30_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold,
-            })
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-        progress_bar.progress((config_idx + 1) / 100)
+        all_generated_configs: list[dict[str, Any]] = []
 
-    progress_bar.empty()
-    status_text.empty()
+        for config_idx in range(MAX_FILTER_CONFIGS):
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
 
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_ext30_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+            for iteration in range(_ext30_iterations):
+                status_text.text(f"Generating configuration {config_idx + 1}/100 | iteration {iteration + 1}/{_ext30_iterations}...")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
 
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(all_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _ext30_iterations,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                })
 
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_3 = deviations[:3]
+            progress_bar.progress((config_idx + 1) / 100)
 
-        st.session_state["_generate_ext30_results"] = top_3
-        st.rerun()
+        progress_bar.empty()
+        status_text.empty()
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state["_generate_ext30_requested"] = False
+        else:
+            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                successful_points = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, successful_points)
+                config_num = config.get("config_number", 0)
+                deviations.append((config_num, pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top_3 = deviations[:3]
+
+            # Store full-timestamp data alongside results for display
+            st.session_state["_generate_ext30_results"] = top_3
+            st.session_state["_ext30_full_points_plot"] = _ext30_full_points
+            st.session_state["_ext30_full_vals_plot"] = _ext30_full_vals
+            st.rerun()
+    finally:
+        # --- Restore original globals ---
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _ext30_saved
 
 # ============= Generate 100 configs × 1000 iterations — half timestamps (ext30_half) ============
 if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
@@ -7422,10 +7482,13 @@ Configurations are ranked by perpendicular variance (highest first).""")
 # ============= Display results for ext30 (30 configs x 600 iterations, top 3, with GIF) ============
 if st.session_state.get("_generate_ext30_results", None):
     _ext30_top3 = st.session_state["_generate_ext30_results"]
+    # Use full-timestamp data stored during generation (not sidebar-filtered globals)
+    _ext30_display_points = st.session_state.get("_ext30_full_points_plot", all_points_plot)
+    _ext30_display_vals = st.session_state.get("_ext30_full_vals_plot", all_vals_plot)
 
     st.markdown("---")
-    _ext30_n_ts = sum(all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys()))
-    _ext30_n_ts_per_obj = {oid: all_points_plot[oid].shape[0] for oid in sorted(all_points_plot.keys())}
+    _ext30_n_ts = sum(_ext30_display_points[oid].shape[0] for oid in sorted(_ext30_display_points.keys()))
+    _ext30_n_ts_per_obj = {oid: _ext30_display_points[oid].shape[0] for oid in sorted(_ext30_display_points.keys())}
     st.markdown(f"### Top 3 Most Deviating Configurations (from 100 generated, 1000 iterations each) — {list(_ext30_n_ts_per_obj.values())[0]} timestamps per object")
     st.markdown(f"""
 **Generation settings**: 100 configurations × 1000 iterations | **{_ext30_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _ext30_n_ts_per_obj.items())}).
@@ -7456,14 +7519,14 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         # Calculate angle and distance deviations
         _ext30_max_angle = 0.0
         _ext30_max_dist = 0.0
-        _ext30_sorted_oids = sorted(all_points_plot.keys())
+        _ext30_sorted_oids = sorted(_ext30_display_points.keys())
         _ext30_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []  # (original, generated) per object
         _ext30_ts_data: dict[int, np.ndarray | None] = {}  # filtered timestamps per object
         filtered_counts = {}
         _ext30_gi = 0
         for oid in _ext30_sorted_oids:
-            orig_pts = all_points_plot[oid]
-            orig_ts = all_vals_plot[oid] if oid in all_vals_plot else None
+            orig_pts = _ext30_display_points[oid]
+            orig_ts = _ext30_display_vals[oid] if oid in _ext30_display_vals else None
             n_pts = orig_pts.shape[0]
             gen_pts = orig_pts.copy()
             for li in range(n_pts):
@@ -7593,7 +7656,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlabel("d1 / x-as (m)")
         ax_s.set_ylabel("d2 / y-as (m)")
         # Toon het juiste aantal timestamps per object (na filtering)
-        _ext30_ts_per_o = filtered_counts if 'filtered_counts' in locals() else {oid: all_points_plot[oid].shape[0] for oid in _ext30_sorted_oids}
+        _ext30_ts_per_o = filtered_counts if 'filtered_counts' in locals() else {oid: _ext30_display_points[oid].shape[0] for oid in _ext30_sorted_oids}
         _ext30_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o.items())
         ax_s.set_title(f"Config #{_ext30_cnum} — PV={_ext30_dev:.4f} m² — {_ext30_ts_info} timestamps")
         fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
@@ -7606,7 +7669,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         # Collect all timestamps across all objects (sorted)
         _ext30_all_ts: list[float] = []
         for oid in _ext30_sorted_oids:
-            _ext30_all_ts.extend(all_vals_plot[oid].tolist())
+            _ext30_all_ts.extend(_ext30_display_vals[oid].tolist())
         _ext30_unique_ts = sorted(set(_ext30_all_ts))
         _ext30_n_frames = len(_ext30_unique_ts)
 
@@ -7646,13 +7709,13 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _ext30_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
         _ext30_gi2 = 0
         for oid in _ext30_sorted_oids:
-            n_pts = all_points_plot[oid].shape[0]
-            vals = all_vals_plot[oid]
+            n_pts = _ext30_display_points[oid].shape[0]
+            vals = _ext30_display_vals[oid]
             _ext30_orig_by_obj[oid] = []
             _ext30_gen_by_obj[oid] = []
             for li in range(n_pts):
                 t_val = float(vals[li])
-                orig_coord = all_points_plot[oid][li]
+                orig_coord = _ext30_display_points[oid][li]
                 gen_coord = _ext30_gen_map.get(_ext30_gi2 + li, orig_coord)
                 _ext30_orig_by_obj[oid].append((t_val, orig_coord))
                 _ext30_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
@@ -7671,7 +7734,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_aspect("equal", adjustable="datalim")
             ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
             ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
-            _ext30_ts_per_o2 = {oid: all_points_plot[oid].shape[0] for oid in _ext30_sorted_oids}
+            _ext30_ts_per_o2 = {oid: _ext30_display_points[oid].shape[0] for oid in _ext30_sorted_oids}
             _ext30_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o2.items())
             ax_f.set_title(f"Config #{_ext30_cnum} — t ≤ {t_cutoff:g} — {_ext30_ts_info2} ts  (PV={_ext30_dev:.4f} m²)", fontsize=9)
 
@@ -7748,6 +7811,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
     if st.button("Clear Results & Cache", key="clear_ext30_results"):
         st.session_state["_generate_ext30_requested"] = False
         st.session_state["_generate_ext30_results"] = None
+        st.session_state.pop("_ext30_full_points_plot", None)
+        st.session_state.pop("_ext30_full_vals_plot", None)
         st.cache_data.clear()
         st.rerun()
 
