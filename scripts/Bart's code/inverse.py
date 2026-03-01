@@ -1416,7 +1416,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Pre-apply cfg_c for C68 presets BEFORE the widget renders
-if st.session_state.get("_c68r_preset_pending", False) or st.session_state.get("_c68f_preset_pending", False) or st.session_state.get("_c68rough_preset_pending", False):
+if st.session_state.get("_c68r_preset_pending", False) or st.session_state.get("_c68f_preset_pending", False):
     st.session_state["cfg_c"] = 68
 
 sc1, sc2, sc3 = st.columns([1,1,2], gap="small")
@@ -1497,34 +1497,6 @@ if st.session_state.pop("_c68r_preset_pending", False):
     st.session_state["cfg_use_external_points"] = True
     st.session_state["use_external_points"] = True
     # Compute external points at lane centers for config 68
-    _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
-    _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
-    _c68_nlanes = int(_c68_cfg.get("lanes", 2))
-    _c68_cl_y = float(_c68_cfg.get("centerline_y", -5.0))
-    _c68_hw = (_c68_lw * _c68_nlanes) / 2.0
-    st.session_state["external_points"] = [
-        (500.0, round(_c68_cl_y - _c68_hw + (i + 0.5) * _c68_lw, 3))
-        for i in range(_c68_nlanes)
-    ]
-
-# Apply Config 68 Rough preset if pending
-if st.session_state.pop("_c68rough_preset_pending", False):
-    try:
-        n_timepoints
-    except NameError:
-        n_timepoints = len(_t_common) if '_t_common' in locals() else 137
-    st.session_state["cfg_start_t"] = 82
-    st.session_state["cfg_k"] = min(79, n_timepoints)
-    st.session_state["_cfg_timestamp_step"] = 2
-    st.session_state["cfg_pdp_variants"] = ["fundamental"]
-    st.session_state["cfg_buffer_x"] = 0.0
-    st.session_state["cfg_buffer_y"] = 0.0
-    st.session_state["cfg_rough_x"] = 0.30
-    st.session_state["cfg_rough_y"] = 0.30
-    st.session_state["cfg_point_selection_mode"] = "Single point"
-    st.session_state["cfg_movement_direction"] = "Same direction"
-    st.session_state["cfg_use_external_points"] = True
-    st.session_state["use_external_points"] = True
     _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
     _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
     _c68_nlanes = int(_c68_cfg.get("lanes", 2))
@@ -2432,10 +2404,10 @@ with advanced_col2:
         key="btn_generate_c68_fundamental",
         help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
     )
-    generate_c68_rough_btn = st.button(
-        "C68 Rough (single-pt, d1=d2=0.30m)",
-        key="btn_generate_c68_rough",
-        help="Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m on both d1 and d2 | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
+    generate_ext30_rough_btn = st.button(
+        "Generate 100 & Top 3 GIF (rough d1=d2=0.30m)",
+        key="btn_generate_ext30_rough",
+        help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar forceert rough d1=d2=0.30m ongeacht sidebar-instellingen."
     )
 
 # Handle Reset button click for both modes
@@ -5464,10 +5436,17 @@ if generate_c68_fundamental_btn:
     st.session_state["_c68f_preset_pending"] = True
     st.rerun()
 
-if generate_c68_rough_btn:
-    st.session_state["_generate_c68rough_requested"] = True
-    st.session_state["_c68rough_preset_pending"] = True
-    st.rerun()
+if generate_ext30_rough_btn:
+    st.session_state["_generate_ext30_rough_requested"] = True
+    _needs_rerun = False
+    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
+        st.session_state["_cfg_timestamp_step"] = 1
+        _needs_rerun = True
+    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
+        st.session_state["_pending_cfg_k"] = n_timepoints
+        _needs_rerun = True
+    if _needs_rerun:
+        st.rerun()
 
 if generate_half_ts_btn:
     st.session_state["_generate_half_ts_requested"] = True
@@ -5951,6 +5930,176 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
         # --- Restore original globals ---
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _ext30_saved
+
+# ============= Generate 100 configs × 2500 iter — ROUGH d1=d2=0.30m (ext30_rough) ============
+if st.session_state.get("_generate_ext30_rough_requested", False) and not st.session_state.get("_generate_ext30_rough_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (2500 iter, rough d1=d2=0.30m)...")
+    st.caption("Using ALL timestamps — rough d1=d2=0.30m geforceerd (ongeacht sidebar).")
+
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    _r30_sorted_oids_gen = sorted(all_objects_points.keys())
+    _r30_full_points: dict[int, np.ndarray] = {}
+    _r30_full_vals: dict[int, np.ndarray] = {}
+    for _oid in _r30_sorted_oids_gen:
+        _pts, _ts = all_objects_points[_oid]
+        _r30_full_points[_oid] = _pts
+        _r30_full_vals[_oid] = _ts
+
+    _r30_n_ts_per_obj = {oid: _r30_full_points[oid].shape[0] for oid in _r30_sorted_oids_gen}
+    _r30_n_ts_total = sum(_r30_n_ts_per_obj.values())
+    _r30_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _r30_n_ts_per_obj.items())
+    st.info(f"Full timestamp data: {_r30_n_ts_total} total points ({_r30_ts_info_gen})")
+
+    # --- Step 2: Build flattened arrays from full data ---
+    _r30_pts_list: list[np.ndarray] = []
+    _r30_ts_list: list[float] = []
+    _r30_obj_ids: list[int] = []
+    _r30_local_idx: list[int] = []
+    _r30_is_fixed: list[bool] = []
+    for _oid in _r30_sorted_oids_gen:
+        for _li in range(_r30_full_points[_oid].shape[0]):
+            _r30_pts_list.append(_r30_full_points[_oid][_li])
+            _r30_ts_list.append(float(_r30_full_vals[_oid][_li]))
+            _r30_obj_ids.append(_oid)
+            _r30_local_idx.append(_li)
+            _r30_is_fixed.append(False)
+    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _r30_pts_list.append(_ext_pt)
+        _r30_ts_list.append(float(_ext_t))
+        _r30_obj_ids.append(-1)
+        _r30_local_idx.append(len(_r30_pts_list) - 1)
+        _r30_is_fixed.append(True)
+    _r30_pts_flat = np.array(_r30_pts_list) if _r30_pts_list else np.array([]).reshape(0, 2)
+    _r30_ts_flat = np.array(_r30_ts_list) if _r30_ts_list else np.array([])
+
+    # --- Step 3: Temporarily swap global variables ---
+    _r30_saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = _r30_pts_flat
+    all_ts_flat = _r30_ts_flat
+    all_obj_ids_flat = _r30_obj_ids
+    all_local_idx_flat = _r30_local_idx
+    all_is_fixed_flat = _r30_is_fixed
+    n_total_points = _r30_pts_flat.shape[0]
+    all_points_plot = _r30_full_points
+    all_vals_plot = _r30_full_vals
+
+    try:
+        # Hardcoded rough parameters — the ONLY difference from ext30
+        pdp_variant = "fundamental"
+        buffer_x = 0.0
+        buffer_y = 0.0
+        rough_x = 0.30
+        rough_y = 0.30
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _r30_iterations = 2500
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        all_generated_configs: list[dict[str, Any]] = []
+
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _r30_checker = IncrementalPDPChecker(
+            all_pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+        _total_iters = 0
+        _early_stops = 0
+
+        for config_idx in range(MAX_FILTER_CONFIGS):
+            _r30_checker.reset_to_original()
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            _stagnant = 0
+            _iters_used = _r30_iterations
+
+            for iteration in range(_r30_iterations):
+                status_text.text(f"Rough d1=d2=0.30m — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_r30_iterations}...")
+                _sp_before = len(successful_points)
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                    pdp_checker=_r30_checker,
+                )
+                _n_added = len(successful_points) - _sp_before
+                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                    _stagnant += 1
+                else:
+                    _stagnant = 0
+                if _stagnant >= EARLY_STOP_PATIENCE:
+                    _iters_used = iteration + 1
+                    _early_stops += 1
+                    break
+
+            _total_iters += _iters_used
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _iters_used,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                })
+
+            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
+
+        progress_bar.empty()
+        status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        _max_possible = MAX_FILTER_CONFIGS * _r30_iterations
+        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
+            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+        )
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state["_generate_ext30_rough_requested"] = False
+        else:
+            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                successful_points = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, successful_points)
+                config_num = config.get("config_number", 0)
+                deviations.append((config_num, pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top_3 = deviations[:3]
+
+            # Store full-timestamp data alongside results for display
+            st.session_state["_generate_ext30_rough_results"] = top_3
+            st.session_state["_ext30_rough_full_points_plot"] = _r30_full_points
+            st.session_state["_ext30_rough_full_vals_plot"] = _r30_full_vals
+            st.rerun()
+    finally:
+        # --- Restore original globals ---
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _r30_saved
 
 # ============= Generate 100 configs × 2500 iterations — FIXED ENDPOINTS (ext30_fe) ============
 if st.session_state.get("_generate_ext30_fe_requested", False) and not st.session_state.get("_generate_ext30_fe_results", None):
@@ -6920,101 +7069,6 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
             deviations.append((config.get("config_number", 0), pv, config))
         deviations.sort(key=lambda x: x[1], reverse=True)
         st.session_state["_generate_c68f_results"] = deviations[:10]
-        st.rerun()
-
-# ── C68 Rough generation loop ──
-if st.session_state.get("_generate_c68rough_requested", False) and not st.session_state.get("_generate_c68rough_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configs (C68 Rough d1=d2=0.30m, 2500 iter each)...")
-    st.caption("Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m | External pts at lane centers")
-
-    _c68rough_pdp = "fundamental"
-    _c68rough_bx, _c68rough_by = 0.0, 0.0
-    _c68rough_rx, _c68rough_ry = 0.30, 0.30
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    _c68rough_max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _c68rough_iters = 2500
-
-    # Freeze first and last timestamp per object
-    _frozen = set()
-    _gi = 0
-    for oid in sorted(all_points_plot.keys()):
-        n_pts = all_points_plot[oid].shape[0]
-        if n_pts > 0:
-            _frozen.add(_gi)
-            _frozen.add(_gi + n_pts - 1)
-        _gi += n_pts
-    st.session_state["_frozen_endpoints"] = _frozen
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    all_generated_configs: list[dict[str, Any]] = []
-
-    _t_gen_start = time.perf_counter()
-    _total_iters = 0
-    _early_stops = 0
-    for config_idx in range(MAX_FILTER_CONFIGS):
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        _stagnant = 0
-        _iters_used = _c68rough_iters
-        for iteration in range(_c68rough_iters):
-            status_text.text(f"C68 Rough — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68rough_iters}")
-            _sp_before = len(successful_points)
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=_c68rough_pdp,
-                buffer_x=_c68rough_bx, buffer_y=_c68rough_by,
-                rough_x=_c68rough_rx, rough_y=_c68rough_ry,
-            )
-            _n_added = len(successful_points) - _sp_before
-            if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                _stagnant += 1
-            else:
-                _stagnant = 0
-            if _stagnant >= EARLY_STOP_PATIENCE:
-                _iters_used = iteration + 1
-                _early_stops += 1
-                break
-        _total_iters += _iters_used
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": _c68rough_pdp,
-                "iterations": _iters_used,
-                "buffer_x": _c68rough_bx, "buffer_y": _c68rough_by,
-                "rough_x": _c68rough_rx, "rough_y": _c68rough_ry,
-                "threshold_mode": mode, "max_threshold": _c68rough_max_threshold,
-            })
-        progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-    progress_bar.empty()
-    status_text.empty()
-    _t_gen_elapsed = time.perf_counter() - _t_gen_start
-    _max_possible = MAX_FILTER_CONFIGS * _c68rough_iters
-    _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-    st.info(
-        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-        f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-        f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-        f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-        f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-    )
-    st.session_state.pop("_frozen_endpoints", None)
-
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_c68rough_requested"] = False
-    else:
-        st.success(f"Generated {len(all_generated_configs)} configs!")
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            pv = _perpendicular_variance(all_points_plot, config.get("successful_points", []))
-            deviations.append((config.get("config_number", 0), pv, config))
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        st.session_state["_generate_c68rough_results"] = deviations[:10]
         st.rerun()
 
 # Display results if they exist
@@ -8362,6 +8416,324 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         st.session_state["_generate_ext30_results"] = None
         st.session_state.pop("_ext30_full_points_plot", None)
         st.session_state.pop("_ext30_full_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# ============= Display results for ext30_rough (rough d1=d2=0.30m, top 3, with GIF) ============
+if st.session_state.get("_generate_ext30_rough_results", None):
+    _r30_top3 = st.session_state["_generate_ext30_rough_results"]
+    _r30_display_points = st.session_state.get("_ext30_rough_full_points_plot", all_points_plot)
+    _r30_display_vals = st.session_state.get("_ext30_rough_full_vals_plot", all_vals_plot)
+
+    st.markdown("---")
+    _r30_n_ts = sum(_r30_display_points[oid].shape[0] for oid in sorted(_r30_display_points.keys()))
+    _r30_n_ts_per_obj = {oid: _r30_display_points[oid].shape[0] for oid in sorted(_r30_display_points.keys())}
+    st.markdown(f"### Top 3 Most Deviating (rough d1=d2=0.30m) — {MAX_FILTER_CONFIGS} configs, 2500 iter — {list(_r30_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"""
+**Generation settings**: {MAX_FILTER_CONFIGS} configurations × 2500 iterations | **{_r30_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _r30_n_ts_per_obj.items())}).
+**Forced PDP settings**: fundamental + rough d1=0.30m, d2=0.30m (buffer=0).
+
+**Deviation Metrics:**
+- **Perpendicular Variance (m²)**: Variance of perpendicular distances from generated points to the original trajectory.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Each configuration includes an **animated GIF** download showing the trajectory building up over timestamps.""")
+
+    _r30_config_metrics: list[dict[str, Any]] = []
+
+    for _r30_rank, (_r30_cnum, _r30_dev, _r30_cfg) in enumerate(_r30_top3, 1):
+        st.markdown(f"#### Rank {_r30_rank}: Configuration #{_r30_cnum} (Perp. variance: {_r30_dev:.4f} m²)")
+
+        _r30_pdp_variant = _r30_cfg.get("pdp_variant", "fundamental")
+        _r30_iterations = _r30_cfg.get("iterations", "N/A")
+        _r30_threshold_mode = _r30_cfg.get("threshold_mode", "Percentage")
+        _r30_max_threshold = _r30_cfg.get("max_threshold", 0.0)
+
+        # Build generated coordinate map
+        _r30_sp = _r30_cfg.get("successful_points", [])
+        _r30_gen_map: dict[int, np.ndarray] = {}
+        for sp in _r30_sp:
+            _r30_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Calculate angle and distance deviations
+        _r30_max_angle = 0.0
+        _r30_max_dist = 0.0
+        _r30_sorted_oids = sorted(_r30_display_points.keys())
+        _r30_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []
+        _r30_ts_data: dict[int, np.ndarray | None] = {}
+        _r30_filtered_counts = {}
+        _r30_gi = 0
+        for oid in _r30_sorted_oids:
+            orig_pts = _r30_display_points[oid]
+            orig_ts = _r30_display_vals[oid] if oid in _r30_display_vals else None
+            n_pts = orig_pts.shape[0]
+            gen_pts = orig_pts.copy()
+            for li in range(n_pts):
+                gi = _r30_gi + li
+                if gi in _r30_gen_map:
+                    gen_pts[li] = _r30_gen_map[gi]
+            _r30_all_plot_data.append((orig_pts, gen_pts))
+            _r30_ts_data[oid] = orig_ts
+            _r30_filtered_counts[oid] = n_pts
+
+            if orig_pts.shape[0] > 1:
+                for i in range(1, orig_pts.shape[0]):
+                    orig_dx = orig_pts[i, 0] - orig_pts[i-1, 0]
+                    orig_dy = orig_pts[i, 1] - orig_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
+                    angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    _r30_max_angle = max(_r30_max_angle, angle_diff)
+                    dist_diff = abs(np.linalg.norm([gen_dx, gen_dy]) - np.linalg.norm([orig_dx, orig_dy]))
+                    _r30_max_dist = max(_r30_max_dist, dist_diff)
+            _r30_gi += n_pts
+
+        _r30_config_metrics.append({
+            "config_num": _r30_cnum,
+            "rank": _r30_rank,
+            "perp_variance": _r30_dev,
+            "max_angle_deviation": _r30_max_angle,
+            "max_distance_deviation": _r30_max_dist,
+        })
+
+        # Display summary metrics
+        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+        _mc1.metric("Perp. Variance", f"{_r30_dev:.4f} m²")
+        _mc2.metric("Max Angle Δ", f"{_r30_max_angle:.1f}°")
+        _mc3.metric("Max Distance Δ", f"{_r30_max_dist:.2f}m")
+        _mc4.metric("Iterations", f"{_r30_iterations}")
+
+        # ---------- Static trajectory plot (zoomed to max deviation) ----------
+        _r30_max_dev_dist = 0.0
+        _r30_max_dev_orig = np.array([0.0, 0.0])
+        _r30_max_dev_gen = np.array([0.0, 0.0])
+
+        for idx_oid, oid in enumerate(_r30_sorted_oids):
+            orig_pts, g_pts = _r30_all_plot_data[idx_oid]
+            for li in range(orig_pts.shape[0]):
+                d = float(np.linalg.norm(g_pts[li] - orig_pts[li]))
+                if d > _r30_max_dev_dist:
+                    _r30_max_dev_dist = d
+                    _r30_max_dev_orig = orig_pts[li].copy()
+                    _r30_max_dev_gen = g_pts[li].copy()
+
+        _r30_all_x: list[float] = []
+        _r30_all_y: list[float] = []
+        for orig_pts, g_pts in _r30_all_plot_data:
+            _r30_all_x.extend(orig_pts[:, 0].tolist())
+            _r30_all_x.extend(g_pts[:, 0].tolist())
+            _r30_all_y.extend(orig_pts[:, 1].tolist())
+            _r30_all_y.extend(g_pts[:, 1].tolist())
+
+        _r30_x_lo = min(_r30_all_x) - max((max(_r30_all_x) - min(_r30_all_x)) * 0.05, 1.0)
+        _r30_x_hi = max(_r30_all_x) + max((max(_r30_all_x) - min(_r30_all_x)) * 0.05, 1.0)
+        _r30_y_lo = min(_r30_all_y) - max((max(_r30_all_y) - min(_r30_all_y)) * 0.08, 0.5)
+        _r30_y_hi = max(_r30_all_y) + max((max(_r30_all_y) - min(_r30_all_y)) * 0.08, 0.5)
+
+        _r30_dx = _r30_x_hi - _r30_x_lo
+        _r30_dy = _r30_y_hi - _r30_y_lo
+        _r30_target_ratio = 1.3
+        if _r30_dx > _r30_dy * _r30_target_ratio:
+            _r30_needed_dy = _r30_dx / _r30_target_ratio
+            _r30_pad = (_r30_needed_dy - _r30_dy) / 2
+            _r30_y_lo -= _r30_pad
+            _r30_y_hi += _r30_pad
+            _r30_dy = _r30_needed_dy
+        elif _r30_dy * _r30_target_ratio > _r30_dx:
+            _r30_needed_dx = _r30_dy * _r30_target_ratio
+            _r30_pad = (_r30_needed_dx - _r30_dx) / 2
+            _r30_x_lo -= _r30_pad
+            _r30_x_hi += _r30_pad
+            _r30_dx = _r30_needed_dx
+
+        _r30_fig_w = 10.0
+        _r30_fig_h = _r30_fig_w * (_r30_dy / _r30_dx) if _r30_dx > 0 else 7.5
+        _r30_fig_h = max(3.0, min(_r30_fig_h, 7.5))
+
+        fig_static = Figure(figsize=(_r30_fig_w, _r30_fig_h), dpi=150)
+        ax_s = fig_static.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_oid, oid in enumerate(_r30_sorted_oids):
+            orig_pts, g_pts = _r30_all_plot_data[idx_oid]
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            color = f"C{oid}"
+            orig_label = f"{label} original" if idx_oid == 0 else None
+            gen_label = f"{label} generated" if idx_oid == 0 else None
+            ts_filt = _r30_ts_data.get(oid, None)
+            expected_dt = 1
+            if orig_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(orig_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [orig_pts[i, 0], orig_pts[i+1, 0]]
+                        yseg = [orig_pts[i, 1], orig_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.3, linestyle='--', label=orig_label if i == 0 else None)
+            if g_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(g_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [g_pts[i, 0], g_pts[i+1, 0]]
+                        yseg = [g_pts[i, 1], g_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.5, color=color, alpha=1.0, label=gen_label if i == 0 else None)
+        ax_s.annotate(f"max Δ={_r30_max_dev_dist:.2f}m", xy=(_r30_max_dev_gen[0], _r30_max_dev_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_r30_x_lo, _r30_x_hi)
+        ax_s.set_ylim(_r30_y_lo, _r30_y_hi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        _r30_ts_per_o = _r30_filtered_counts
+        _r30_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _r30_ts_per_o.items())
+        ax_s.set_title(f"Config #{_r30_cnum} — PV={_r30_dev:.4f} m² — {_r30_ts_info} timestamps (rough d1=d2=0.30m)")
+        fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        _buf_s = io.BytesIO()
+        fig_static.savefig(_buf_s, format='png', dpi=150)
+        _buf_s.seek(0)
+        st.image(_buf_s, use_container_width=True)
+
+        # ---------- Animated GIF: trajectory building up over timestamps ----------
+        _r30_all_ts: list[float] = []
+        for oid in _r30_sorted_oids:
+            _r30_all_ts.extend(_r30_display_vals[oid].tolist())
+        _r30_unique_ts = sorted(set(_r30_all_ts))
+        _r30_n_frames = len(_r30_unique_ts)
+
+        _r30_all_x_gif: list[float] = []
+        _r30_all_y_gif: list[float] = []
+        for orig_pts, g_pts in _r30_all_plot_data:
+            _r30_all_x_gif.extend(orig_pts[:, 0].tolist())
+            _r30_all_x_gif.extend(g_pts[:, 0].tolist())
+            _r30_all_y_gif.extend(orig_pts[:, 1].tolist())
+            _r30_all_y_gif.extend(g_pts[:, 1].tolist())
+        _r30_gif_xmin = min(_r30_all_x_gif) - max((max(_r30_all_x_gif) - min(_r30_all_x_gif)) * 0.05, 1.0)
+        _r30_gif_xmax = max(_r30_all_x_gif) + max((max(_r30_all_x_gif) - min(_r30_all_x_gif)) * 0.05, 1.0)
+        _r30_gif_ymin = min(_r30_all_y_gif) - max((max(_r30_all_y_gif) - min(_r30_all_y_gif)) * 0.1, 0.5)
+        _r30_gif_ymax = max(_r30_all_y_gif) + max((max(_r30_all_y_gif) - min(_r30_all_y_gif)) * 0.1, 0.5)
+
+        _r30_gif_dx = _r30_gif_xmax - _r30_gif_xmin
+        _r30_gif_dy = _r30_gif_ymax - _r30_gif_ymin
+        if _r30_gif_dx > _r30_gif_dy * _r30_target_ratio:
+            _g_pad = (_r30_gif_dx / _r30_target_ratio - _r30_gif_dy) / 2
+            _r30_gif_ymin -= _g_pad
+            _r30_gif_ymax += _g_pad
+            _r30_gif_dy = _r30_gif_ymax - _r30_gif_ymin
+        elif _r30_gif_dy * _r30_target_ratio > _r30_gif_dx:
+            _g_pad = (_r30_gif_dy * _r30_target_ratio - _r30_gif_dx) / 2
+            _r30_gif_xmin -= _g_pad
+            _r30_gif_xmax += _g_pad
+            _r30_gif_dx = _r30_gif_xmax - _r30_gif_xmin
+
+        _r30_gif_fw = 10.0
+        _r30_gif_fh = _r30_gif_fw * (_r30_gif_dy / _r30_gif_dx) if _r30_gif_dx > 0 else 7.5
+        _r30_gif_fh = max(3.0, min(_r30_gif_fh, 7.5))
+
+        _r30_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _r30_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _r30_gi2 = 0
+        for oid in _r30_sorted_oids:
+            n_pts = _r30_display_points[oid].shape[0]
+            vals = _r30_display_vals[oid]
+            _r30_orig_by_obj[oid] = []
+            _r30_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_val = float(vals[li])
+                orig_coord = _r30_display_points[oid][li]
+                gen_coord = _r30_gen_map.get(_r30_gi2 + li, orig_coord)
+                _r30_orig_by_obj[oid].append((t_val, orig_coord))
+                _r30_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
+            _r30_gi2 += n_pts
+
+        _r30_gif_frames: list[PILImage.Image] = []
+        _r30_gif_progress = st.progress(0)
+        _r30_gif_status = st.empty()
+
+        for frame_idx, t_cutoff in enumerate(_r30_unique_ts):
+            _r30_gif_status.text(f"Rendering GIF frame {frame_idx + 1}/{_r30_n_frames} (t ≤ {t_cutoff:g})...")
+            fig_frame = Figure(figsize=(_r30_gif_fw, _r30_gif_fh), dpi=150)
+            ax_f = fig_frame.add_subplot(111)
+            ax_f.set_xlim(_r30_gif_xmin, _r30_gif_xmax)
+            ax_f.set_ylim(_r30_gif_ymin, _r30_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            _r30_ts_per_o2 = {oid: _r30_display_points[oid].shape[0] for oid in _r30_sorted_oids}
+            _r30_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _r30_ts_per_o2.items())
+            ax_f.set_title(f"Config #{_r30_cnum} — t ≤ {t_cutoff:g} — {_r30_ts_info2} ts  (PV={_r30_dev:.4f} m², rough 0.30m)", fontsize=9)
+
+            for idx_oid, oid in enumerate(_r30_sorted_oids):
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                orig_pts_up = [coord for (t_val, coord) in _r30_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    ax_f.plot(orig_arr[:, 0], orig_arr[:, 1], linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig")
+                gen_pts_up = [coord for (t_val, coord) in _r30_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    ax_f.plot(gen_arr[:, 0], gen_arr[:, 1], linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen")
+
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_frame.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+
+            _buf_frame = io.BytesIO()
+            fig_frame.savefig(_buf_frame, format='png', dpi=150)
+            _buf_frame.seek(0)
+            _r30_gif_frames.append(PILImage.open(_buf_frame).copy())
+            plt.close(fig_frame)
+
+            _r30_gif_progress.progress((frame_idx + 1) / _r30_n_frames)
+
+        _r30_gif_progress.empty()
+        _r30_gif_status.empty()
+
+        if _r30_gif_frames:
+            _r30_gif_buf = io.BytesIO()
+            _r30_durations = [GIF_FRAME_DURATION_MS] * len(_r30_gif_frames)
+            if _r30_durations:
+                _r30_durations[-1] = GIF_LAST_FRAME_PAUSE_MS
+            _r30_gif_frames[0].save(
+                _r30_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_r30_gif_frames[1:],
+                duration=_r30_durations,
+                loop=0,
+            )
+            _r30_gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_r30_cnum} (rough 0.30m)",
+                data=_r30_gif_buf,
+                file_name=f"config_{_r30_cnum}_rough030_animation.gif",
+                mime="image/gif",
+                key=f"dl_gif_r30_{_r30_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _r30_config_metrics:
+        st.markdown("#### Summary (rough d1=d2=0.30m)")
+        _r30_df = pd.DataFrame(_r30_config_metrics)
+        st.dataframe(_r30_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "perp_variance": "Perp. Variance (m²)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)",
+            }
+        ), use_container_width=True)
+
+    # Clear button
+    if st.button("Clear Results & Cache (rough)", key="clear_ext30_rough_results"):
+        st.session_state["_generate_ext30_rough_requested"] = False
+        st.session_state["_generate_ext30_rough_results"] = None
+        st.session_state.pop("_ext30_rough_full_points_plot", None)
+        st.session_state.pop("_ext30_rough_full_vals_plot", None)
         st.cache_data.clear()
         st.rerun()
 
@@ -10078,17 +10450,6 @@ if st.session_state.get("_generate_c68f_results", None):
         clear_key="clear_c68f_results",
         requested_key="_generate_c68f_requested",
         results_key="_generate_c68f_results",
-    )
-
-# Display C68 Rough results
-if st.session_state.get("_generate_c68rough_results", None):
-    _display_top_n_with_gif(
-        results=st.session_state["_generate_c68rough_results"],
-        section_title="Top 10 — Config 68 Rough d1=d2=0.30m (100 configs × 2500 iter)",
-        section_description="Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m on d1 and d2 | External pts at lane centers",
-        clear_key="clear_c68rough_results",
-        requested_key="_generate_c68rough_requested",
-        results_key="_generate_c68rough_results",
     )
 
 # ============= Drawing (without gridlines) ============
