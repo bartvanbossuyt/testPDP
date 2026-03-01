@@ -2332,14 +2332,14 @@ with advanced_col2:
         help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar de eerste en laatste timestamp per object worden NIET verplaatst. Ze fungeren als vaste ankerpunten."
     )
     generate_ext30_half_btn = st.button(
-        "Generate 10 & Top 3 GIF (½ timestamps)",
+        "10 configs × Top 3 (½ ts, sidebar-afhankelijk)",
         key="btn_generate_ext30_half",
-        help="Same als 'Generate 10 & Show Top 3 (met GIF)' maar gebruikt enkel om de andere timestamp (step=2), dus halveert het aantal datapunten."
+        help="10 configs × 1000 iter | Gebruikt sidebar PDP-variant & step=2. Licht en snel, maar afhankelijk van sidebar-instellingen."
     )
     generate_half_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (½ ts, filtered)",
+        "100 configs × Top 10 (½ ts, eigen dataset)",
         key="btn_generate_half_ts",
-        help="100 configs × 1000 iter | exponential | PDP fundamental | Filtert oneven timestamps behalve de laatste (bv. t=136). Tekent blauwe en oranje curves apart per object."
+        help="100 configs × 1000 iter | PDP fundamental | Bouwt zelf een gefilterde dataset (elke 2e timestamp + laatste). Onafhankelijk van sidebar."
     )
     generate_quarter_ts_btn = st.button(
         "Generate 100 & Top 10 GIF (¼ ts, filtered)",
