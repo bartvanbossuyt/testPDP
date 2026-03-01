@@ -50,7 +50,7 @@ MAX_DIRECTION_ATTEMPTS: int = 50       # Max attempts to find a valid direction 
 MAX_RESET_ATTEMPTS: int = 20           # Max attempts when resetting/placing a new point
 MAX_BINARY_SEARCH_STEPS: int = 7       # Steps in binary search for boundary finding
 MAX_GENERATION_ITERATIONS: int = 1000  # Max configs for ext30 generation
-MAX_FILTER_CONFIGS: int = 500          # Max configs for filtered timestamp generation
+MAX_FILTER_CONFIGS: int = 100          # Max configs for filtered timestamp generation
 MAX_FILTER_ITERATIONS: int = 2500      # Max iterations per config for filtered generation
 GIF_FRAME_DURATION_MS: int = 200       # Milliseconds per GIF frame
 GIF_LAST_FRAME_PAUSE_MS: int = 1500    # Milliseconds to pause on the last GIF frame
@@ -2324,59 +2324,59 @@ with advanced_col2:
         help="Generates 200 configurations with 200 iterations each, using 8 timestamps from t=131 to t=138 (reinsertion zone). Shows the 25 most deviating configurations."
     )
     generate_ext30_btn = st.button(
-        "Generate 500 & Show Top 3 (with GIF)",
+        "Generate 100 & Show Top 3 (with GIF)",
         key="btn_generate_ext30",
-        help="Generates 500 configurations with 2500 iterations each. Shows the 3 most deviating configurations and lets you download an animated GIF of each."
+        help="Generates 100 configurations with 2500 iterations each. Shows the 3 most deviating configurations and lets you download an animated GIF of each."
     )
     generate_ext30_fe_btn = st.button(
-        "Generate 500 & Top 3 GIF (fixed endpoints)",
+        "Generate 100 & Top 3 GIF (fixed endpoints)",
         key="btn_generate_ext30_fe",
-        help="Zelfde als 'Generate 500 & Show Top 3 (with GIF)' maar de eerste en laatste timestamp per object worden NIET verplaatst. Ze fungeren als vaste ankerpunten."
+        help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar de eerste en laatste timestamp per object worden NIET verplaatst. Ze fungeren als vaste ankerpunten."
     )
     generate_ext30_half_btn = st.button(
-        "500 configs × Top 3 (½ ts, sidebar-afhankelijk)",
+        "100 configs × Top 3 (½ ts, sidebar-afhankelijk)",
         key="btn_generate_ext30_half",
-        help="500 configs × 2500 iter | Gebruikt sidebar PDP-variant & step=2. Afhankelijk van sidebar-instellingen."
+        help="100 configs × 2500 iter | Gebruikt sidebar PDP-variant & step=2. Afhankelijk van sidebar-instellingen."
     )
     generate_half_ts_btn = st.button(
-        "500 configs × Top 10 (½ ts, eigen dataset)",
+        "100 configs × Top 10 (½ ts, eigen dataset)",
         key="btn_generate_half_ts",
-        help="500 configs × 2500 iter | PDP fundamental | Bouwt zelf een gefilterde dataset (elke 2e timestamp + laatste). Onafhankelijk van sidebar."
+        help="100 configs × 2500 iter | PDP fundamental | Bouwt zelf een gefilterde dataset (elke 2e timestamp + laatste). Onafhankelijk van sidebar."
     )
     generate_quarter_ts_btn = st.button(
-        "Generate 500 & Top 10 GIF (¼ ts, filtered)",
+        "Generate 100 & Top 10 GIF (¼ ts, filtered)",
         key="btn_generate_quarter_ts",
-        help="500 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 4e timestamp (0,4,8,...,136) + laatste (136). Tekent blauwe en oranje curves apart per object."
+        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 4e timestamp (0,4,8,...,136) + laatste (136). Tekent blauwe en oranje curves apart per object."
     )
     generate_eighth_ts_btn = st.button(
-        "Generate 500 & Top 10 GIF (⅛ ts, filtered)",
+        "Generate 100 & Top 10 GIF (⅛ ts, filtered)",
         key="btn_generate_eighth_ts",
-        help="500 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 8e timestamp (0,8,16,...,136) + laatste (136). ±18 timestamps per object."
+        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 8e timestamp (0,8,16,...,136) + laatste (136). ±18 timestamps per object."
     )
     generate_sixteenth_ts_btn = st.button(
-        "Generate 500 & Top 10 GIF (1/16 ts, filtered)",
+        "Generate 100 & Top 10 GIF (1/16 ts, filtered)",
         key="btn_generate_sixteenth_ts",
-        help="500 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 16e timestamp (0,16,32,...,128) + laatste (136). ±9 timestamps per object."
+        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 16e timestamp (0,16,32,...,128) + laatste (136). ±9 timestamps per object."
     )
     generate_four_ts_btn = st.button(
-        "Generate 500 & Top 10 GIF (4 ts)",
+        "Generate 100 & Top 10 GIF (4 ts)",
         key="btn_generate_four_ts",
-        help="500 configs × 2500 iter | exponential | PDP fundamental | Slechts 4 timestamps: 0, 46, 92, 136."
+        help="100 configs × 2500 iter | exponential | PDP fundamental | Slechts 4 timestamps: 0, 46, 92, 136."
     )
     generate_two_ts_btn = st.button(
-        "Generate 500 & Top 10 GIF (2 ts)",
+        "Generate 100 & Top 10 GIF (2 ts)",
         key="btn_generate_two_ts",
-        help="500 configs × 2500 iter | exponential | PDP fundamental | Slechts 2 timestamps: 0 en 136."
+        help="100 configs × 2500 iter | exponential | PDP fundamental | Slechts 2 timestamps: 0 en 136."
     )
     generate_c68_realistic_btn = st.button(
         "C68 Realistic (multi-pt, buffer+rough)",
         key="btn_generate_c68_realistic",
-        help="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buffer 5m, d2 rough 0.30m) | External pts at lane centers | 500 configs × 2500 iterations | Top 10"
+        help="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buffer 5m, d2 rough 0.30m) | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
     )
     generate_c68_fundamental_btn = st.button(
         "C68 Fundamental (single-pt, ext pts)",
         key="btn_generate_c68_fundamental",
-        help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 500 configs × 2500 iterations | Top 10"
+        help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
     )
 
 # Handle Reset button click for both modes
@@ -5344,7 +5344,7 @@ if generate_50_btn:
     st.rerun()
 
 if generate_ext30_btn:
-    # Store in session state that we want to generate 500 configs x 2500 iterations
+    # Store in session state that we want to generate 100 configs x 2500 iterations
     st.session_state["_generate_ext30_requested"] = True
     # Ensure full timestamps: reset step to 1 and use all available timestamps
     _needs_rerun = False
@@ -5701,7 +5701,7 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
     # We need to swap globals, but since this is top-level Streamlit code (not inside a function),
     # we can just reassign directly — no 'global' keyword needed.
     st.markdown("---")
-    st.markdown("### Generating 500 Configurations (2500 iterations each)...")
+    st.markdown("### Generating 100 Configurations (2500 iterations each)...")
     st.caption("Using ALL timestamps — building full-range dataset first.")
 
     # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
@@ -5849,10 +5849,10 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _ext30_saved
 
-# ============= Generate 500 configs × 2500 iterations — FIXED ENDPOINTS (ext30_fe) ============
+# ============= Generate 100 configs × 2500 iterations — FIXED ENDPOINTS (ext30_fe) ============
 if st.session_state.get("_generate_ext30_fe_requested", False) and not st.session_state.get("_generate_ext30_fe_results", None):
     st.markdown("---")
-    st.markdown("### Generating 500 Configurations (2500 iter, fixed endpoints)...")
+    st.markdown("### Generating 100 Configurations (2500 iter, fixed endpoints)...")
     st.caption("Eerste en laatste timestamp per object worden NIET verplaatst — ze fungeren als ankerpunten.")
 
     # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
@@ -6005,11 +6005,11 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _fe_saved
 
-# ============= Generate 500 configs × 2500 iterations — half timestamps (ext30_half) ============
+# ============= Generate 100 configs × 2500 iterations — half timestamps (ext30_half) ============
 if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
     st.markdown("---")
-    st.markdown("### Generating 500 Configurations (2500 iterations, ½ timestamps)...")
-    st.caption("Zelfde als 'Generate 500 & Top 3' maar gebruikt om de andere timestamp (step=2).")
+    st.markdown("### Generating 100 Configurations (2500 iterations, ½ timestamps)...")
+    st.caption("Zelfde als 'Generate 100 & Top 3' maar gebruikt om de andere timestamp (step=2).")
 
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
     buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
@@ -6028,7 +6028,8 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
 
     all_generated_configs: list[dict[str, Any]] = []
 
-    _ext30h_num_configs = 500
+    _ext30h_num_configs = MAX_FILTER_CONFIGS
+    _t_gen_start = time.perf_counter()
     for config_idx in range(_ext30h_num_configs):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
@@ -6064,6 +6065,12 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
 
     progress_bar.empty()
     status_text.empty()
+    _t_gen_elapsed = time.perf_counter() - _t_gen_start
+    st.info(
+        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"({_t_gen_elapsed / max(1, _ext30h_num_configs):.2f}s/config, "
+        f"{_t_gen_elapsed / max(1, _ext30h_num_configs * _ext30h_iterations) * 1000:.1f}ms/iter)"
+    )
     # Reset timestamp step back to 1
     st.session_state["_cfg_timestamp_step"] = 1
 
@@ -6291,7 +6298,7 @@ if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.se
         external_ts_for_window=external_ts_for_window,
     )
 
-# ============= Generate 500 configs × 2500 iterations — 4 timestamps (0, 46, 92, 136) ============
+# ============= Generate 100 configs × 2500 iterations — 4 timestamps (0, 46, 92, 136) ============
 if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
     st.markdown("---")
     _fts_sorted_oids = sorted(all_objects_points.keys())
@@ -6305,12 +6312,12 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
         _fts_points_plot[_fts_oid] = _fts_orig_pts[_fts_keep_mask]
         _fts_vals_plot[_fts_oid] = _fts_orig_ts[_fts_keep_mask]
 
-    st.markdown("### Generating 500 Configurations (4 timestamps: 0, 46, 92, 136)...")
+    st.markdown("### Generating 100 Configurations (4 timestamps: 0, 46, 92, 136)...")
 
     _fts_n_ts_per_obj = {oid: _fts_points_plot[oid].shape[0] for oid in _fts_sorted_oids}
     _fts_n_ts_total = sum(_fts_n_ts_per_obj.values())
     _fts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _fts_n_ts_per_obj.items())
-    st.caption(f"500 configs × 2500 iter | exponential | PDP fundamental | {_fts_ts_info}")
+    st.caption(f"100 configs × 2500 iter | exponential | PDP fundamental | {_fts_ts_info}")
     st.info(f"Aantal timestamps na filtering: {_fts_n_ts_total} totaal ({_fts_ts_info})")
 
     _fts_pts_list: list[np.ndarray] = []
@@ -6365,7 +6372,7 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
         _fts_iterations = 2500
-        _fts_num_configs = 500
+        _fts_num_configs = MAX_FILTER_CONFIGS
 
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -6428,7 +6435,7 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
         st.session_state["_fts_vals_plot"] = _fts_vals_plot
         st.rerun()
 
-# ============= Generate 500 configs × 2500 iterations — 2 timestamps (0, 136) ============
+# ============= Generate 100 configs × 2500 iterations — 2 timestamps (0, 136) ============
 if st.session_state.get("_generate_two_ts_requested", False) and not st.session_state.get("_generate_two_ts_results", None):
     st.markdown("---")
     _tts_sorted_oids = sorted(all_objects_points.keys())
@@ -6442,12 +6449,12 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
         _tts_points_plot[_tts_oid] = _tts_orig_pts[_tts_keep_mask]
         _tts_vals_plot[_tts_oid] = _tts_orig_ts[_tts_keep_mask]
 
-    st.markdown("### Generating 500 Configurations (2 timestamps: 0, 136)...")
+    st.markdown("### Generating 100 Configurations (2 timestamps: 0, 136)...")
 
     _tts_n_ts_per_obj = {oid: _tts_points_plot[oid].shape[0] for oid in _tts_sorted_oids}
     _tts_n_ts_total = sum(_tts_n_ts_per_obj.values())
     _tts_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _tts_n_ts_per_obj.items())
-    st.caption(f"500 configs × 2500 iter | exponential | PDP fundamental | {_tts_ts_info}")
+    st.caption(f"100 configs × 2500 iter | exponential | PDP fundamental | {_tts_ts_info}")
     st.info(f"Aantal timestamps na filtering: {_tts_n_ts_total} totaal ({_tts_ts_info})")
 
     _tts_pts_list: list[np.ndarray] = []
@@ -6502,7 +6509,7 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
         _tts_iterations = 2500
-        _tts_num_configs = 500
+        _tts_num_configs = MAX_FILTER_CONFIGS
 
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -6565,10 +6572,10 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
         st.session_state["_tts_vals_plot"] = _tts_vals_plot
         st.rerun()
 
-# ============= Generate 500 configs × 2500 iterations — Config 68 Realistic ============
+# ============= Generate 100 configs × 2500 iterations — Config 68 Realistic ============
 if st.session_state.get("_generate_c68r_requested", False) and not st.session_state.get("_generate_c68r_results", None):
     st.markdown("---")
-    st.markdown("### Generating 500 Configs (C68 Realistic, 2500 iter each)...")
+    st.markdown("### Generating 100 Configs (C68 Realistic, 2500 iter each)...")
     st.caption("Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buf 5m, d2 rough 0.30m) | External pts")
 
     _c68r_pdp = "realistic"
@@ -6593,6 +6600,7 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
     status_text = st.empty()
     all_generated_configs: list[dict[str, Any]] = []
 
+    _t_gen_start = time.perf_counter()
     for config_idx in range(MAX_FILTER_CONFIGS):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
@@ -6619,6 +6627,12 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
 
     progress_bar.empty()
     status_text.empty()
+    _t_gen_elapsed = time.perf_counter() - _t_gen_start
+    st.info(
+        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+        f"{_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS * _c68r_iters) * 1000:.1f}ms/iter)"
+    )
     st.session_state.pop("_frozen_endpoints", None)  # unfreeze
 
     if not all_generated_configs:
@@ -6634,10 +6648,10 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
         st.session_state["_generate_c68r_results"] = deviations[:10]
         st.rerun()
 
-# ============= Generate 500 configs × 2500 iterations — Config 68 Fundamental ============
+# ============= Generate 100 configs × 2500 iterations — Config 68 Fundamental ============
 if st.session_state.get("_generate_c68f_requested", False) and not st.session_state.get("_generate_c68f_results", None):
     st.markdown("---")
-    st.markdown("### Generating 500 Configs (C68 Fundamental, 2500 iter each)...")
+    st.markdown("### Generating 100 Configs (C68 Fundamental, 2500 iter each)...")
     st.caption("Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers")
 
     _c68f_pdp = "fundamental"
@@ -6662,6 +6676,7 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
     status_text = st.empty()
     all_generated_configs: list[dict[str, Any]] = []
 
+    _t_gen_start = time.perf_counter()
     for config_idx in range(MAX_FILTER_CONFIGS):
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
@@ -6688,6 +6703,12 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
 
     progress_bar.empty()
     status_text.empty()
+    _t_gen_elapsed = time.perf_counter() - _t_gen_start
+    st.info(
+        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+        f"{_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS * _c68f_iters) * 1000:.1f}ms/iter)"
+    )
     st.session_state.pop("_frozen_endpoints", None)  # unfreeze
 
     if not all_generated_configs:
@@ -8573,8 +8594,8 @@ def _display_top_n_with_gif(
 if st.session_state.get("_generate_ext30_half_results", None):
     _display_top_n_with_gif(
         results=st.session_state["_generate_ext30_half_results"],
-        section_title="Top 3 — 500 configs × 2500 iter (½ timestamps)",
-        section_description="Same settings as 'Generate 500 & Top 3' but every other timestamp (step=2)",
+        section_title="Top 3 — 100 configs × 2500 iter (½ timestamps)",
+        section_description="Same settings as 'Generate 100 & Top 3' but every other timestamp (step=2)",
         clear_key="clear_ext30_half_results",
         requested_key="_generate_ext30_half_requested",
         results_key="_generate_ext30_half_results",
@@ -8590,7 +8611,7 @@ if st.session_state.get("_generate_half_ts_results", None):
     st.markdown("---")
     _hts_n_per_obj = {oid: _hts_pp[oid].shape[0] for oid in _hts_sorted_oids}
     _hts_n_total = sum(_hts_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (½ timestamps, filtered)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (½ timestamps, filtered)")
     st.markdown(f"Exponential | PDP fundamental | **{_hts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _hts_n_per_obj.items())})")
 
     _hts_config_metrics: list[dict[str, Any]] = []
@@ -8790,7 +8811,7 @@ if st.session_state.get("_generate_quarter_ts_results", None):
     st.markdown("---")
     _qts_n_per_obj = {oid: _qts_pp[oid].shape[0] for oid in _qts_sorted_oids}
     _qts_n_total = sum(_qts_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (¼ timestamps, filtered)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (¼ timestamps, filtered)")
     st.markdown(f"Exponential | PDP fundamental | **{_qts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _qts_n_per_obj.items())})")
 
     _qts_config_metrics: list[dict[str, Any]] = []
@@ -8990,7 +9011,7 @@ if st.session_state.get("_generate_eighth_ts_results", None):
     st.markdown("---")
     _ets_n_per_obj = {oid: _ets_pp[oid].shape[0] for oid in _ets_sorted_oids}
     _ets_n_total = sum(_ets_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (⅛ timestamps, filtered)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (⅛ timestamps, filtered)")
     st.markdown(f"Exponential | PDP fundamental | **{_ets_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _ets_n_per_obj.items())})")
 
     _ets_config_metrics: list[dict[str, Any]] = []
@@ -9181,7 +9202,7 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
     st.markdown("---")
     _sts_n_per_obj = {oid: _sts_pp[oid].shape[0] for oid in _sts_sorted_oids}
     _sts_n_total = sum(_sts_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (1/16 timestamps, filtered)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (1/16 timestamps, filtered)")
     st.markdown(f"Exponential | PDP fundamental | **{_sts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _sts_n_per_obj.items())})")
 
     _sts_config_metrics: list[dict[str, Any]] = []
@@ -9372,7 +9393,7 @@ if st.session_state.get("_generate_four_ts_results", None):
     st.markdown("---")
     _fts_n_per_obj = {oid: _fts_pp[oid].shape[0] for oid in _fts_sorted_oids}
     _fts_n_total = sum(_fts_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (4 timestamps: 0, 46, 92, 136)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (4 timestamps: 0, 46, 92, 136)")
     st.markdown(f"Exponential | PDP fundamental | **{_fts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _fts_n_per_obj.items())})")
 
     _fts_config_metrics: list[dict[str, Any]] = []
@@ -9563,7 +9584,7 @@ if st.session_state.get("_generate_two_ts_results", None):
     st.markdown("---")
     _tts_n_per_obj = {oid: _tts_pp[oid].shape[0] for oid in _tts_sorted_oids}
     _tts_n_total = sum(_tts_n_per_obj.values())
-    st.markdown(f"### Top 10 — 500 configs × 2500 iter (2 timestamps: 0, 136)")
+    st.markdown(f"### Top 10 — 100 configs × 2500 iter (2 timestamps: 0, 136)")
     st.markdown(f"Exponential | PDP fundamental | **{_tts_n_total} total pts** ({', '.join(f'obj {oid}: {n}' for oid, n in _tts_n_per_obj.items())})")
 
     _tts_config_metrics: list[dict[str, Any]] = []
@@ -9748,7 +9769,7 @@ if st.session_state.get("_generate_two_ts_results", None):
 if st.session_state.get("_generate_c68r_results", None):
     _display_top_n_with_gif(
         results=st.session_state["_generate_c68r_results"],
-        section_title="Top 10 — Config 68 Realistic (500 configs × 2500 iter)",
+        section_title="Top 10 — Config 68 Realistic (100 configs × 2500 iter)",
         section_description="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d1 buf 5m, d2 rough 0.30m) | External pts at lane centers",
         clear_key="clear_c68r_results",
         requested_key="_generate_c68r_requested",
@@ -9759,7 +9780,7 @@ if st.session_state.get("_generate_c68r_results", None):
 if st.session_state.get("_generate_c68f_results", None):
     _display_top_n_with_gif(
         results=st.session_state["_generate_c68f_results"],
-        section_title="Top 10 — Config 68 Fundamental (500 configs × 2500 iter)",
+        section_title="Top 10 — Config 68 Fundamental (100 configs × 2500 iter)",
         section_description="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers",
         clear_key="clear_c68f_results",
         requested_key="_generate_c68f_requested",
