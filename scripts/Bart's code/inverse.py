@@ -2326,6 +2326,11 @@ with advanced_col2:
         key="btn_generate_ext30",
         help="Generates 100 configurations with 1000 iterations each. Shows the 3 most deviating configurations and lets you download an animated GIF of each."
     )
+    generate_ext30_fe_btn = st.button(
+        "Generate 100 & Top 3 GIF (fixed endpoints)",
+        key="btn_generate_ext30_fe",
+        help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar de eerste en laatste timestamp per object worden NIET verplaatst. Ze fungeren als vaste ankerpunten."
+    )
     generate_ext30_half_btn = st.button(
         "Generate 10 & Top 3 GIF (½ timestamps)",
         key="btn_generate_ext30_half",
@@ -5326,6 +5331,18 @@ if generate_ext30_btn:
     if _needs_rerun:
         st.rerun()
 
+if generate_ext30_fe_btn:
+    st.session_state["_generate_ext30_fe_requested"] = True
+    _needs_rerun = False
+    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
+        st.session_state["_cfg_timestamp_step"] = 1
+        _needs_rerun = True
+    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
+        st.session_state["cfg_k"] = n_timepoints
+        _needs_rerun = True
+    if _needs_rerun:
+        st.rerun()
+
 if generate_ext30_half_btn:
     # Same as ext30 but with step=2 (half timestamps)
     st.session_state["_generate_ext30_half_requested"] = True
@@ -5787,6 +5804,144 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
         # --- Restore original globals ---
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _ext30_saved
+
+# ============= Generate 100 configs × 1000 iterations — FIXED ENDPOINTS (ext30_fe) ============
+if st.session_state.get("_generate_ext30_fe_requested", False) and not st.session_state.get("_generate_ext30_fe_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configurations (1000 iter, fixed endpoints)...")
+    st.caption("Eerste en laatste timestamp per object worden NIET verplaatst — ze fungeren als ankerpunten.")
+
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    _fe_sorted_oids = sorted(all_objects_points.keys())
+    _fe_full_points: dict[int, np.ndarray] = {}
+    _fe_full_vals: dict[int, np.ndarray] = {}
+    for _oid in _fe_sorted_oids:
+        _pts, _ts = all_objects_points[_oid]
+        _fe_full_points[_oid] = _pts
+        _fe_full_vals[_oid] = _ts
+
+    _fe_n_ts_per_obj = {oid: _fe_full_points[oid].shape[0] for oid in _fe_sorted_oids}
+    _fe_n_ts_total = sum(_fe_n_ts_per_obj.values())
+    _fe_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _fe_n_ts_per_obj.items())
+    _fe_n_fixed_per_obj = {oid: 2 if n > 1 else 1 for oid, n in _fe_n_ts_per_obj.items()}
+    _fe_n_fixed_total = sum(_fe_n_fixed_per_obj.values())
+    st.info(
+        f"Full timestamp data: {_fe_n_ts_total} total points ({_fe_ts_info_gen}). "
+        f"**{_fe_n_fixed_total} endpoints fixed** (first + last per object)."
+    )
+
+    # --- Step 2: Build flattened arrays — first & last per object are FIXED ---
+    _fe_pts_list: list[np.ndarray] = []
+    _fe_ts_list: list[float] = []
+    _fe_obj_ids: list[int] = []
+    _fe_local_idx: list[int] = []
+    _fe_is_fixed: list[bool] = []
+    for _oid in _fe_sorted_oids:
+        _n_pts_obj = _fe_full_points[_oid].shape[0]
+        for _li in range(_n_pts_obj):
+            _fe_pts_list.append(_fe_full_points[_oid][_li])
+            _fe_ts_list.append(float(_fe_full_vals[_oid][_li]))
+            _fe_obj_ids.append(_oid)
+            _fe_local_idx.append(_li)
+            # Mark first and last timestamp as fixed (anchor points)
+            _fe_is_fixed.append(_li == 0 or _li == _n_pts_obj - 1)
+    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _fe_pts_list.append(_ext_pt)
+        _fe_ts_list.append(float(_ext_t))
+        _fe_obj_ids.append(-1)
+        _fe_local_idx.append(len(_fe_pts_list) - 1)
+        _fe_is_fixed.append(True)
+    _fe_pts_flat = np.array(_fe_pts_list) if _fe_pts_list else np.array([]).reshape(0, 2)
+    _fe_ts_flat = np.array(_fe_ts_list) if _fe_ts_list else np.array([])
+
+    # --- Step 3: Temporarily swap global variables ---
+    _fe_saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = _fe_pts_flat
+    all_ts_flat = _fe_ts_flat
+    all_obj_ids_flat = _fe_obj_ids
+    all_local_idx_flat = _fe_local_idx
+    all_is_fixed_flat = _fe_is_fixed
+    n_total_points = _fe_pts_flat.shape[0]
+    all_points_plot = _fe_full_points
+    all_vals_plot = _fe_full_vals
+
+    try:
+        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _fe_iterations = 1000
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        all_generated_configs: list[dict[str, Any]] = []
+
+        for config_idx in range(MAX_FILTER_CONFIGS):
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+
+            for iteration in range(_fe_iterations):
+                status_text.text(f"Fixed-EP config {config_idx + 1}/100 | iter {iteration + 1}/{_fe_iterations}...")
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _fe_iterations,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                })
+
+            progress_bar.progress((config_idx + 1) / 100)
+
+        progress_bar.empty()
+        status_text.empty()
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state["_generate_ext30_fe_requested"] = False
+        else:
+            st.success(f"Successfully generated {len(all_generated_configs)} configurations (fixed endpoints)!")
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                successful_points = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, successful_points)
+                config_num = config.get("config_number", 0)
+                deviations.append((config_num, pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top_3 = deviations[:3]
+
+            st.session_state["_generate_ext30_fe_results"] = top_3
+            st.session_state["_ext30_fe_full_points_plot"] = _fe_full_points
+            st.session_state["_ext30_fe_full_vals_plot"] = _fe_full_vals
+            st.rerun()
+    finally:
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _fe_saved
 
 # ============= Generate 100 configs × 1000 iterations — half timestamps (ext30_half) ============
 if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
@@ -7813,6 +7968,314 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         st.session_state["_generate_ext30_results"] = None
         st.session_state.pop("_ext30_full_points_plot", None)
         st.session_state.pop("_ext30_full_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# ============= Display results for ext30_fe (fixed endpoints, top 3, with GIF) ============
+if st.session_state.get("_generate_ext30_fe_results", None):
+    _fe_top3 = st.session_state["_generate_ext30_fe_results"]
+    _fe_display_points = st.session_state.get("_ext30_fe_full_points_plot", all_points_plot)
+    _fe_display_vals = st.session_state.get("_ext30_fe_full_vals_plot", all_vals_plot)
+
+    st.markdown("---")
+    _fe_n_ts = sum(_fe_display_points[oid].shape[0] for oid in sorted(_fe_display_points.keys()))
+    _fe_n_ts_per_obj = {oid: _fe_display_points[oid].shape[0] for oid in sorted(_fe_display_points.keys())}
+    _fe_n_fixed = sum(2 if n > 1 else 1 for n in _fe_n_ts_per_obj.values())
+    st.markdown(f"### Top 3 — Fixed Endpoints (100 configs, 1000 iter) — {list(_fe_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"""
+**Generation settings**: 100 configurations × 1000 iterations | **{_fe_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _fe_n_ts_per_obj.items())}).
+**Fixed endpoints**: {_fe_n_fixed} punten (eerste + laatste per object) zijn NIET verplaatst — ze fungeren als ankerpunten.
+
+**Deviation Metrics:**
+- **Perpendicular Variance (m²)**: Variance of perpendicular distances from generated points to the original trajectory.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Each configuration includes an **animated GIF** download showing the trajectory building up over timestamps.""")
+
+    _fe_config_metrics: list[dict[str, Any]] = []
+
+    for _fe_rank, (_fe_cnum, _fe_dev, _fe_cfg) in enumerate(_fe_top3, 1):
+        st.markdown(f"#### Rank {_fe_rank}: Configuration #{_fe_cnum} (Perp. variance: {_fe_dev:.4f} m²)")
+
+        _fe_pdp_variant = _fe_cfg.get("pdp_variant", "fundamental")
+        _fe_iterations = _fe_cfg.get("iterations", "N/A")
+        _fe_threshold_mode = _fe_cfg.get("threshold_mode", "Percentage")
+        _fe_max_threshold = _fe_cfg.get("max_threshold", 0.0)
+
+        _fe_sp = _fe_cfg.get("successful_points", [])
+        _fe_gen_map: dict[int, np.ndarray] = {}
+        for sp in _fe_sp:
+            _fe_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _fe_max_angle = 0.0
+        _fe_max_dist = 0.0
+        _fe_sorted_oids = sorted(_fe_display_points.keys())
+        _fe_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []
+        _fe_ts_data: dict[int, np.ndarray | None] = {}
+        _fe_filtered_counts = {}
+        _fe_gi = 0
+        for oid in _fe_sorted_oids:
+            orig_pts = _fe_display_points[oid]
+            orig_ts = _fe_display_vals[oid] if oid in _fe_display_vals else None
+            n_pts = orig_pts.shape[0]
+            gen_pts = orig_pts.copy()
+            for li in range(n_pts):
+                gi = _fe_gi + li
+                if gi in _fe_gen_map:
+                    gen_pts[li] = _fe_gen_map[gi]
+            _fe_all_plot_data.append((orig_pts, gen_pts))
+            _fe_ts_data[oid] = orig_ts
+            _fe_filtered_counts[oid] = n_pts
+
+            if orig_pts.shape[0] > 1:
+                for i in range(1, orig_pts.shape[0]):
+                    orig_dx = orig_pts[i, 0] - orig_pts[i-1, 0]
+                    orig_dy = orig_pts[i, 1] - orig_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
+                    angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    _fe_max_angle = max(_fe_max_angle, angle_diff)
+                    dist_diff = abs(np.linalg.norm([gen_dx, gen_dy]) - np.linalg.norm([orig_dx, orig_dy]))
+                    _fe_max_dist = max(_fe_max_dist, dist_diff)
+            _fe_gi += n_pts
+
+        _fe_config_metrics.append({
+            "config_num": _fe_cnum,
+            "rank": _fe_rank,
+            "perp_variance": _fe_dev,
+            "max_angle_deviation": _fe_max_angle,
+            "max_distance_deviation": _fe_max_dist,
+        })
+
+        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+        _mc1.metric("Perp. Variance", f"{_fe_dev:.4f} m²")
+        _mc2.metric("Max Angle Δ", f"{_fe_max_angle:.1f}°")
+        _mc3.metric("Max Distance Δ", f"{_fe_max_dist:.2f}m")
+        _mc4.metric("Iterations", f"{_fe_iterations}")
+
+        # ---------- Static trajectory plot ----------
+        _fe_max_dev_dist = 0.0
+        _fe_max_dev_orig = np.array([0.0, 0.0])
+        _fe_max_dev_gen = np.array([0.0, 0.0])
+        for idx_oid, oid in enumerate(_fe_sorted_oids):
+            orig_pts, g_pts = _fe_all_plot_data[idx_oid]
+            for li in range(orig_pts.shape[0]):
+                d = float(np.linalg.norm(g_pts[li] - orig_pts[li]))
+                if d > _fe_max_dev_dist:
+                    _fe_max_dev_dist = d
+                    _fe_max_dev_orig = orig_pts[li].copy()
+                    _fe_max_dev_gen = g_pts[li].copy()
+
+        _fe_all_x: list[float] = []
+        _fe_all_y: list[float] = []
+        for orig_pts, g_pts in _fe_all_plot_data:
+            _fe_all_x.extend(orig_pts[:, 0].tolist())
+            _fe_all_x.extend(g_pts[:, 0].tolist())
+            _fe_all_y.extend(orig_pts[:, 1].tolist())
+            _fe_all_y.extend(g_pts[:, 1].tolist())
+
+        _fe_x_lo = min(_fe_all_x) - max((max(_fe_all_x) - min(_fe_all_x)) * 0.05, 1.0)
+        _fe_x_hi = max(_fe_all_x) + max((max(_fe_all_x) - min(_fe_all_x)) * 0.05, 1.0)
+        _fe_y_lo = min(_fe_all_y) - max((max(_fe_all_y) - min(_fe_all_y)) * 0.08, 0.5)
+        _fe_y_hi = max(_fe_all_y) + max((max(_fe_all_y) - min(_fe_all_y)) * 0.08, 0.5)
+
+        _fe_dx = _fe_x_hi - _fe_x_lo
+        _fe_dy = _fe_y_hi - _fe_y_lo
+        _fe_target_ratio = 1.3
+        if _fe_dx > _fe_dy * _fe_target_ratio:
+            _fe_needed_dy = _fe_dx / _fe_target_ratio
+            _fe_pad = (_fe_needed_dy - _fe_dy) / 2
+            _fe_y_lo -= _fe_pad
+            _fe_y_hi += _fe_pad
+            _fe_dy = _fe_needed_dy
+        elif _fe_dy * _fe_target_ratio > _fe_dx:
+            _fe_needed_dx = _fe_dy * _fe_target_ratio
+            _fe_pad = (_fe_needed_dx - _fe_dx) / 2
+            _fe_x_lo -= _fe_pad
+            _fe_x_hi += _fe_pad
+            _fe_dx = _fe_needed_dx
+
+        _fe_fig_w = 10.0
+        _fe_fig_h = _fe_fig_w * (_fe_dy / _fe_dx) if _fe_dx > 0 else 7.5
+        _fe_fig_h = max(3.0, min(_fe_fig_h, 7.5))
+
+        fig_static = Figure(figsize=(_fe_fig_w, _fe_fig_h), dpi=150)
+        ax_s = fig_static.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_oid, oid in enumerate(_fe_sorted_oids):
+            orig_pts, g_pts = _fe_all_plot_data[idx_oid]
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            color = f"C{oid}"
+            ts_filt = _fe_ts_data.get(oid, None)
+            expected_dt = 1
+            if orig_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(orig_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        ax_s.plot([orig_pts[i, 0], orig_pts[i+1, 0]], [orig_pts[i, 1], orig_pts[i+1, 1]],
+                                  linewidth=1.0, color=color, alpha=0.3, linestyle='--',
+                                  label=(f"{label} original" if i == 0 and idx_oid == 0 else None))
+            if g_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(g_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        ax_s.plot([g_pts[i, 0], g_pts[i+1, 0]], [g_pts[i, 1], g_pts[i+1, 1]],
+                                  linewidth=1.5, color=color, alpha=1.0,
+                                  label=(f"{label} generated" if i == 0 and idx_oid == 0 else None))
+            # Mark fixed endpoints with a distinctive marker
+            if orig_pts.shape[0] > 0:
+                ax_s.scatter([orig_pts[0, 0], orig_pts[-1, 0]], [orig_pts[0, 1], orig_pts[-1, 1]],
+                             marker='D', s=60, color=color, edgecolors='black', linewidths=0.8,
+                             zorder=5, label=(f"{label} fixed EP" if idx_oid == 0 else None))
+        ax_s.annotate(f"max Δ={_fe_max_dev_dist:.2f}m", xy=(_fe_max_dev_gen[0], _fe_max_dev_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_fe_x_lo, _fe_x_hi)
+        ax_s.set_ylim(_fe_y_lo, _fe_y_hi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        _fe_ts_per_o = _fe_filtered_counts
+        _fe_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _fe_ts_per_o.items())
+        ax_s.set_title(f"Config #{_fe_cnum} (fixed EP) — PV={_fe_dev:.4f} m² — {_fe_ts_info} timestamps")
+        fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        _buf_s = io.BytesIO()
+        fig_static.savefig(_buf_s, format='png', dpi=150)
+        _buf_s.seek(0)
+        st.image(_buf_s, use_container_width=True)
+
+        # ---------- Animated GIF ----------
+        _fe_all_ts: list[float] = []
+        for oid in _fe_sorted_oids:
+            _fe_all_ts.extend(_fe_display_vals[oid].tolist())
+        _fe_unique_ts = sorted(set(_fe_all_ts))
+        _fe_n_frames = len(_fe_unique_ts)
+
+        _fe_gif_xmin = _fe_x_lo
+        _fe_gif_xmax = _fe_x_hi
+        _fe_gif_ymin = _fe_y_lo
+        _fe_gif_ymax = _fe_y_hi
+        _fe_gif_dx = _fe_dx
+        _fe_gif_dy = _fe_dy
+        _fe_gif_fw = _fe_fig_w
+        _fe_gif_fh = _fe_fig_h
+
+        _fe_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _fe_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _fe_gi2 = 0
+        for oid in _fe_sorted_oids:
+            n_pts = _fe_display_points[oid].shape[0]
+            vals = _fe_display_vals[oid]
+            _fe_orig_by_obj[oid] = []
+            _fe_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_val = float(vals[li])
+                orig_coord = _fe_display_points[oid][li]
+                gen_coord = _fe_gen_map.get(_fe_gi2 + li, orig_coord)
+                _fe_orig_by_obj[oid].append((t_val, orig_coord))
+                _fe_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
+            _fe_gi2 += n_pts
+
+        _fe_gif_frames: list[PILImage.Image] = []
+        _fe_gif_progress = st.progress(0)
+        _fe_gif_status = st.empty()
+
+        for frame_idx, t_cutoff in enumerate(_fe_unique_ts):
+            _fe_gif_status.text(f"Rendering GIF frame {frame_idx + 1}/{_fe_n_frames} (t ≤ {t_cutoff:g})...")
+            fig_frame = Figure(figsize=(_fe_gif_fw, _fe_gif_fh), dpi=150)
+            ax_f = fig_frame.add_subplot(111)
+            ax_f.set_xlim(_fe_gif_xmin, _fe_gif_xmax)
+            ax_f.set_ylim(_fe_gif_ymin, _fe_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            _fe_ts_per_o2 = {oid: _fe_display_points[oid].shape[0] for oid in _fe_sorted_oids}
+            _fe_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _fe_ts_per_o2.items())
+            ax_f.set_title(f"Config #{_fe_cnum} (fixed EP) — t ≤ {t_cutoff:g} — {_fe_ts_info2} ts  (PV={_fe_dev:.4f} m²)", fontsize=9)
+
+            for idx_oid, oid in enumerate(_fe_sorted_oids):
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                orig_pts_up = [coord for (t_val, coord) in _fe_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    ax_f.plot(orig_arr[:, 0], orig_arr[:, 1], linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig")
+                gen_pts_up = [coord for (t_val, coord) in _fe_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    ax_f.plot(gen_arr[:, 0], gen_arr[:, 1], linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen")
+                # Show fixed endpoints as diamonds in every frame
+                _fe_ep_pts = _fe_display_points[oid]
+                if _fe_ep_pts.shape[0] > 0:
+                    _fe_ep_show = []
+                    if float(_fe_display_vals[oid][0]) <= t_cutoff:
+                        _fe_ep_show.append(_fe_ep_pts[0])
+                    if float(_fe_display_vals[oid][-1]) <= t_cutoff:
+                        _fe_ep_show.append(_fe_ep_pts[-1])
+                    if _fe_ep_show:
+                        _fe_ep_arr = np.array(_fe_ep_show)
+                        ax_f.scatter(_fe_ep_arr[:, 0], _fe_ep_arr[:, 1], marker='D', s=50, color=color,
+                                     edgecolors='black', linewidths=0.7, zorder=5)
+
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_frame.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+
+            _buf_frame = io.BytesIO()
+            fig_frame.savefig(_buf_frame, format='png', dpi=150)
+            _buf_frame.seek(0)
+            _fe_gif_frames.append(PILImage.open(_buf_frame).copy())
+            plt.close(fig_frame)
+
+            _fe_gif_progress.progress((frame_idx + 1) / _fe_n_frames)
+
+        _fe_gif_progress.empty()
+        _fe_gif_status.empty()
+
+        if _fe_gif_frames:
+            _fe_gif_buf = io.BytesIO()
+            _fe_durations = [GIF_FRAME_DURATION_MS] * len(_fe_gif_frames)
+            if _fe_durations:
+                _fe_durations[-1] = GIF_LAST_FRAME_PAUSE_MS
+            _fe_gif_frames[0].save(
+                _fe_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_fe_gif_frames[1:],
+                duration=_fe_durations,
+                loop=0,
+            )
+            _fe_gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_fe_cnum} (fixed EP)",
+                data=_fe_gif_buf,
+                file_name=f"config_{_fe_cnum}_fixed_ep_animation.gif",
+                mime="image/gif",
+                key=f"dl_gif_ext30_fe_{_fe_rank}",
+            )
+
+        st.markdown("---")
+
+    if _fe_config_metrics:
+        st.markdown("#### Summary (Fixed Endpoints)")
+        _fe_df = pd.DataFrame(_fe_config_metrics)
+        st.dataframe(_fe_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "perp_variance": "Perp. Variance (m²)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)",
+            }
+        ), use_container_width=True)
+
+    if st.button("Clear Fixed-EP Results", key="clear_ext30_fe_results"):
+        st.session_state["_generate_ext30_fe_requested"] = False
+        st.session_state["_generate_ext30_fe_results"] = None
+        st.session_state.pop("_ext30_fe_full_points_plot", None)
+        st.session_state.pop("_ext30_fe_full_vals_plot", None)
         st.cache_data.clear()
         st.rerun()
 
