@@ -26,6 +26,7 @@ from pdp_utils.core import (
     COORD_CSV_PRECISION,
     OBJECT_LABELS,
     SuccessfulPoint,
+    IncrementalPDPChecker,
 )
 from pdp_utils.config import LANE_CONFIGURATIONS
 from pdp_utils.data_loading import to_numeric_series, extract_points_from_df
@@ -4064,7 +4065,8 @@ def run_multipoint_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
-    max_search_steps: int = 7
+    max_search_steps: int = 7,
+    pdp_checker: Optional[IncrementalPDPChecker] = None,
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
     Run one iteration of multi-point generation.
@@ -4130,50 +4132,57 @@ def run_multipoint_iteration(
             new_y = np.clip(parent_pt[1] + dy, COORD_MIN_Y, COORD_MAX_Y)
             candidate_positions[idx] = np.array([new_x, new_y])
         
-        # Build config with candidate positions and check PDP
-        test_config = build_current_config(candidate_positions)
-        
-        # Get both threshold parameters
-        _thresh, _max_mm = get_threshold_params()
-        
-        # Apply buffer/rough parameters only for variants that use them
-        if pdp_variant in ["buffer", "bufferrough", "realistic"]:
-            same_d1, same_d2 = check_pdp_match(
-                all_pts_flat,
-                test_config,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0,
-                rough_y=rough_y if pdp_variant in ["rough", "bufferrough", "realistic"] else 0.0,
-                match_threshold=_thresh,
-                max_mismatches=_max_mm
-            )
+        # --- PDP Check ---
+        if pdp_checker is not None:
+            # Incremental path: O(k*N) instead of O(N²)
+            _pdp_saved = pdp_checker.save_state_for_indices(list(candidate_positions.keys()))
+            pdp_checker.update_points(candidate_positions)
+            same_d1, same_d2 = pdp_checker.check_match()
+            success = same_d1 and same_d2
+            if not success:
+                pdp_checker.restore_saved(_pdp_saved)
         else:
-            # For fundamental and rough variants
-            same_d1, same_d2 = check_pdp_match(
-                all_pts_flat,
-                test_config,
-                pdp_variant=pdp_variant,
-                buffer_x=0.0,
-                buffer_y=0.0,
-                rough_x=rough_x if pdp_variant == "rough" else 0.0,
-                rough_y=rough_y if pdp_variant == "rough" else 0.0,
-                match_threshold=_thresh,
-                max_mismatches=_max_mm
-            )
-        
-        
-        # For PDP, BOTH d1 AND d2 must match (regardless of number of objects)
-        success = same_d1 and same_d2
+            # Original path: build full config and check O(N²)
+            test_config = build_current_config(candidate_positions)
+            _thresh, _max_mm = get_threshold_params()
+            if pdp_variant in ["buffer", "bufferrough", "realistic"]:
+                same_d1, same_d2 = check_pdp_match(
+                    all_pts_flat,
+                    test_config,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x if pdp_variant in ["rough", "bufferrough"] else 0.0,
+                    rough_y=rough_y if pdp_variant in ["rough", "bufferrough", "realistic"] else 0.0,
+                    match_threshold=_thresh,
+                    max_mismatches=_max_mm
+                )
+            else:
+                same_d1, same_d2 = check_pdp_match(
+                    all_pts_flat,
+                    test_config,
+                    pdp_variant=pdp_variant,
+                    buffer_x=0.0,
+                    buffer_y=0.0,
+                    rough_x=rough_x if pdp_variant == "rough" else 0.0,
+                    rough_y=rough_y if pdp_variant == "rough" else 0.0,
+                    match_threshold=_thresh,
+                    max_mismatches=_max_mm
+                )
+            success = same_d1 and same_d2
         
         if success:
             # Success! Add all candidate points to successful_points (with damping applied)
+            if pdp_checker is not None:
+                # Undo candidate positions, apply damped positions instead
+                pdp_checker.restore_saved(_pdp_saved)
             iteration_num = len(successful_points) // max(1, len(selected_indices))
+            damped_map: dict[int, np.ndarray] = {}
             for idx, new_pt in candidate_positions.items():
                 parent_pt = parent_positions[idx]
                 # Apply random damping factor to reduce distance from parent
                 damped_pt = apply_damping_factor(parent_pt, new_pt)
+                damped_map[idx] = damped_pt
                 sp: SuccessfulPoint = {
                     "point": damped_pt,
                     "parent_idx": idx,  # Original index used as parent
@@ -4182,6 +4191,8 @@ def run_multipoint_iteration(
                     "iteration": iteration_num,
                 }
                 successful_points.append(sp)
+            if pdp_checker is not None:
+                pdp_checker.update_points(damped_map)
             return successful_points, True
         
         # PDP check failed - halve the vectors
@@ -5264,6 +5275,8 @@ def _perpendicular_variance(
     generated point the shortest (perpendicular) distance to that polyline is
     calculated.  The *variance* of all those distances (across all objects) is
     returned as a single scalar.
+
+    Uses vectorised NumPy operations to avoid Python-level inner loops.
     """
     # Map global flat index → generated coordinate
     gen_map: dict[int, np.ndarray] = {}
@@ -5275,27 +5288,39 @@ def _perpendicular_variance(
     for oid in sorted(all_points_plot.keys()):
         orig = all_points_plot[oid]
         n = orig.shape[0]
+
+        # Collect generated points that belong to this object
+        gen_pts_for_obj: list[np.ndarray] = []
         for li in range(n):
             gi = global_idx + li
             if gi in gen_map:
-                pt = gen_map[gi]
-                # Shortest distance from pt to the original polyline
-                best = float("inf")
-                for j in range(n - 1):
-                    A = orig[j]
-                    B = orig[j + 1]
-                    AB = B - A
-                    AP = pt - A
-                    ab2 = float(np.dot(AB, AB))
-                    if ab2 < 1e-12:
-                        d = float(np.linalg.norm(AP))
-                    else:
-                        t = max(0.0, min(1.0, float(np.dot(AP, AB)) / ab2))
-                        d = float(np.linalg.norm(pt - (A + t * AB)))
-                    if d < best:
-                        best = d
-                perp_dists.append(best)
+                gen_pts_for_obj.append(gen_map[gi])
         global_idx += n
+
+        if not gen_pts_for_obj or n < 2:
+            continue
+
+        # Vectorised distance computation:
+        #   gen_arr: (K, 2)  — generated points for this object
+        #   A / B  : (M, 2)  — segment endpoints (M = n-1 segments)
+        gen_arr = np.asarray(gen_pts_for_obj)          # (K, 2)
+        A = orig[:-1]                                   # (M, 2)
+        B = orig[1:]                                    # (M, 2)
+        AB = B - A                                      # (M, 2)
+        ab2 = np.sum(AB * AB, axis=1)                   # (M,)
+
+        # AP[k, m, :] = gen_arr[k] - A[m]
+        AP = gen_arr[:, None, :] - A[None, :, :]        # (K, M, 2)
+        # Projection parameter t, clamped to [0, 1]
+        t = np.sum(AP * AB[None, :, :], axis=2) / np.maximum(ab2[None, :], 1e-12)  # (K, M)
+        t = np.clip(t, 0.0, 1.0)
+        # Closest point on each segment
+        closest = A[None, :, :] + t[:, :, None] * AB[None, :, :]  # (K, M, 2)
+        # Distance from each gen point to its closest point on each segment
+        dists = np.linalg.norm(gen_arr[:, None, :] - closest, axis=2)  # (K, M)
+        # Minimum across all segments
+        min_dists = np.min(dists, axis=1)               # (K,)
+        perp_dists.extend(min_dists.tolist())
 
     if len(perp_dists) < 2:
         return 0.0
@@ -5743,10 +5768,21 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
 
         all_generated_configs: list[dict[str, Any]] = []
 
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _ext30_checker = IncrementalPDPChecker(
+            all_pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+
         for config_idx in range(MAX_FILTER_CONFIGS):
+            _ext30_checker.reset_to_original()
             current_points = all_pts_flat.copy()
             successful_points: list[SuccessfulPoint] = []
-            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
 
             for iteration in range(_ext30_iterations):
                 status_text.text(f"Generating configuration {config_idx + 1}/100 | iteration {iteration + 1}/{_ext30_iterations}...")
@@ -5758,6 +5794,7 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
                     buffer_y=buffer_y,
                     rough_x=rough_x,
                     rough_y=rough_y,
+                    pdp_checker=_ext30_checker,
                 )
 
             if successful_points:
@@ -5778,6 +5815,12 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
 
         progress_bar.empty()
         status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS * _ext30_iterations) * 1000:.1f}ms/iter)"
+        )
 
         if not all_generated_configs:
             st.error("No configurations were successfully generated.")
@@ -5883,10 +5926,21 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
 
         all_generated_configs: list[dict[str, Any]] = []
 
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _fe_checker = IncrementalPDPChecker(
+            all_pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+
         for config_idx in range(MAX_FILTER_CONFIGS):
+            _fe_checker.reset_to_original()
             current_points = all_pts_flat.copy()
             successful_points: list[SuccessfulPoint] = []
-            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
 
             for iteration in range(_fe_iterations):
                 status_text.text(f"Fixed-EP config {config_idx + 1}/100 | iter {iteration + 1}/{_fe_iterations}...")
@@ -5898,6 +5952,7 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
                     buffer_y=buffer_y,
                     rough_x=rough_x,
                     rough_y=rough_y,
+                    pdp_checker=_fe_checker,
                 )
 
             if successful_points:
@@ -5918,6 +5973,12 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
 
         progress_bar.empty()
         status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS * _fe_iterations) * 1000:.1f}ms/iter)"
+        )
 
         if not all_generated_configs:
             st.error("No configurations were successfully generated.")
@@ -6125,7 +6186,18 @@ def _run_filtered_ts_generation(
         status_text = st.empty()
         all_generated_configs: list[dict[str, Any]] = []
 
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _filt_checker = IncrementalPDPChecker(
+            pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+
         for config_idx in range(num_configs):
+            _filt_checker.reset_to_original()
             current_points = pts_flat.copy()
             successful_points: list[SuccessfulPoint] = []
             for iteration in range(num_iterations):
@@ -6141,6 +6213,7 @@ def _run_filtered_ts_generation(
                     buffer_y=buffer_y,
                     rough_x=rough_x,
                     rough_y=rough_y,
+                    pdp_checker=_filt_checker,
                 )
             if successful_points:
                 all_generated_configs.append({
@@ -6156,6 +6229,12 @@ def _run_filtered_ts_generation(
 
         progress_bar.empty()
         status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"({_t_gen_elapsed / max(1, num_configs):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, num_configs * num_iterations) * 1000:.1f}ms/iter)"
+        )
     finally:
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = saved
