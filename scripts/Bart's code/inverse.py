@@ -1468,6 +1468,10 @@ if not _t_common:
     halved_timepoints = max(1, n_timepoints // 2)
     default_window = n_timepoints if _is_custom_upload else min(halved_timepoints, n_timepoints)
 
+# Apply pending cfg_k override (ext30/ext30_fe set full timestamps)
+if "_pending_cfg_k" in st.session_state:
+    st.session_state["cfg_k"] = st.session_state.pop("_pending_cfg_k")
+
 # Apply reinsertion preset if pending (must happen BEFORE widgets render)
 if st.session_state.pop("_reinsertion_preset_pending", False):
     st.session_state["cfg_start_t"] = 131
@@ -5394,7 +5398,7 @@ if generate_ext30_btn:
         st.session_state["_cfg_timestamp_step"] = 1
         _needs_rerun = True
     if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["cfg_k"] = n_timepoints
+        st.session_state["_pending_cfg_k"] = n_timepoints
         _needs_rerun = True
     if _needs_rerun:
         st.rerun()
@@ -5406,7 +5410,7 @@ if generate_ext30_fe_btn:
         st.session_state["_cfg_timestamp_step"] = 1
         _needs_rerun = True
     if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["cfg_k"] = n_timepoints
+        st.session_state["_pending_cfg_k"] = n_timepoints
         _needs_rerun = True
     if _needs_rerun:
         st.rerun()
