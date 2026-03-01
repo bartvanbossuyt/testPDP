@@ -280,11 +280,11 @@ data_source = st.radio(
     key="data_source",
     help="""Choose how to load the reference configuration:
 
-â€¢ **Preset configurations**: Load from the built-in 'voorbeeld.csv' file containing 11 predefined configurations.
+• **Preset configurations**: Load from the built-in 'voorbeeld.csv' file containing 11 predefined configurations.
 
-â€¢ **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=k, 1=l), x/y=coordinates.
+• **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=k, 1=l), x/y=coordinates.
 
-â€¢ **Create random configuration**: Generate a random configuration with specified number of points and timestamps. You can then interactively edit the coordinates."""
+• **Create random configuration**: Generate a random configuration with specified number of points and timestamps. You can then interactively edit the coordinates."""
 )
 
 # Initialize variables that will be set based on data source
@@ -1674,11 +1674,11 @@ with st.expander("Advanced Point Selection", expanded=False):
             key="cfg_point_selection_mode",
             help="""How to select points to move in each iteration:
             
-â€¢ **Single point**: Move 1 random point per iteration (default, current behavior)
+• **Single point**: Move 1 random point per iteration (default, current behavior)
 
-â€¢ **Multiple random points**: Move N randomly selected points together
+• **Multiple random points**: Move N randomly selected points together
 
-â€¢ **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
+• **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k or l) and the starting timestamp, then T consecutive timestamps are moved together."""
         )
     
     with ps_col2:
@@ -1689,9 +1689,9 @@ with st.expander("Advanced Point Selection", expanded=False):
             key="cfg_movement_direction",
             help="""How selected points move together:
             
-â€¢ **Same direction**: All points move with the same angle and distance (coherent movement)
+• **Same direction**: All points move with the same angle and distance (coherent movement)
 
-â€¢ **Random directions**: Each point gets its own random angle and distance (independent movement)"""
+• **Random directions**: Each point gets its own random angle and distance (independent movement)"""
         )
     
     # Damping factor settings
@@ -1865,7 +1865,7 @@ with st.expander("PDP Variant Configuration", expanded=False):
                 else:
                     buffer_y = 0.0
                     if needs_realistic:
-                        st.info("â„¹ï¸ 'realistic' uses roughness on y instead of buffer")
+                        st.info("ℹï¸ 'realistic' uses roughness on y instead of buffer")
             else:
                 buffer_x = 0.0
                 buffer_y = 0.0
@@ -1887,7 +1887,7 @@ with st.expander("PDP Variant Configuration", expanded=False):
                 else:
                     rough_x = 0.0
                     if needs_realistic:
-                        st.info("â„¹ï¸ 'realistic' uses buffer on x instead of roughness")
+                        st.info("ℹï¸ 'realistic' uses buffer on x instead of roughness")
                 
                 # Show rough_y for all rough variants including realistic
                 rough_y_default = 0.4 if needs_realistic else 0.8
@@ -1987,10 +1987,10 @@ with anim_col1:
         key="cfg_anim_mode",
         label_visibility="collapsed",
         help=("Choose how the animation advances:\n"
-              "â€¢ **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
-              "â€¢ **Manual step-by-step**: Click to advance each search step manually.\n"
-              "â€¢ **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
-              "â€¢ **Manual config-by-config**: Click to complete one full configuration (all iterations).")
+              "• **Auto-advance**: Automatically moves to the next step after a set time interval.\n"
+              "• **Manual step-by-step**: Click to advance each search step manually.\n"
+              "• **Manual iteration-by-iteration**: Click to complete one full iteration (all search steps until point is placed).\n"
+              "• **Manual config-by-config**: Click to complete one full configuration (all iterations).")
     )
 with anim_col2:
     if anim_mode == "Auto-advance":
@@ -2115,13 +2115,13 @@ if is_any_manual_mode:
         generate_help = "Start generating configurations step-by-step. Click 'Next step' to advance each step manually."
     elif is_manual_iteration_mode:
         prev_label = "Previous"
-        next_label = "â–¶ Complete iteration"
+        next_label = "▶ Complete iteration"
         prev_help = "Click to go back to the previous iteration state."
         next_help = "Click to restore the next iteration." if has_redo_for_labels else "Click to complete the current iteration (finish all search steps and place the point)."
         generate_help = "Start generating configurations. Click 'Complete iteration' to finish each iteration."
     else:  # is_manual_config_mode
         prev_label = "Previous"
-        next_label = "â–¶ Complete config"
+        next_label = "▶ Complete config"
         prev_help = "Click to go back to the previous configuration state."
         next_help = "Click to restore the next configuration." if has_redo_for_labels else "Click to complete the current configuration (finish all remaining iterations)."
         generate_help = "Start generating configurations. Click 'Complete config' to finish each configuration."
@@ -3837,8 +3837,8 @@ def run_binary_iteration(
     
     Binary search strategy:
     1. Start with a point at distance maxdist from the parent point
-    2. If PDP matches â†’ save as ok_point, try to go further by adding delta
-    3. If PDP doesn't match â†’ compute midpoint between ok_point and current point
+    2. If PDP matches → save as ok_point, try to go further by adding delta
+    3. If PDP doesn't match → compute midpoint between ok_point and current point
     4. Repeat for 7 steps, halving delta each time
     5. Final placement is at the last ok_point
     
@@ -4963,14 +4963,14 @@ if animate_btn:
         #   a-f: Choose parent(s), randomize direction, place points at maxdist
         #        Test if all points are on graph (within bounds), retry up to 10x
         #   g: correct_order = parent coordinates (for each selected point)
-        #   h: WAIT, then halve to 0.5Ã—maxdist BEFORE first test
+        #   h: WAIT, then halve to 0.5×maxdist BEFORE first test
         #
         # Steps n=1 to 7:
         #   - Test current positions for order match (ALL n points together!)
         #   - WAIT
         #   - If match: correct_order = current positions
-        #               new_distance = current_distance + 0.5^(n+1) Ã— maxdist
-        #   - If no match: new_distance = current_distance - 0.5^(n+1) Ã— maxdist
+        #               new_distance = current_distance + 0.5^(n+1) × maxdist
+        #   - If no match: new_distance = current_distance - 0.5^(n+1) × maxdist
         #   - Move points and circles to new_distance
         #
         # End:
@@ -5086,7 +5086,7 @@ if animate_btn:
         st.session_state["anim_binary_current_distance"] = current_distance  # Current distance from parent
         st.session_state["anim_binary_correct_order"] = correct_order.copy()  # Last good position (first point)
         st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}  # Multi-point
-        st.session_state["anim_binary_initialized"] = False  # Will halve to 0.5Ã—maxdist first
+        st.session_state["anim_binary_initialized"] = False  # Will halve to 0.5×maxdist first
         st.session_state["diag_rows"] = []
         st.session_state["binary_iteration_summary"] = []
         st.session_state["anim_had_full_match"] = False
@@ -5111,7 +5111,7 @@ if animate_btn:
 
     elif strategy == "linear":
         # ============= LINEAR SEARCH STRATEGY INITIALIZATION =============
-        # Same as binary but decreases by 0.1Ã—maxdist per step instead of binary search
+        # Same as binary but decreases by 0.1×maxdist per step instead of binary search
         logger.debug(f"[DEBUG INIT LINEAR] strategy={strategy}, setting anim_linear_mode=True")
         num_configs_to_generate = num_anim_configs_val
 
@@ -5877,7 +5877,7 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
         _max_possible = MAX_FILTER_CONFIGS * _ext30_iterations
         _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
         st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
             f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
             f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
             f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
@@ -6054,7 +6054,7 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
         _max_possible = MAX_FILTER_CONFIGS * _fe_iterations
         _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
         st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
             f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
             f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
             f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
@@ -6164,7 +6164,7 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
     _max_possible = _ext30h_num_configs * _ext30h_iterations
     _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
     st.info(
-        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
         f"({_t_gen_elapsed / max(1, _ext30h_num_configs):.2f}s/config, "
         f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
         f"Early stopped {_early_stops}/{_ext30h_num_configs} configs — "
@@ -6355,7 +6355,7 @@ def _run_filtered_ts_generation(
         _max_possible = num_configs * num_iterations
         _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
         st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
             f"({_t_gen_elapsed / max(1, num_configs):.2f}s/config, "
             f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
             f"Early stopped {_early_stops}/{num_configs} configs — "
@@ -6764,7 +6764,7 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
     _max_possible = MAX_FILTER_CONFIGS * _c68r_iters
     _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
     st.info(
-        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
         f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
         f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
         f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
@@ -6859,7 +6859,7 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
     _max_possible = MAX_FILTER_CONFIGS * _c68f_iters
     _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
     st.info(
-        f"⏱ Generation took {_t_gen_elapsed:.1f}s total "
+        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
         f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
         f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
         f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
@@ -11327,7 +11327,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
             # This is the "search radius" for the current iteration step
             circle_radius = float(distance)
             
-            # Calculate red dot position: parent + direction Ã— distance
+            # Calculate red dot position: parent + direction × distance
             # Use the movement vector to get the exact direction, place dot at exact distance
             # EXCEPTION: when distance is ~0 (finalized), use stored generated_points directly
             movement_vecs = st.session_state.get("anim_movement_vectors", {})
@@ -11347,7 +11347,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
                     direction = mv_arr / mv_mag
                 else:
                     direction = np.array([1.0, 0.0])
-                # Red dot at parent + direction Ã— circle_radius (exact distance, no clipping)
+                # Red dot at parent + direction × circle_radius (exact distance, no clipping)
                 red_dot_pos = sel_parent_pt + direction * circle_radius
                 logger.debug(f"[DEBUG ARROW] parent={sel_parent_pt}, red_dot={red_dot_pos}, distance={circle_radius:.4f}")
             elif sel_gen_pt is not None:
@@ -11867,7 +11867,7 @@ if pdp_detailed is not None:
             st.markdown(f"**Threshold:** {threshold_display} | **d1 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d2 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
     else:
         # Max mismatches mode
-        threshold_display = f"â‰¤{max_mismatches} mismatches"
+        threshold_display = f"≤{max_mismatches} mismatches"
         st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d2:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
     
     # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
@@ -12488,11 +12488,11 @@ if _should_process_animation:
             # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
             # Algorithm:
             # - Init: all n points at distance maxdist, correct_orders = parent coords, current_distance = maxdist
-            # - Step 0: halve naar 0.5Ã—maxdist BEFORE testing
+            # - Step 0: halve naar 0.5×maxdist BEFORE testing
             # - Steps 1-7: 
             #   - Test ALL n points for combined PDP order match
-            #   - If ALL match: distance += 0.5^(n+1) Ã— maxdist, correct_orders = current positions
-            #   - If any no match: distance -= 0.5^(n+1) Ã— maxdist
+            #   - If ALL match: distance += 0.5^(n+1) × maxdist, correct_orders = current positions
+            #   - If any no match: distance -= 0.5^(n+1) × maxdist
             # - End: place all n points at their correct_order positions
             
             binary_step = int(st.session_state.get("anim_binary_step", 0))
@@ -12569,7 +12569,7 @@ if _should_process_animation:
                 # Simulate all remaining binary search steps (from current step to 7)
                 logger.debug(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
                 
-                # Step 1: halve to 0.5Ã—maxdist if not done yet
+                # Step 1: halve to 0.5×maxdist if not done yet
                 if binary_step == 0:
                     current_distance = 0.5 * maxdist
                     binary_step = 1
@@ -12690,7 +12690,7 @@ if _should_process_animation:
                     else:
                         direction = np.array([1.0, 0.0])  # Fallback direction
                     
-                    # New position: parent + direction Ã— dist
+                    # New position: parent + direction × dist
                     new_pt = parent_pt + direction * dist
                     new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
                     new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
@@ -12732,7 +12732,7 @@ if _should_process_animation:
                 
             elif binary_step == 1:
                 # Step 1: Special case - halve distance FIRST before testing
-                # Current points are at maxdist, halve to 0.5Ã—maxdist
+                # Current points are at maxdist, halve to 0.5×maxdist
                 new_distance = 0.5 * maxdist
                 st.session_state["anim_binary_current_distance"] = new_distance
                 
@@ -12749,8 +12749,8 @@ if _should_process_animation:
                 logger.debug(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
             else:
                 # Steps 2-7: Test current position, then apply +/- formula
-                # delta_term = 0.5^(binary_step) Ã— maxdist
-                # (step 2: 0.5Â², step 3: 0.5Â³, etc.)
+                # delta_term = 0.5^(binary_step) × maxdist
+                # (step 2: 0.5², step 3: 0.5³, etc.)
                 delta_term = (0.5 ** binary_step) * maxdist
                 
                 if current_matches:
@@ -12788,7 +12788,7 @@ if _should_process_animation:
         
         elif linear_mode:
             # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
-            # Algorithm: Decrease distance by 0.1Ã—maxdist per step until ALL n points have order match
+            # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
             # Stop when: (1) all points match, or (2) distance <= 0
             
             linear_step = int(st.session_state.get("anim_linear_step", 0))
@@ -13067,7 +13067,7 @@ if _should_process_animation:
                     else:
                         direction = np.array([1.0, 0.0])
                     
-                    # New position: parent + direction Ã— dist
+                    # New position: parent + direction × dist
                     # NO CLIPPING - all points must be at exact same distance from parent
                     new_pt = parent_pt + direction * dist
                     new_positions[idx] = new_pt
@@ -13596,7 +13596,7 @@ def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict
     """
     Build angle series data from points and timestamps.
     Only calculates angles between consecutive timestamps for the SAME object.
-    e.g., k0â†’k1, k1â†’k2, l0â†’l1, l1â†’l2 (NOT k0â†’l0 or k0â†’k2)
+    e.g., k0→k1, k1→k2, l0→l1, l1→l2 (NOT k0→l0 or k0→k2)
     Returns dict of series_name -> {timestamp_label: angle}
     """
     angle_series: dict[str, dict[str, float]] = {}  # type: ignore[misc]
@@ -13611,7 +13611,7 @@ def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict
             t_from = ts[idx]
             t_to = ts[idx + 1]
             angle = compute_vector_angle(pts[idx], pts[idx + 1])
-            series_name = f"{label}{int(t_from)}â†’{label}{int(t_to)}"
+            series_name = f"{label}{int(t_from)}→{label}{int(t_to)}"
             ts_label = f"t={int(t_from)}"
             if series_name not in angle_series:
                 angle_series[series_name] = {}
@@ -13692,15 +13692,15 @@ if has_generated_data:
                 gen_points_dict, gen_vals_dict, all_timestamps
             )
     
-    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360Â°)
-    # Each line = one vector pair (e.g., k0â†’k1), showing its angle across all configurations
+    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360°)
+    # Each line = one vector pair (e.g., k0→k1), showing its angle across all configurations
     fig_angles = go.Figure()
     
     colors_plotly = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
                      "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
     
     # Get all unique vector pairs from the original angle series
-    # Each series_name is like "k0â†’k1" or "k0â†’l0"
+    # Each series_name is like "k0→k1" or "k0→l0"
     all_vector_pairs = sorted(original_angle_series.keys())
     
     # Get all config numbers and sort them (starting from 1)
@@ -13745,11 +13745,11 @@ if has_generated_data:
         
         # Only add trace if we have data
         if len(x_vals) >= 1:
-            # Show k0â†’k1 by default, hide others (click legend to show)
-            is_visible = (vector_pair == "k0â†’k1")
+            # Show k0→k1 by default, hide others (click legend to show)
+            is_visible = (vector_pair == "k0→k1")
             
             fig_angles.add_trace(go.Scatter(
-                name=f"{vector_pair} (avg={avg_angle:.1f}Â°, Ïƒ={std_angle:.1f}Â°)",
+                name=f"{vector_pair} (avg={avg_angle:.1f}°, σ={std_angle:.1f}°)",
                 x=x_vals,
                 y=y_vals,
                 mode='lines+markers',
@@ -13772,9 +13772,9 @@ if has_generated_data:
     pdp_variants_str = ", ".join(pdp_variants_list) if pdp_variants_list else "fundamental"
     
     fig_angles.update_layout(
-        title=f"Vector Angles (mod 90Â°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
+        title=f"Vector Angles (mod 90°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
         xaxis_title="Configuration",
-        yaxis_title="Angle mod 90Â° (degrees)",
+        yaxis_title="Angle mod 90° (degrees)",
         height=800,  # Twice as high
         showlegend=True,
         legend=dict(
@@ -13811,8 +13811,8 @@ if has_generated_data:
     for vp, stats in sorted(vector_pair_stats.items()):
         stats_data.append({
             "Vector Pair": vp,
-            "Average (Â°)": f"{stats['avg']:.2f}",
-            "Std Dev (Â°)": f"{stats['std']:.2f}",
+            "Average (°)": f"{stats['avg']:.2f}",
+            "Std Dev (°)": f"{stats['std']:.2f}",
             "Count": int(stats['count'])
         })
     if stats_data:
@@ -13831,8 +13831,8 @@ if has_generated_data:
                     angle_table_data.append({
                         "Config": config_num,
                         "Vector": vector_pair,
-                        "Angle (Â°)": f"{angle:.2f}",
-                        "Mod 90Â°": f"{angle_mod90:.2f}"
+                        "Angle (°)": f"{angle:.2f}",
+                        "Mod 90°": f"{angle_mod90:.2f}"
                     })
         if angle_table_data:
             st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
