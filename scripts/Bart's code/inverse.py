@@ -5812,7 +5812,7 @@ if st.session_state.get("_generate_ext30_requested", False) and not st.session_s
                     "max_threshold": max_threshold,
                 })
 
-            progress_bar.progress((config_idx + 1) / 100)
+            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
 
         progress_bar.empty()
         status_text.empty()
@@ -5970,7 +5970,7 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
                     "max_threshold": max_threshold,
                 })
 
-            progress_bar.progress((config_idx + 1) / 100)
+            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
 
         progress_bar.empty()
         status_text.empty()
@@ -6615,7 +6615,7 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
                 "rough_x": _c68r_rx, "rough_y": _c68r_ry,
                 "threshold_mode": mode, "max_threshold": _c68r_max_threshold,
             })
-        progress_bar.progress((config_idx + 1) / 100)
+        progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
 
     progress_bar.empty()
     status_text.empty()
@@ -6684,7 +6684,7 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
                 "rough_x": _c68f_rx, "rough_y": _c68f_ry,
                 "threshold_mode": mode, "max_threshold": _c68f_max_threshold,
             })
-        progress_bar.progress((config_idx + 1) / 100)
+        progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
 
     progress_bar.empty()
     status_text.empty()
