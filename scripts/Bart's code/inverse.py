@@ -1416,7 +1416,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Pre-apply cfg_c for C68 presets BEFORE the widget renders
-if st.session_state.get("_c68r_preset_pending", False) or st.session_state.get("_c68f_preset_pending", False):
+if st.session_state.get("_c68r_preset_pending", False) or st.session_state.get("_c68f_preset_pending", False) or st.session_state.get("_c68rough_preset_pending", False):
     st.session_state["cfg_c"] = 68
 
 sc1, sc2, sc3 = st.columns([1,1,2], gap="small")
@@ -1497,6 +1497,34 @@ if st.session_state.pop("_c68r_preset_pending", False):
     st.session_state["cfg_use_external_points"] = True
     st.session_state["use_external_points"] = True
     # Compute external points at lane centers for config 68
+    _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
+    _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
+    _c68_nlanes = int(_c68_cfg.get("lanes", 2))
+    _c68_cl_y = float(_c68_cfg.get("centerline_y", -5.0))
+    _c68_hw = (_c68_lw * _c68_nlanes) / 2.0
+    st.session_state["external_points"] = [
+        (500.0, round(_c68_cl_y - _c68_hw + (i + 0.5) * _c68_lw, 3))
+        for i in range(_c68_nlanes)
+    ]
+
+# Apply Config 68 Rough preset if pending
+if st.session_state.pop("_c68rough_preset_pending", False):
+    try:
+        n_timepoints
+    except NameError:
+        n_timepoints = len(_t_common) if '_t_common' in locals() else 137
+    st.session_state["cfg_start_t"] = 82
+    st.session_state["cfg_k"] = min(79, n_timepoints)
+    st.session_state["_cfg_timestamp_step"] = 2
+    st.session_state["cfg_pdp_variants"] = ["fundamental"]
+    st.session_state["cfg_buffer_x"] = 0.0
+    st.session_state["cfg_buffer_y"] = 0.0
+    st.session_state["cfg_rough_x"] = 0.30
+    st.session_state["cfg_rough_y"] = 0.30
+    st.session_state["cfg_point_selection_mode"] = "Single point"
+    st.session_state["cfg_movement_direction"] = "Same direction"
+    st.session_state["cfg_use_external_points"] = True
+    st.session_state["use_external_points"] = True
     _c68_cfg = LANE_CONFIGURATIONS.get(68, {})
     _c68_lw = float(_c68_cfg.get("lane_width", 3.0))
     _c68_nlanes = int(_c68_cfg.get("lanes", 2))
@@ -2403,6 +2431,11 @@ with advanced_col2:
         "C68 Fundamental (single-pt, ext pts)",
         key="btn_generate_c68_fundamental",
         help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
+    )
+    generate_c68_rough_btn = st.button(
+        "C68 Rough (single-pt, d1=d2=0.30m)",
+        key="btn_generate_c68_rough",
+        help="Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m on both d1 and d2 | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
     )
 
 # Handle Reset button click for both modes
@@ -5431,6 +5464,11 @@ if generate_c68_fundamental_btn:
     st.session_state["_c68f_preset_pending"] = True
     st.rerun()
 
+if generate_c68_rough_btn:
+    st.session_state["_generate_c68rough_requested"] = True
+    st.session_state["_c68rough_preset_pending"] = True
+    st.rerun()
+
 if generate_half_ts_btn:
     st.session_state["_generate_half_ts_requested"] = True
     st.session_state["_generate_half_ts_results"] = None
@@ -6882,6 +6920,101 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
             deviations.append((config.get("config_number", 0), pv, config))
         deviations.sort(key=lambda x: x[1], reverse=True)
         st.session_state["_generate_c68f_results"] = deviations[:10]
+        st.rerun()
+
+# ── C68 Rough generation loop ──
+if st.session_state.get("_generate_c68rough_requested", False) and not st.session_state.get("_generate_c68rough_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configs (C68 Rough d1=d2=0.30m, 2500 iter each)...")
+    st.caption("Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m | External pts at lane centers")
+
+    _c68rough_pdp = "fundamental"
+    _c68rough_bx, _c68rough_by = 0.0, 0.0
+    _c68rough_rx, _c68rough_ry = 0.30, 0.30
+    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+    _c68rough_max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+    _c68rough_iters = 2500
+
+    # Freeze first and last timestamp per object
+    _frozen = set()
+    _gi = 0
+    for oid in sorted(all_points_plot.keys()):
+        n_pts = all_points_plot[oid].shape[0]
+        if n_pts > 0:
+            _frozen.add(_gi)
+            _frozen.add(_gi + n_pts - 1)
+        _gi += n_pts
+    st.session_state["_frozen_endpoints"] = _frozen
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    all_generated_configs: list[dict[str, Any]] = []
+
+    _t_gen_start = time.perf_counter()
+    _total_iters = 0
+    _early_stops = 0
+    for config_idx in range(MAX_FILTER_CONFIGS):
+        current_points = all_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        _stagnant = 0
+        _iters_used = _c68rough_iters
+        for iteration in range(_c68rough_iters):
+            status_text.text(f"C68 Rough — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68rough_iters}")
+            _sp_before = len(successful_points)
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=_c68rough_pdp,
+                buffer_x=_c68rough_bx, buffer_y=_c68rough_by,
+                rough_x=_c68rough_rx, rough_y=_c68rough_ry,
+            )
+            _n_added = len(successful_points) - _sp_before
+            if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                _stagnant += 1
+            else:
+                _stagnant = 0
+            if _stagnant >= EARLY_STOP_PATIENCE:
+                _iters_used = iteration + 1
+                _early_stops += 1
+                break
+        _total_iters += _iters_used
+        if successful_points:
+            all_generated_configs.append({
+                "successful_points": successful_points,
+                "config_number": config_idx + 1,
+                "pdp_variant": _c68rough_pdp,
+                "iterations": _iters_used,
+                "buffer_x": _c68rough_bx, "buffer_y": _c68rough_by,
+                "rough_x": _c68rough_rx, "rough_y": _c68rough_ry,
+                "threshold_mode": mode, "max_threshold": _c68rough_max_threshold,
+            })
+        progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
+
+    progress_bar.empty()
+    status_text.empty()
+    _t_gen_elapsed = time.perf_counter() - _t_gen_start
+    _max_possible = MAX_FILTER_CONFIGS * _c68rough_iters
+    _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+    st.info(
+        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+        f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+        f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+        f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
+        f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+    )
+    st.session_state.pop("_frozen_endpoints", None)
+
+    if not all_generated_configs:
+        st.error("No configurations were successfully generated.")
+        st.session_state["_generate_c68rough_requested"] = False
+    else:
+        st.success(f"Generated {len(all_generated_configs)} configs!")
+        deviations: list[tuple[int, float, dict[str, Any]]] = []
+        for config in all_generated_configs:
+            pv = _perpendicular_variance(all_points_plot, config.get("successful_points", []))
+            deviations.append((config.get("config_number", 0), pv, config))
+        deviations.sort(key=lambda x: x[1], reverse=True)
+        st.session_state["_generate_c68rough_results"] = deviations[:10]
         st.rerun()
 
 # Display results if they exist
@@ -9945,6 +10078,17 @@ if st.session_state.get("_generate_c68f_results", None):
         clear_key="clear_c68f_results",
         requested_key="_generate_c68f_requested",
         results_key="_generate_c68f_results",
+    )
+
+# Display C68 Rough results
+if st.session_state.get("_generate_c68rough_results", None):
+    _display_top_n_with_gif(
+        results=st.session_state["_generate_c68rough_results"],
+        section_title="Top 10 — Config 68 Rough d1=d2=0.30m (100 configs × 2500 iter)",
+        section_description="Config 68 | t=82..160 step 2 | Single point | fundamental + rough 0.30m on d1 and d2 | External pts at lane centers",
+        clear_key="clear_c68rough_results",
+        requested_key="_generate_c68rough_requested",
+        results_key="_generate_c68rough_results",
     )
 
 # ============= Drawing (without gridlines) ============
