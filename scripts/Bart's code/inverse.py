@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 import plotly.graph_objects as go  # type: ignore[import-untyped]
 from scipy.interpolate import CubicSpline  # type: ignore[import-untyped]
+from scipy.spatial.distance import pdist  # type: ignore[import-untyped]
 
 from pdp_utils.core import (
     COORD_DISPLAY_PRECISION,
@@ -3217,15 +3218,10 @@ else:
     all_point_arrays = [pts for pts in all_points_plot.values() if pts.shape[0] > 0]
     
     if len(all_point_arrays) > 1:
-        # Calculate pairwise distances between all point groups
+        # Calculate max pairwise distance — vectorized O(n²) via scipy
         all_pts = np.vstack(all_point_arrays)
-        pairwise_dists: list[float] = []
-        for i in range(all_pts.shape[0]):
-            for j in range(i + 1, all_pts.shape[0]):
-                d: float = float(np.hypot(all_pts[i, 0] - all_pts[j, 0], 
-                                          all_pts[i, 1] - all_pts[j, 1]))
-                pairwise_dists.append(d)
-        maxdist = max(pairwise_dists) if pairwise_dists else DEFAULT_MAXDIST_FALLBACK
+        pw = pdist(all_pts)  # condensed distance matrix, Euclidean by default
+        maxdist = float(pw.max()) if pw.size > 0 else DEFAULT_MAXDIST_FALLBACK
     else:
         maxdist = DEFAULT_MAXDIST_FALLBACK  # Default fallback
 
