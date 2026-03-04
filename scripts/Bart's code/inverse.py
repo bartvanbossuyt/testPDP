@@ -37,6 +37,30 @@ from pdp_utils.order_comparison import (
     check_pdp_match_frenet_detailed,
 )
 from pdp_utils.frenet_coordinates import FrenetFrame
+from pdp_utils.lane_geometry import (
+    safe_normalize as _safe_normalize_mod,
+    calculate_vehicle_speeds as _calculate_vehicle_speeds_mod,
+    determine_driving_direction as _determine_driving_direction_mod,
+    vehicles_same_direction as _vehicles_same_direction_mod,
+    offset_polyline as _offset_polyline_mod,
+    lane_polylines_bounds as _lane_polylines_bounds_mod,
+    extract_centerline_from_data as _extract_centerline_mod,
+    build_lane_polylines as _build_lane_polylines_mod,
+)
+from pdp_utils.plotting import (
+    add_lane_polylines_plotly as _add_lane_polylines_plotly,
+    add_intersection_lanes_plotly as _add_intersection_lanes,
+    draw_frenet_axes as _draw_frenet_axes,
+    draw_intersection_lanes_matplotlib as _draw_intersection_lanes_matplotlib,
+    annotate_points,
+)
+from pdp_utils.drawing import (
+    BLUE,
+    ORANGE,
+    LABEL_FS,
+    OBJECT_COLORS,
+    OBJECT_COLORS_PLOTLY,
+)
 
 # Type annotations for imported items with incomplete type stubs
 LANE_CONFIGURATIONS: dict[int, dict[str, Any]]
@@ -2409,6 +2433,16 @@ with advanced_col2:
         key="btn_generate_ext30_rough",
         help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar forceert rough d1=d2=0.30m ongeacht sidebar-instellingen."
     )
+    generate_br_consec_btn = st.button(
+        "100 configs × Top 3 GIF (bufferrough, consec ts)",
+        key="btn_generate_br_consec",
+        help="100 configs × 2500 iter | early stopping | bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2-3) same direction | ALL timestamps"
+    )
+    generate_br_consec_rd_btn = st.button(
+        "100 configs × Top 3 GIF (bufferrough, consec ts, random dirs)",
+        key="btn_generate_br_consec_rd",
+        help="100 configs × 2500 iter | early stopping | bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2-3) RANDOM directions | ALL timestamps"
+    )
 
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
@@ -2840,7 +2874,8 @@ def select_points_for_iteration() -> list[int]:
     prefer_high_d2_change = bool(st.session_state.get("_prefer_high_d2_change_sampling", False))
     d2_weights = _build_d2_change_weights(movable_indices) if prefer_high_d2_change else {}
     
-    point_selection_mode = st.session_state.get("cfg_point_selection_mode", "Single point")
+    # Check for temporary overrides first (used by preset buttons), then fall back to widget keys
+    point_selection_mode = st.session_state.get("_override_point_selection_mode", st.session_state.get("cfg_point_selection_mode", "Single point"))
     
     if point_selection_mode == "Single point":
         # Current default behavior: select one random point
@@ -2859,9 +2894,9 @@ def select_points_for_iteration() -> list[int]:
     
     elif point_selection_mode == "Consecutive time stamps":
         # Select consecutive timestamps from a single user-chosen object
-        selected_object_id = int(st.session_state.get("cfg_consecutive_object_id", 0))
-        num_timestamps = int(st.session_state.get("cfg_group_num_timestamps", 2))
-        first_timestamp_idx = int(st.session_state.get("cfg_consecutive_first_timestamp", 0))
+        selected_object_id = int(st.session_state.get("_override_consecutive_object_id", st.session_state.get("cfg_consecutive_object_id", 0)))
+        num_timestamps = int(st.session_state.get("_override_group_num_timestamps", st.session_state.get("cfg_group_num_timestamps", 2)))
+        first_timestamp_idx = int(st.session_state.get("_override_consecutive_first_timestamp", st.session_state.get("cfg_consecutive_first_timestamp", 0)))
         
         # Get indices for the selected object, sorted by timestamp
         indices_for_object: list[tuple[int, float]] = []  # (flat_idx, timestamp)
@@ -2921,7 +2956,8 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     if not selected_indices:
         return {}
     
-    movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
+    # Check for temporary override first (used by preset buttons), then fall back to widget key
+    movement_direction = st.session_state.get("_override_movement_direction", st.session_state.get("cfg_movement_direction", "Same direction"))
     
     # Get visualization bounds (XLIM, YLIM) to keep points within the graph
     # These are more restrictive than coordinate bounds and ensure points stay visible
@@ -5448,6 +5484,30 @@ if generate_ext30_rough_btn:
     if _needs_rerun:
         st.rerun()
 
+if generate_br_consec_btn:
+    st.session_state["_generate_br_consec_requested"] = True
+    _needs_rerun = False
+    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
+        st.session_state["_cfg_timestamp_step"] = 1
+        _needs_rerun = True
+    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
+        st.session_state["_pending_cfg_k"] = n_timepoints
+        _needs_rerun = True
+    if _needs_rerun:
+        st.rerun()
+
+if generate_br_consec_rd_btn:
+    st.session_state["_generate_br_consec_rd_requested"] = True
+    _needs_rerun = False
+    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
+        st.session_state["_cfg_timestamp_step"] = 1
+        _needs_rerun = True
+    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
+        st.session_state["_pending_cfg_k"] = n_timepoints
+        _needs_rerun = True
+    if _needs_rerun:
+        st.rerun()
+
 if generate_half_ts_btn:
     st.session_state["_generate_half_ts_requested"] = True
     st.session_state["_generate_half_ts_results"] = None
@@ -6100,6 +6160,388 @@ if st.session_state.get("_generate_ext30_rough_requested", False) and not st.ses
         # --- Restore original globals ---
         (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
          all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _r30_saved
+
+# ============= Generate 100 configs × 2500 iter — BUFFERROUGH + CONSECUTIVE TS (br_consec) ============
+if st.session_state.get("_generate_br_consec_requested", False) and not st.session_state.get("_generate_br_consec_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configs (2500 iter, bufferrough, consecutive ts)...")
+    st.caption("bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) same direction | ALL timestamps")
+
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    _brc_sorted_oids_gen = sorted(all_objects_points.keys())
+    _brc_full_points: dict[int, np.ndarray] = {}
+    _brc_full_vals: dict[int, np.ndarray] = {}
+    for _oid in _brc_sorted_oids_gen:
+        _pts, _ts = all_objects_points[_oid]
+        _brc_full_points[_oid] = _pts
+        _brc_full_vals[_oid] = _ts
+
+    _brc_n_ts_per_obj = {oid: _brc_full_points[oid].shape[0] for oid in _brc_sorted_oids_gen}
+    _brc_n_ts_total = sum(_brc_n_ts_per_obj.values())
+    _brc_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _brc_n_ts_per_obj.items())
+    st.info(f"Full timestamp data: {_brc_n_ts_total} total points ({_brc_ts_info_gen})")
+
+    # --- Step 2: Build flattened arrays from full data ---
+    _brc_pts_list: list[np.ndarray] = []
+    _brc_ts_list: list[float] = []
+    _brc_obj_ids: list[int] = []
+    _brc_local_idx: list[int] = []
+    _brc_is_fixed: list[bool] = []
+    for _oid in _brc_sorted_oids_gen:
+        for _li in range(_brc_full_points[_oid].shape[0]):
+            _brc_pts_list.append(_brc_full_points[_oid][_li])
+            _brc_ts_list.append(float(_brc_full_vals[_oid][_li]))
+            _brc_obj_ids.append(_oid)
+            _brc_local_idx.append(_li)
+            _brc_is_fixed.append(False)
+    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _brc_pts_list.append(_ext_pt)
+        _brc_ts_list.append(float(_ext_t))
+        _brc_obj_ids.append(-1)
+        _brc_local_idx.append(len(_brc_pts_list) - 1)
+        _brc_is_fixed.append(True)
+    _brc_pts_flat = np.array(_brc_pts_list) if _brc_pts_list else np.array([]).reshape(0, 2)
+    _brc_ts_flat = np.array(_brc_ts_list) if _brc_ts_list else np.array([])
+
+    # --- Step 3: Temporarily swap global variables AND point selection settings ---
+    _brc_saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = _brc_pts_flat
+    all_ts_flat = _brc_ts_flat
+    all_obj_ids_flat = _brc_obj_ids
+    all_local_idx_flat = _brc_local_idx
+    all_is_fixed_flat = _brc_is_fixed
+    n_total_points = _brc_pts_flat.shape[0]
+    all_points_plot = _brc_full_points
+    all_vals_plot = _brc_full_vals
+
+    # Override point selection using non-widget keys (avoids StreamlitAPIException)
+    st.session_state["_override_point_selection_mode"] = "Consecutive time stamps"
+    st.session_state["_override_movement_direction"] = "Same direction"
+    st.session_state["_override_consecutive_object_id"] = _brc_sorted_oids_gen[0] if _brc_sorted_oids_gen else 0
+    st.session_state["_override_consecutive_first_timestamp"] = 0
+
+    try:
+        # Hardcoded bufferrough parameters
+        pdp_variant = "bufferrough"
+        buffer_x = 1.0
+        buffer_y = 1.0
+        rough_x = 0.30
+        rough_y = 0.30
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _brc_iterations = 2500
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        all_generated_configs: list[dict[str, Any]] = []
+
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _brc_checker = IncrementalPDPChecker(
+            all_pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+        _total_iters = 0
+        _early_stops = 0
+
+        for config_idx in range(MAX_FILTER_CONFIGS):
+            _brc_checker.reset_to_original()
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            _stagnant = 0
+            _iters_used = _brc_iterations
+
+            # Randomly pick group size (2 or 3) per config
+            _brc_group_size = int(np.random.choice([2, 3]))
+            st.session_state["_override_group_num_timestamps"] = _brc_group_size
+
+            # Randomly pick which object to move (cycle through objects)
+            _brc_obj_id = _brc_sorted_oids_gen[config_idx % len(_brc_sorted_oids_gen)]
+            st.session_state["_override_consecutive_object_id"] = _brc_obj_id
+
+            for iteration in range(_brc_iterations):
+                status_text.text(f"bufferrough consec — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_brc_iterations} (obj {_brc_obj_id}, grp {_brc_group_size})...")
+                _sp_before = len(successful_points)
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                    pdp_checker=_brc_checker,
+                )
+                _n_added = len(successful_points) - _sp_before
+                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                    _stagnant += 1
+                else:
+                    _stagnant = 0
+                if _stagnant >= EARLY_STOP_PATIENCE:
+                    _iters_used = iteration + 1
+                    _early_stops += 1
+                    break
+
+            _total_iters += _iters_used
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _iters_used,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                    "group_size": _brc_group_size,
+                    "object_id": _brc_obj_id,
+                })
+
+            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
+
+        progress_bar.empty()
+        status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        _max_possible = MAX_FILTER_CONFIGS * _brc_iterations
+        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
+            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+        )
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state["_generate_br_consec_requested"] = False
+        else:
+            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                successful_points = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, successful_points)
+                config_num = config.get("config_number", 0)
+                deviations.append((config_num, pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top_3 = deviations[:3]
+
+            # Store full-timestamp data alongside results for display
+            st.session_state["_generate_br_consec_results"] = top_3
+            st.session_state["_br_consec_full_points_plot"] = _brc_full_points
+            st.session_state["_br_consec_full_vals_plot"] = _brc_full_vals
+            st.rerun()
+    finally:
+        # --- Restore original globals ---
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _brc_saved
+        # --- Remove override keys (they shadow the widget keys) ---
+        for _k in ["_override_point_selection_mode", "_override_movement_direction",
+                   "_override_consecutive_object_id", "_override_consecutive_first_timestamp",
+                   "_override_group_num_timestamps"]:
+            st.session_state.pop(_k, None)
+
+# ============= Generate 100 configs × 2500 iter — BUFFERROUGH + CONSECUTIVE TS + RANDOM DIRS (br_consec_rd) ============
+if st.session_state.get("_generate_br_consec_rd_requested", False) and not st.session_state.get("_generate_br_consec_rd_results", None):
+    st.markdown("---")
+    st.markdown("### Generating 100 Configs (2500 iter, bufferrough, consec ts, random dirs)...")
+    st.caption("bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) RANDOM directions | ALL timestamps")
+
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    _brcrd_sorted_oids_gen = sorted(all_objects_points.keys())
+    _brcrd_full_points: dict[int, np.ndarray] = {}
+    _brcrd_full_vals: dict[int, np.ndarray] = {}
+    for _oid in _brcrd_sorted_oids_gen:
+        _pts, _ts = all_objects_points[_oid]
+        _brcrd_full_points[_oid] = _pts
+        _brcrd_full_vals[_oid] = _ts
+
+    _brcrd_n_ts_per_obj = {oid: _brcrd_full_points[oid].shape[0] for oid in _brcrd_sorted_oids_gen}
+    _brcrd_n_ts_total = sum(_brcrd_n_ts_per_obj.values())
+    _brcrd_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _brcrd_n_ts_per_obj.items())
+    st.info(f"Full timestamp data: {_brcrd_n_ts_total} total points ({_brcrd_ts_info_gen})")
+
+    # --- Step 2: Build flattened arrays from full data ---
+    _brcrd_pts_list: list[np.ndarray] = []
+    _brcrd_ts_list: list[float] = []
+    _brcrd_obj_ids: list[int] = []
+    _brcrd_local_idx: list[int] = []
+    _brcrd_is_fixed: list[bool] = []
+    for _oid in _brcrd_sorted_oids_gen:
+        for _li in range(_brcrd_full_points[_oid].shape[0]):
+            _brcrd_pts_list.append(_brcrd_full_points[_oid][_li])
+            _brcrd_ts_list.append(float(_brcrd_full_vals[_oid][_li]))
+            _brcrd_obj_ids.append(_oid)
+            _brcrd_local_idx.append(_li)
+            _brcrd_is_fixed.append(False)
+    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _brcrd_pts_list.append(_ext_pt)
+        _brcrd_ts_list.append(float(_ext_t))
+        _brcrd_obj_ids.append(-1)
+        _brcrd_local_idx.append(len(_brcrd_pts_list) - 1)
+        _brcrd_is_fixed.append(True)
+    _brcrd_pts_flat = np.array(_brcrd_pts_list) if _brcrd_pts_list else np.array([]).reshape(0, 2)
+    _brcrd_ts_flat = np.array(_brcrd_ts_list) if _brcrd_ts_list else np.array([])
+
+    # --- Step 3: Temporarily swap global variables AND point selection settings ---
+    _brcrd_saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = _brcrd_pts_flat
+    all_ts_flat = _brcrd_ts_flat
+    all_obj_ids_flat = _brcrd_obj_ids
+    all_local_idx_flat = _brcrd_local_idx
+    all_is_fixed_flat = _brcrd_is_fixed
+    n_total_points = _brcrd_pts_flat.shape[0]
+    all_points_plot = _brcrd_full_points
+    all_vals_plot = _brcrd_full_vals
+
+    # Override point selection using non-widget keys (avoids StreamlitAPIException)
+    st.session_state["_override_point_selection_mode"] = "Consecutive time stamps"
+    st.session_state["_override_movement_direction"] = "Random directions"
+    st.session_state["_override_consecutive_object_id"] = _brcrd_sorted_oids_gen[0] if _brcrd_sorted_oids_gen else 0
+    st.session_state["_override_consecutive_first_timestamp"] = 0
+
+    try:
+        # Hardcoded bufferrough parameters
+        pdp_variant = "bufferrough"
+        buffer_x = 1.0
+        buffer_y = 1.0
+        rough_x = 0.30
+        rough_y = 0.30
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        _brcrd_iterations = 2500
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        all_generated_configs: list[dict[str, Any]] = []
+
+        # --- Create incremental PDP checker for O(k·N) checks ---
+        _thresh_ck, _max_mm_ck = get_threshold_params()
+        _brcrd_checker = IncrementalPDPChecker(
+            all_pts_flat, pdp_variant,
+            buffer_x=buffer_x, buffer_y=buffer_y,
+            rough_x=rough_x, rough_y=rough_y,
+            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+        )
+        _t_gen_start = time.perf_counter()
+        _total_iters = 0
+        _early_stops = 0
+
+        for config_idx in range(MAX_FILTER_CONFIGS):
+            _brcrd_checker.reset_to_original()
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            _stagnant = 0
+            _iters_used = _brcrd_iterations
+
+            # Randomly pick group size (2 or 3) per config
+            _brcrd_group_size = int(np.random.choice([2, 3]))
+            st.session_state["_override_group_num_timestamps"] = _brcrd_group_size
+
+            # Randomly pick which object to move (cycle through objects)
+            _brcrd_obj_id = _brcrd_sorted_oids_gen[config_idx % len(_brcrd_sorted_oids_gen)]
+            st.session_state["_override_consecutive_object_id"] = _brcrd_obj_id
+
+            for iteration in range(_brcrd_iterations):
+                status_text.text(f"bufferrough consec random dirs — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_brcrd_iterations} (obj {_brcrd_obj_id}, grp {_brcrd_group_size})...")
+                _sp_before = len(successful_points)
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                    pdp_checker=_brcrd_checker,
+                )
+                _n_added = len(successful_points) - _sp_before
+                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                    _stagnant += 1
+                else:
+                    _stagnant = 0
+                if _stagnant >= EARLY_STOP_PATIENCE:
+                    _iters_used = iteration + 1
+                    _early_stops += 1
+                    break
+
+            _total_iters += _iters_used
+            if successful_points:
+                all_generated_configs.append({
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _iters_used,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                    "group_size": _brcrd_group_size,
+                    "object_id": _brcrd_obj_id,
+                })
+
+            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
+
+        progress_bar.empty()
+        status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        _max_possible = MAX_FILTER_CONFIGS * _brcrd_iterations
+        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
+            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+        )
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state["_generate_br_consec_rd_requested"] = False
+        else:
+            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                successful_points = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, successful_points)
+                config_num = config.get("config_number", 0)
+                deviations.append((config_num, pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top_3 = deviations[:3]
+
+            # Store full-timestamp data alongside results for display
+            st.session_state["_generate_br_consec_rd_results"] = top_3
+            st.session_state["_br_consec_rd_full_points_plot"] = _brcrd_full_points
+            st.session_state["_br_consec_rd_full_vals_plot"] = _brcrd_full_vals
+            st.rerun()
+    finally:
+        # --- Restore original globals ---
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _brcrd_saved
+        # --- Remove override keys (they shadow the widget keys) ---
+        for _k in ["_override_point_selection_mode", "_override_movement_direction",
+                   "_override_consecutive_object_id", "_override_consecutive_first_timestamp",
+                   "_override_group_num_timestamps"]:
+            st.session_state.pop(_k, None)
 
 # ============= Generate 100 configs × 2500 iterations — FIXED ENDPOINTS (ext30_fe) ============
 if st.session_state.get("_generate_ext30_fe_requested", False) and not st.session_state.get("_generate_ext30_fe_results", None):
@@ -8737,6 +9179,656 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         st.cache_data.clear()
         st.rerun()
 
+# ============= Display results for br_consec (bufferrough + consecutive ts, top 3, with GIF) ============
+if st.session_state.get("_generate_br_consec_results", None):
+    _brc_top3 = st.session_state["_generate_br_consec_results"]
+    _brc_display_points = st.session_state.get("_br_consec_full_points_plot", all_points_plot)
+    _brc_display_vals = st.session_state.get("_br_consec_full_vals_plot", all_vals_plot)
+
+    st.markdown("---")
+    _brc_n_ts = sum(_brc_display_points[oid].shape[0] for oid in sorted(_brc_display_points.keys()))
+    _brc_n_ts_per_obj = {oid: _brc_display_points[oid].shape[0] for oid in sorted(_brc_display_points.keys())}
+    st.markdown(f"### Top 3 Most Deviating (bufferrough, consec ts) — {MAX_FILTER_CONFIGS} configs, 2500 iter — {list(_brc_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"""
+**Generation settings**: {MAX_FILTER_CONFIGS} configurations × 2500 iterations | **{_brc_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _brc_n_ts_per_obj.items())}).
+**Forced PDP settings**: bufferrough | buffer x/y=1.0m | rough x/y=0.30m | Consecutive timestamps (2–3) same direction.
+
+**Deviation Metrics:**
+- **Perpendicular Variance (m²)**: Variance of perpendicular distances from generated points to the original trajectory.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Each configuration includes an **animated GIF** download showing the trajectory building up over timestamps.""")
+
+    _brc_config_metrics: list[dict[str, Any]] = []
+
+    for _brc_rank, (_brc_cnum, _brc_dev, _brc_cfg) in enumerate(_brc_top3, 1):
+        st.markdown(f"#### Rank {_brc_rank}: Configuration #{_brc_cnum} (Perp. variance: {_brc_dev:.4f} m²)")
+
+        _brc_pdp_variant = _brc_cfg.get("pdp_variant", "bufferrough")
+        _brc_iterations = _brc_cfg.get("iterations", "N/A")
+        _brc_threshold_mode = _brc_cfg.get("threshold_mode", "Percentage")
+        _brc_max_threshold = _brc_cfg.get("max_threshold", 0.0)
+        _brc_group_size = _brc_cfg.get("group_size", "?")
+        _brc_obj_id = _brc_cfg.get("object_id", "?")
+
+        # Build generated coordinate map
+        _brc_sp = _brc_cfg.get("successful_points", [])
+        _brc_gen_map: dict[int, np.ndarray] = {}
+        for sp in _brc_sp:
+            _brc_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Calculate angle and distance deviations
+        _brc_max_angle = 0.0
+        _brc_max_dist = 0.0
+        _brc_sorted_oids = sorted(_brc_display_points.keys())
+        _brc_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []
+        _brc_ts_data: dict[int, np.ndarray | None] = {}
+        _brc_filtered_counts = {}
+        _brc_gi = 0
+        for oid in _brc_sorted_oids:
+            orig_pts = _brc_display_points[oid]
+            orig_ts = _brc_display_vals[oid] if oid in _brc_display_vals else None
+            n_pts = orig_pts.shape[0]
+            gen_pts = orig_pts.copy()
+            for li in range(n_pts):
+                gi = _brc_gi + li
+                if gi in _brc_gen_map:
+                    gen_pts[li] = _brc_gen_map[gi]
+            _brc_all_plot_data.append((orig_pts, gen_pts))
+            _brc_ts_data[oid] = orig_ts
+            _brc_filtered_counts[oid] = n_pts
+
+            if orig_pts.shape[0] > 1:
+                for i in range(1, orig_pts.shape[0]):
+                    orig_dx = orig_pts[i, 0] - orig_pts[i-1, 0]
+                    orig_dy = orig_pts[i, 1] - orig_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
+                    angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    _brc_max_angle = max(_brc_max_angle, angle_diff)
+                    dist_diff = abs(np.linalg.norm([gen_dx, gen_dy]) - np.linalg.norm([orig_dx, orig_dy]))
+                    _brc_max_dist = max(_brc_max_dist, dist_diff)
+            _brc_gi += n_pts
+
+        _brc_config_metrics.append({
+            "config_num": _brc_cnum,
+            "rank": _brc_rank,
+            "perp_variance": _brc_dev,
+            "max_angle_deviation": _brc_max_angle,
+            "max_distance_deviation": _brc_max_dist,
+            "group_size": _brc_group_size,
+            "object_id": _brc_obj_id,
+        })
+
+        # Display summary metrics
+        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+        _mc1.metric("Perp. Variance", f"{_brc_dev:.4f} m²")
+        _mc2.metric("Max Angle Δ", f"{_brc_max_angle:.1f}°")
+        _mc3.metric("Max Distance Δ", f"{_brc_max_dist:.2f}m")
+        _mc4.metric("Iterations", f"{_brc_iterations}")
+        _mc5.metric("Group/Obj", f"{_brc_group_size} ts / obj {_brc_obj_id}")
+
+        # ---------- Static trajectory plot (zoomed to max deviation) ----------
+        _brc_max_dev_dist = 0.0
+        _brc_max_dev_orig = np.array([0.0, 0.0])
+        _brc_max_dev_gen = np.array([0.0, 0.0])
+
+        for idx_oid, oid in enumerate(_brc_sorted_oids):
+            orig_pts, g_pts = _brc_all_plot_data[idx_oid]
+            for li in range(orig_pts.shape[0]):
+                d = float(np.linalg.norm(g_pts[li] - orig_pts[li]))
+                if d > _brc_max_dev_dist:
+                    _brc_max_dev_dist = d
+                    _brc_max_dev_orig = orig_pts[li].copy()
+                    _brc_max_dev_gen = g_pts[li].copy()
+
+        _brc_all_x: list[float] = []
+        _brc_all_y: list[float] = []
+        for orig_pts, g_pts in _brc_all_plot_data:
+            _brc_all_x.extend(orig_pts[:, 0].tolist())
+            _brc_all_x.extend(g_pts[:, 0].tolist())
+            _brc_all_y.extend(orig_pts[:, 1].tolist())
+            _brc_all_y.extend(g_pts[:, 1].tolist())
+
+        _brc_x_lo = min(_brc_all_x) - max((max(_brc_all_x) - min(_brc_all_x)) * 0.05, 1.0)
+        _brc_x_hi = max(_brc_all_x) + max((max(_brc_all_x) - min(_brc_all_x)) * 0.05, 1.0)
+        _brc_y_lo = min(_brc_all_y) - max((max(_brc_all_y) - min(_brc_all_y)) * 0.08, 0.5)
+        _brc_y_hi = max(_brc_all_y) + max((max(_brc_all_y) - min(_brc_all_y)) * 0.08, 0.5)
+
+        _brc_dx = _brc_x_hi - _brc_x_lo
+        _brc_dy = _brc_y_hi - _brc_y_lo
+        _brc_target_ratio = 1.3
+        if _brc_dx > _brc_dy * _brc_target_ratio:
+            _brc_needed_dy = _brc_dx / _brc_target_ratio
+            _brc_pad = (_brc_needed_dy - _brc_dy) / 2
+            _brc_y_lo -= _brc_pad
+            _brc_y_hi += _brc_pad
+            _brc_dy = _brc_needed_dy
+        elif _brc_dy * _brc_target_ratio > _brc_dx:
+            _brc_needed_dx = _brc_dy * _brc_target_ratio
+            _brc_pad = (_brc_needed_dx - _brc_dx) / 2
+            _brc_x_lo -= _brc_pad
+            _brc_x_hi += _brc_pad
+            _brc_dx = _brc_needed_dx
+
+        _brc_fig_w = 10.0
+        _brc_fig_h = _brc_fig_w * (_brc_dy / _brc_dx) if _brc_dx > 0 else 7.5
+        _brc_fig_h = max(3.0, min(_brc_fig_h, 7.5))
+
+        fig_static = Figure(figsize=(_brc_fig_w, _brc_fig_h), dpi=150)
+        ax_s = fig_static.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_oid, oid in enumerate(_brc_sorted_oids):
+            orig_pts, g_pts = _brc_all_plot_data[idx_oid]
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            color = f"C{oid}"
+            orig_label = f"{label} original" if idx_oid == 0 else None
+            gen_label = f"{label} generated" if idx_oid == 0 else None
+            ts_filt = _brc_ts_data.get(oid, None)
+            expected_dt = 1
+            if orig_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(orig_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [orig_pts[i, 0], orig_pts[i+1, 0]]
+                        yseg = [orig_pts[i, 1], orig_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.3, linestyle='--', label=orig_label if i == 0 else None)
+            if g_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(g_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [g_pts[i, 0], g_pts[i+1, 0]]
+                        yseg = [g_pts[i, 1], g_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.5, color=color, alpha=1.0, label=gen_label if i == 0 else None)
+        ax_s.annotate(f"max Δ={_brc_max_dev_dist:.2f}m", xy=(_brc_max_dev_gen[0], _brc_max_dev_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_brc_x_lo, _brc_x_hi)
+        ax_s.set_ylim(_brc_y_lo, _brc_y_hi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        _brc_ts_per_o = _brc_filtered_counts
+        _brc_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _brc_ts_per_o.items())
+        ax_s.set_title(f"Config #{_brc_cnum} — PV={_brc_dev:.4f} m² — {_brc_ts_info} timestamps (bufferrough, consec ts)")
+        fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        _buf_s = io.BytesIO()
+        fig_static.savefig(_buf_s, format='png', dpi=150)
+        _buf_s.seek(0)
+        st.image(_buf_s, use_container_width=True)
+
+        # ---------- Animated GIF: trajectory building up over timestamps ----------
+        _brc_all_ts: list[float] = []
+        for oid in _brc_sorted_oids:
+            _brc_all_ts.extend(_brc_display_vals[oid].tolist())
+        _brc_unique_ts = sorted(set(_brc_all_ts))
+        _brc_n_frames = len(_brc_unique_ts)
+
+        _brc_all_x_gif: list[float] = []
+        _brc_all_y_gif: list[float] = []
+        for orig_pts, g_pts in _brc_all_plot_data:
+            _brc_all_x_gif.extend(orig_pts[:, 0].tolist())
+            _brc_all_x_gif.extend(g_pts[:, 0].tolist())
+            _brc_all_y_gif.extend(orig_pts[:, 1].tolist())
+            _brc_all_y_gif.extend(g_pts[:, 1].tolist())
+        _brc_gif_xmin = min(_brc_all_x_gif) - max((max(_brc_all_x_gif) - min(_brc_all_x_gif)) * 0.05, 1.0)
+        _brc_gif_xmax = max(_brc_all_x_gif) + max((max(_brc_all_x_gif) - min(_brc_all_x_gif)) * 0.05, 1.0)
+        _brc_gif_ymin = min(_brc_all_y_gif) - max((max(_brc_all_y_gif) - min(_brc_all_y_gif)) * 0.1, 0.5)
+        _brc_gif_ymax = max(_brc_all_y_gif) + max((max(_brc_all_y_gif) - min(_brc_all_y_gif)) * 0.1, 0.5)
+
+        _brc_gif_dx = _brc_gif_xmax - _brc_gif_xmin
+        _brc_gif_dy = _brc_gif_ymax - _brc_gif_ymin
+        if _brc_gif_dx > _brc_gif_dy * _brc_target_ratio:
+            _g_pad = (_brc_gif_dx / _brc_target_ratio - _brc_gif_dy) / 2
+            _brc_gif_ymin -= _g_pad
+            _brc_gif_ymax += _g_pad
+            _brc_gif_dy = _brc_gif_ymax - _brc_gif_ymin
+        elif _brc_gif_dy * _brc_target_ratio > _brc_gif_dx:
+            _g_pad = (_brc_gif_dy * _brc_target_ratio - _brc_gif_dx) / 2
+            _brc_gif_xmin -= _g_pad
+            _brc_gif_xmax += _g_pad
+            _brc_gif_dx = _brc_gif_xmax - _brc_gif_xmin
+
+        _brc_gif_fw = 10.0
+        _brc_gif_fh = _brc_gif_fw * (_brc_gif_dy / _brc_gif_dx) if _brc_gif_dx > 0 else 7.5
+        _brc_gif_fh = max(3.0, min(_brc_gif_fh, 7.5))
+
+        _brc_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _brc_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _brc_gi2 = 0
+        for oid in _brc_sorted_oids:
+            n_pts = _brc_display_points[oid].shape[0]
+            vals = _brc_display_vals[oid]
+            _brc_orig_by_obj[oid] = []
+            _brc_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_val = float(vals[li])
+                orig_coord = _brc_display_points[oid][li]
+                gen_coord = _brc_gen_map.get(_brc_gi2 + li, orig_coord)
+                _brc_orig_by_obj[oid].append((t_val, orig_coord))
+                _brc_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
+            _brc_gi2 += n_pts
+
+        _brc_gif_frames: list[PILImage.Image] = []
+        _brc_gif_progress = st.progress(0)
+        _brc_gif_status = st.empty()
+
+        for frame_idx, t_cutoff in enumerate(_brc_unique_ts):
+            _brc_gif_status.text(f"Rendering GIF frame {frame_idx + 1}/{_brc_n_frames} (t ≤ {t_cutoff:g})...")
+            fig_frame = Figure(figsize=(_brc_gif_fw, _brc_gif_fh), dpi=150)
+            ax_f = fig_frame.add_subplot(111)
+            ax_f.set_xlim(_brc_gif_xmin, _brc_gif_xmax)
+            ax_f.set_ylim(_brc_gif_ymin, _brc_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            _brc_ts_per_o2 = {oid: _brc_display_points[oid].shape[0] for oid in _brc_sorted_oids}
+            _brc_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _brc_ts_per_o2.items())
+            ax_f.set_title(f"Config #{_brc_cnum} — t ≤ {t_cutoff:g} — {_brc_ts_info2} ts  (PV={_brc_dev:.4f} m², bufferrough consec)", fontsize=9)
+
+            for idx_oid, oid in enumerate(_brc_sorted_oids):
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                orig_pts_up = [coord for (t_val, coord) in _brc_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    ax_f.plot(orig_arr[:, 0], orig_arr[:, 1], linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig")
+                gen_pts_up = [coord for (t_val, coord) in _brc_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    ax_f.plot(gen_arr[:, 0], gen_arr[:, 1], linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen")
+
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_frame.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+
+            _buf_frame = io.BytesIO()
+            fig_frame.savefig(_buf_frame, format='png', dpi=150)
+            _buf_frame.seek(0)
+            _brc_gif_frames.append(PILImage.open(_buf_frame).copy())
+            plt.close(fig_frame)
+
+            _brc_gif_progress.progress((frame_idx + 1) / _brc_n_frames)
+
+        _brc_gif_progress.empty()
+        _brc_gif_status.empty()
+
+        if _brc_gif_frames:
+            _brc_gif_buf = io.BytesIO()
+            _brc_durations = [GIF_FRAME_DURATION_MS] * len(_brc_gif_frames)
+            if _brc_durations:
+                _brc_durations[-1] = GIF_LAST_FRAME_PAUSE_MS
+            _brc_gif_frames[0].save(
+                _brc_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_brc_gif_frames[1:],
+                duration=_brc_durations,
+                loop=0,
+            )
+            _brc_gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_brc_cnum} (bufferrough consec)",
+                data=_brc_gif_buf,
+                file_name=f"config_{_brc_cnum}_bufferrough_consec_animation.gif",
+                mime="image/gif",
+                key=f"dl_gif_brc_{_brc_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _brc_config_metrics:
+        st.markdown("#### Summary (bufferrough, consecutive timestamps)")
+        _brc_df = pd.DataFrame(_brc_config_metrics)
+        st.dataframe(_brc_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation", "group_size", "object_id"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "perp_variance": "Perp. Variance (m²)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)",
+                "group_size": "Group Size",
+                "object_id": "Object",
+            }
+        ), use_container_width=True)
+
+    # Clear button
+    if st.button("Clear Results & Cache (bufferrough consec)", key="clear_br_consec_results"):
+        st.session_state["_generate_br_consec_requested"] = False
+        st.session_state["_generate_br_consec_results"] = None
+        st.session_state.pop("_br_consec_full_points_plot", None)
+        st.session_state.pop("_br_consec_full_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
+# ============= Display results for br_consec_rd (bufferrough + consecutive ts + random dirs, top 3, with GIF) ============
+if st.session_state.get("_generate_br_consec_rd_results", None):
+    _brcrd_top3 = st.session_state["_generate_br_consec_rd_results"]
+    _brcrd_display_points = st.session_state.get("_br_consec_rd_full_points_plot", all_points_plot)
+    _brcrd_display_vals = st.session_state.get("_br_consec_rd_full_vals_plot", all_vals_plot)
+
+    st.markdown("---")
+    _brcrd_n_ts = sum(_brcrd_display_points[oid].shape[0] for oid in sorted(_brcrd_display_points.keys()))
+    _brcrd_n_ts_per_obj = {oid: _brcrd_display_points[oid].shape[0] for oid in sorted(_brcrd_display_points.keys())}
+    st.markdown(f"### Top 3 Most Deviating (bufferrough, consec ts, random dirs) — {MAX_FILTER_CONFIGS} configs, 2500 iter — {list(_brcrd_n_ts_per_obj.values())[0]} timestamps per object")
+    st.markdown(f"""
+**Generation settings**: {MAX_FILTER_CONFIGS} configurations × 2500 iterations | **{_brcrd_n_ts} total points** ({', '.join(f'object {oid}: {n}' for oid, n in _brcrd_n_ts_per_obj.items())}).
+**Forced PDP settings**: bufferrough | buffer x/y=1.0m | rough x/y=0.30m | Consecutive timestamps (2–3) RANDOM directions.
+
+**Deviation Metrics:**
+- **Perpendicular Variance (m²)**: Variance of perpendicular distances from generated points to the original trajectory.
+- **Max Angle Deviation (°)**: Maximum angular difference in trajectory direction between consecutive timestamps.
+- **Max Distance Deviation (m)**: Maximum change in inter-point spacing between consecutive timestamps.
+
+Each configuration includes an **animated GIF** download showing the trajectory building up over timestamps.""")
+
+    _brcrd_config_metrics: list[dict[str, Any]] = []
+
+    for _brcrd_rank, (_brcrd_cnum, _brcrd_dev, _brcrd_cfg) in enumerate(_brcrd_top3, 1):
+        st.markdown(f"#### Rank {_brcrd_rank}: Configuration #{_brcrd_cnum} (Perp. variance: {_brcrd_dev:.4f} m²)")
+
+        _brcrd_pdp_variant = _brcrd_cfg.get("pdp_variant", "bufferrough")
+        _brcrd_iterations = _brcrd_cfg.get("iterations", "N/A")
+        _brcrd_threshold_mode = _brcrd_cfg.get("threshold_mode", "Percentage")
+        _brcrd_max_threshold = _brcrd_cfg.get("max_threshold", 0.0)
+        _brcrd_group_size = _brcrd_cfg.get("group_size", "?")
+        _brcrd_obj_id = _brcrd_cfg.get("object_id", "?")
+
+        # Build generated coordinate map
+        _brcrd_sp = _brcrd_cfg.get("successful_points", [])
+        _brcrd_gen_map: dict[int, np.ndarray] = {}
+        for sp in _brcrd_sp:
+            _brcrd_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        # Calculate angle and distance deviations
+        _brcrd_max_angle = 0.0
+        _brcrd_max_dist = 0.0
+        _brcrd_sorted_oids = sorted(_brcrd_display_points.keys())
+        _brcrd_all_plot_data: list[tuple[np.ndarray, np.ndarray]] = []
+        _brcrd_ts_data: dict[int, np.ndarray | None] = {}
+        _brcrd_filtered_counts = {}
+        _brcrd_gi = 0
+        for oid in _brcrd_sorted_oids:
+            orig_pts = _brcrd_display_points[oid]
+            orig_ts = _brcrd_display_vals[oid] if oid in _brcrd_display_vals else None
+            n_pts = orig_pts.shape[0]
+            gen_pts = orig_pts.copy()
+            for li in range(n_pts):
+                gi = _brcrd_gi + li
+                if gi in _brcrd_gen_map:
+                    gen_pts[li] = _brcrd_gen_map[gi]
+            _brcrd_all_plot_data.append((orig_pts, gen_pts))
+            _brcrd_ts_data[oid] = orig_ts
+            _brcrd_filtered_counts[oid] = n_pts
+
+            if orig_pts.shape[0] > 1:
+                for i in range(1, orig_pts.shape[0]):
+                    orig_dx = orig_pts[i, 0] - orig_pts[i-1, 0]
+                    orig_dy = orig_pts[i, 1] - orig_pts[i-1, 1]
+                    gen_dx = gen_pts[i, 0] - gen_pts[i-1, 0]
+                    gen_dy = gen_pts[i, 1] - gen_pts[i-1, 1]
+                    angle_diff = abs(np.degrees(np.arctan2(gen_dy, gen_dx) - np.arctan2(orig_dy, orig_dx)))
+                    if angle_diff > 180:
+                        angle_diff = 360 - angle_diff
+                    _brcrd_max_angle = max(_brcrd_max_angle, angle_diff)
+                    dist_diff = abs(np.linalg.norm([gen_dx, gen_dy]) - np.linalg.norm([orig_dx, orig_dy]))
+                    _brcrd_max_dist = max(_brcrd_max_dist, dist_diff)
+            _brcrd_gi += n_pts
+
+        _brcrd_config_metrics.append({
+            "config_num": _brcrd_cnum,
+            "rank": _brcrd_rank,
+            "perp_variance": _brcrd_dev,
+            "max_angle_deviation": _brcrd_max_angle,
+            "max_distance_deviation": _brcrd_max_dist,
+            "group_size": _brcrd_group_size,
+            "object_id": _brcrd_obj_id,
+        })
+
+        # Display summary metrics
+        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+        _mc1.metric("Perp. Variance", f"{_brcrd_dev:.4f} m²")
+        _mc2.metric("Max Angle Δ", f"{_brcrd_max_angle:.1f}°")
+        _mc3.metric("Max Distance Δ", f"{_brcrd_max_dist:.2f}m")
+        _mc4.metric("Iterations", f"{_brcrd_iterations}")
+        _mc5.metric("Group/Obj", f"{_brcrd_group_size} ts / obj {_brcrd_obj_id}")
+
+        # ---------- Static trajectory plot (zoomed to max deviation) ----------
+        _brcrd_max_dev_dist = 0.0
+        _brcrd_max_dev_orig = np.array([0.0, 0.0])
+        _brcrd_max_dev_gen = np.array([0.0, 0.0])
+
+        for idx_oid, oid in enumerate(_brcrd_sorted_oids):
+            orig_pts, g_pts = _brcrd_all_plot_data[idx_oid]
+            for li in range(orig_pts.shape[0]):
+                d = float(np.linalg.norm(g_pts[li] - orig_pts[li]))
+                if d > _brcrd_max_dev_dist:
+                    _brcrd_max_dev_dist = d
+                    _brcrd_max_dev_orig = orig_pts[li].copy()
+                    _brcrd_max_dev_gen = g_pts[li].copy()
+
+        _brcrd_all_x: list[float] = []
+        _brcrd_all_y: list[float] = []
+        for orig_pts, g_pts in _brcrd_all_plot_data:
+            _brcrd_all_x.extend(orig_pts[:, 0].tolist())
+            _brcrd_all_x.extend(g_pts[:, 0].tolist())
+            _brcrd_all_y.extend(orig_pts[:, 1].tolist())
+            _brcrd_all_y.extend(g_pts[:, 1].tolist())
+
+        _brcrd_x_lo = min(_brcrd_all_x) - max((max(_brcrd_all_x) - min(_brcrd_all_x)) * 0.05, 1.0)
+        _brcrd_x_hi = max(_brcrd_all_x) + max((max(_brcrd_all_x) - min(_brcrd_all_x)) * 0.05, 1.0)
+        _brcrd_y_lo = min(_brcrd_all_y) - max((max(_brcrd_all_y) - min(_brcrd_all_y)) * 0.08, 0.5)
+        _brcrd_y_hi = max(_brcrd_all_y) + max((max(_brcrd_all_y) - min(_brcrd_all_y)) * 0.08, 0.5)
+
+        _brcrd_dx = _brcrd_x_hi - _brcrd_x_lo
+        _brcrd_dy = _brcrd_y_hi - _brcrd_y_lo
+        _brcrd_target_ratio = 1.3
+        if _brcrd_dx > _brcrd_dy * _brcrd_target_ratio:
+            _brcrd_needed_dy = _brcrd_dx / _brcrd_target_ratio
+            _brcrd_pad = (_brcrd_needed_dy - _brcrd_dy) / 2
+            _brcrd_y_lo -= _brcrd_pad
+            _brcrd_y_hi += _brcrd_pad
+            _brcrd_dy = _brcrd_needed_dy
+        elif _brcrd_dy * _brcrd_target_ratio > _brcrd_dx:
+            _brcrd_needed_dx = _brcrd_dy * _brcrd_target_ratio
+            _brcrd_pad = (_brcrd_needed_dx - _brcrd_dx) / 2
+            _brcrd_x_lo -= _brcrd_pad
+            _brcrd_x_hi += _brcrd_pad
+            _brcrd_dx = _brcrd_needed_dx
+
+        _brcrd_fig_w = 10.0
+        _brcrd_fig_h = _brcrd_fig_w * (_brcrd_dy / _brcrd_dx) if _brcrd_dx > 0 else 7.5
+        _brcrd_fig_h = max(3.0, min(_brcrd_fig_h, 7.5))
+
+        fig_static = Figure(figsize=(_brcrd_fig_w, _brcrd_fig_h), dpi=150)
+        ax_s = fig_static.add_subplot(111)
+        ax_s.set_aspect("equal", adjustable="datalim")
+        for idx_oid, oid in enumerate(_brcrd_sorted_oids):
+            orig_pts, g_pts = _brcrd_all_plot_data[idx_oid]
+            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            color = f"C{oid}"
+            orig_label = f"{label} original" if idx_oid == 0 else None
+            gen_label = f"{label} generated" if idx_oid == 0 else None
+            ts_filt = _brcrd_ts_data.get(oid, None)
+            expected_dt = 1
+            if orig_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(orig_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [orig_pts[i, 0], orig_pts[i+1, 0]]
+                        yseg = [orig_pts[i, 1], orig_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.3, linestyle='--', label=orig_label if i == 0 else None)
+            if g_pts.shape[0] > 1 and ts_filt is not None:
+                for i in range(g_pts.shape[0] - 1):
+                    dt = ts_filt[i+1] - ts_filt[i]
+                    if dt == expected_dt:
+                        xseg = [g_pts[i, 0], g_pts[i+1, 0]]
+                        yseg = [g_pts[i, 1], g_pts[i+1, 1]]
+                        ax_s.plot(xseg, yseg, linewidth=1.5, color=color, alpha=1.0, label=gen_label if i == 0 else None)
+        ax_s.annotate(f"max Δ={_brcrd_max_dev_dist:.2f}m", xy=(_brcrd_max_dev_gen[0], _brcrd_max_dev_gen[1]),
+                      xytext=(10, 10), textcoords='offset points', fontsize=7, color='red',
+                      arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        ax_s.set_xlim(_brcrd_x_lo, _brcrd_x_hi)
+        ax_s.set_ylim(_brcrd_y_lo, _brcrd_y_hi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        _brcrd_ts_per_o = _brcrd_filtered_counts
+        _brcrd_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _brcrd_ts_per_o.items())
+        ax_s.set_title(f"Config #{_brcrd_cnum} — PV={_brcrd_dev:.4f} m² — {_brcrd_ts_info} timestamps (bufferrough, consec ts, random dirs)")
+        fig_static.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+        _buf_s = io.BytesIO()
+        fig_static.savefig(_buf_s, format='png', dpi=150)
+        _buf_s.seek(0)
+        st.image(_buf_s, use_container_width=True)
+
+        # ---------- Animated GIF: trajectory building up over timestamps ----------
+        _brcrd_all_ts: list[float] = []
+        for oid in _brcrd_sorted_oids:
+            _brcrd_all_ts.extend(_brcrd_display_vals[oid].tolist())
+        _brcrd_unique_ts = sorted(set(_brcrd_all_ts))
+        _brcrd_n_frames = len(_brcrd_unique_ts)
+
+        _brcrd_all_x_gif: list[float] = []
+        _brcrd_all_y_gif: list[float] = []
+        for orig_pts, g_pts in _brcrd_all_plot_data:
+            _brcrd_all_x_gif.extend(orig_pts[:, 0].tolist())
+            _brcrd_all_x_gif.extend(g_pts[:, 0].tolist())
+            _brcrd_all_y_gif.extend(orig_pts[:, 1].tolist())
+            _brcrd_all_y_gif.extend(g_pts[:, 1].tolist())
+        _brcrd_gif_xmin = min(_brcrd_all_x_gif) - max((max(_brcrd_all_x_gif) - min(_brcrd_all_x_gif)) * 0.05, 1.0)
+        _brcrd_gif_xmax = max(_brcrd_all_x_gif) + max((max(_brcrd_all_x_gif) - min(_brcrd_all_x_gif)) * 0.05, 1.0)
+        _brcrd_gif_ymin = min(_brcrd_all_y_gif) - max((max(_brcrd_all_y_gif) - min(_brcrd_all_y_gif)) * 0.1, 0.5)
+        _brcrd_gif_ymax = max(_brcrd_all_y_gif) + max((max(_brcrd_all_y_gif) - min(_brcrd_all_y_gif)) * 0.1, 0.5)
+
+        _brcrd_gif_dx = _brcrd_gif_xmax - _brcrd_gif_xmin
+        _brcrd_gif_dy = _brcrd_gif_ymax - _brcrd_gif_ymin
+        if _brcrd_gif_dx > _brcrd_gif_dy * _brcrd_target_ratio:
+            _g_pad = (_brcrd_gif_dx / _brcrd_target_ratio - _brcrd_gif_dy) / 2
+            _brcrd_gif_ymin -= _g_pad
+            _brcrd_gif_ymax += _g_pad
+            _brcrd_gif_dy = _brcrd_gif_ymax - _brcrd_gif_ymin
+        elif _brcrd_gif_dy * _brcrd_target_ratio > _brcrd_gif_dx:
+            _g_pad = (_brcrd_gif_dy * _brcrd_target_ratio - _brcrd_gif_dx) / 2
+            _brcrd_gif_xmin -= _g_pad
+            _brcrd_gif_xmax += _g_pad
+            _brcrd_gif_dx = _brcrd_gif_xmax - _brcrd_gif_xmin
+
+        _brcrd_gif_fw = 10.0
+        _brcrd_gif_fh = _brcrd_gif_fw * (_brcrd_gif_dy / _brcrd_gif_dx) if _brcrd_gif_dx > 0 else 7.5
+        _brcrd_gif_fh = max(3.0, min(_brcrd_gif_fh, 7.5))
+
+        _brcrd_orig_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _brcrd_gen_by_obj: dict[int, list[tuple[float, np.ndarray]]] = {}
+        _brcrd_gi2 = 0
+        for oid in _brcrd_sorted_oids:
+            n_pts = _brcrd_display_points[oid].shape[0]
+            vals = _brcrd_display_vals[oid]
+            _brcrd_orig_by_obj[oid] = []
+            _brcrd_gen_by_obj[oid] = []
+            for li in range(n_pts):
+                t_val = float(vals[li])
+                orig_coord = _brcrd_display_points[oid][li]
+                gen_coord = _brcrd_gen_map.get(_brcrd_gi2 + li, orig_coord)
+                _brcrd_orig_by_obj[oid].append((t_val, orig_coord))
+                _brcrd_gen_by_obj[oid].append((t_val, np.array(gen_coord)))
+            _brcrd_gi2 += n_pts
+
+        _brcrd_gif_frames: list[PILImage.Image] = []
+        _brcrd_gif_progress = st.progress(0)
+        _brcrd_gif_status = st.empty()
+
+        for frame_idx, t_cutoff in enumerate(_brcrd_unique_ts):
+            _brcrd_gif_status.text(f"Rendering GIF frame {frame_idx + 1}/{_brcrd_n_frames} (t ≤ {t_cutoff:g})...")
+            fig_frame = Figure(figsize=(_brcrd_gif_fw, _brcrd_gif_fh), dpi=150)
+            ax_f = fig_frame.add_subplot(111)
+            ax_f.set_xlim(_brcrd_gif_xmin, _brcrd_gif_xmax)
+            ax_f.set_ylim(_brcrd_gif_ymin, _brcrd_gif_ymax)
+            ax_f.set_aspect("equal", adjustable="datalim")
+            ax_f.set_xlabel("d1 / x-as (m)", fontsize=9)
+            ax_f.set_ylabel("d2 / y-as (m)", fontsize=9)
+            _brcrd_ts_per_o2 = {oid: _brcrd_display_points[oid].shape[0] for oid in _brcrd_sorted_oids}
+            _brcrd_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _brcrd_ts_per_o2.items())
+            ax_f.set_title(f"Config #{_brcrd_cnum} — t ≤ {t_cutoff:g} — {_brcrd_ts_info2} ts  (PV={_brcrd_dev:.4f} m², bufferrough consec rand)", fontsize=9)
+
+            for idx_oid, oid in enumerate(_brcrd_sorted_oids):
+                label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+                color = f"C{oid}"
+                orig_pts_up = [coord for (t_val, coord) in _brcrd_orig_by_obj[oid] if t_val <= t_cutoff]
+                if len(orig_pts_up) > 1:
+                    orig_arr = np.array(orig_pts_up)
+                    ax_f.plot(orig_arr[:, 0], orig_arr[:, 1], linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig")
+                gen_pts_up = [coord for (t_val, coord) in _brcrd_gen_by_obj[oid] if t_val <= t_cutoff]
+                if len(gen_pts_up) > 1:
+                    gen_arr = np.array(gen_pts_up)
+                    ax_f.plot(gen_arr[:, 0], gen_arr[:, 1], linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen")
+
+            ax_f.legend(fontsize=7, loc='upper left')
+            fig_frame.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
+
+            _buf_frame = io.BytesIO()
+            fig_frame.savefig(_buf_frame, format='png', dpi=150)
+            _buf_frame.seek(0)
+            _brcrd_gif_frames.append(PILImage.open(_buf_frame).copy())
+            plt.close(fig_frame)
+
+            _brcrd_gif_progress.progress((frame_idx + 1) / _brcrd_n_frames)
+
+        _brcrd_gif_progress.empty()
+        _brcrd_gif_status.empty()
+
+        if _brcrd_gif_frames:
+            _brcrd_gif_buf = io.BytesIO()
+            _brcrd_durations = [GIF_FRAME_DURATION_MS] * len(_brcrd_gif_frames)
+            if _brcrd_durations:
+                _brcrd_durations[-1] = GIF_LAST_FRAME_PAUSE_MS
+            _brcrd_gif_frames[0].save(
+                _brcrd_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_brcrd_gif_frames[1:],
+                duration=_brcrd_durations,
+                loop=0,
+            )
+            _brcrd_gif_buf.seek(0)
+            st.download_button(
+                label=f"Download GIF — Config #{_brcrd_cnum} (bufferrough consec rand dirs)",
+                data=_brcrd_gif_buf,
+                file_name=f"config_{_brcrd_cnum}_bufferrough_consec_randdirs_animation.gif",
+                mime="image/gif",
+                key=f"dl_gif_brcrd_{_brcrd_rank}",
+            )
+
+        st.markdown("---")
+
+    # Summary table
+    if _brcrd_config_metrics:
+        st.markdown("#### Summary (bufferrough, consecutive timestamps, random directions)")
+        _brcrd_df = pd.DataFrame(_brcrd_config_metrics)
+        st.dataframe(_brcrd_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation", "group_size", "object_id"]].rename(
+            columns={
+                "rank": "Rank",
+                "config_num": "Config #",
+                "perp_variance": "Perp. Variance (m²)",
+                "max_angle_deviation": "Max Angle Δ (°)",
+                "max_distance_deviation": "Max Distance Δ (m)",
+                "group_size": "Group Size",
+                "object_id": "Object",
+            }
+        ), use_container_width=True)
+
+    # Clear button
+    if st.button("Clear Results & Cache (bufferrough consec rand dirs)", key="clear_br_consec_rd_results"):
+        st.session_state["_generate_br_consec_rd_requested"] = False
+        st.session_state["_generate_br_consec_rd_results"] = None
+        st.session_state.pop("_br_consec_rd_full_points_plot", None)
+        st.session_state.pop("_br_consec_rd_full_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
 # ============= Display results for ext30_fe (fixed endpoints, top 3, with GIF) ============
 if st.session_state.get("_generate_ext30_fe_results", None):
     _fe_top3 = st.session_state["_generate_ext30_fe_results"]
@@ -10538,59 +11630,7 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
                 alpha=0.6, zorder=1, label='centerline')
         _draw_frenet_axes(ax, centerline, num_arrows=5)
 
-def _draw_frenet_axes(ax: matplotlib.axes.Axes, centerline: np.ndarray, num_arrows: int = 5) -> None:
-    """Draw subtle Frenet coordinate axes (tangent=d1, normal=d2) along the centerline.
-    
-    Args:
-        ax: Matplotlib axes to draw on
-        centerline: (N, 2) array of centerline points
-        num_arrows: Number of arrow pairs to draw along the path
-    """
-    if len(centerline) < 2:
-        return
-    
-    # Compute tangent and normal vectors
-    tangents = np.zeros_like(centerline)
-    tangents[1:-1] = centerline[2:] - centerline[:-2]
-    tangents[0] = centerline[1] - centerline[0]
-    tangents[-1] = centerline[-1] - centerline[-2]
-    
-    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
-    norms[norms < 1e-10] = 1.0
-    tangents = tangents / norms
-    
-    # Normal = rotate tangent 90° counterclockwise
-    normals = np.column_stack([-tangents[:, 1], tangents[:, 0]])
-    
-    # Select evenly spaced points along the centerline
-    indices = np.linspace(0, len(centerline) - 1, num_arrows + 2, dtype=int)[1:-1]
-    
-    # Arrow styling - more visible but still subtle
-    arrow_length = 6.0  # Length of arrows in data units
-    arrow_alpha = 0.7
-    
-    for idx in indices:  # type: ignore[misc]
-        pos = centerline[idx]
-        T = tangents[idx]
-        N = normals[idx]
-        
-        # Draw tangent arrow (d1 direction) - blue, pointing in driving direction
-        ax.arrow(pos[0], pos[1], T[0] * arrow_length, T[1] * arrow_length,  # type: ignore[call-arg]
-                 head_width=1.2, head_length=0.8, fc='#2166ac', ec='#2166ac',
-                 alpha=arrow_alpha, zorder=3, linewidth=0.8)
-        # Small "d1" label
-        label_pos = pos + T * (arrow_length + 2.0)
-        ax.text(label_pos[0], label_pos[1], 'd1', fontsize=7, color='#2166ac',  # type: ignore[call-overload]
-                alpha=arrow_alpha, ha='center', va='center', zorder=3, fontweight='bold')
-        
-        # Draw normal arrow (d2 direction) - red, pointing left (perpendicular)
-        ax.arrow(pos[0], pos[1], N[0] * arrow_length, N[1] * arrow_length,  # type: ignore[call-arg]
-                 head_width=1.2, head_length=0.8, fc='#b2182b', ec='#b2182b',
-                 alpha=arrow_alpha, zorder=3, linewidth=0.8)
-        # Small "d2" label
-        label_pos = pos + N * (arrow_length + 2.0)
-        ax.text(label_pos[0], label_pos[1], 'd2', fontsize=7, color='#b2182b',  # type: ignore[call-overload]
-                alpha=arrow_alpha, ha='center', va='center', zorder=3, fontweight='bold')
+# _draw_frenet_axes is now imported from pdp_utils.plotting
 
 
 def setup_square_axes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
@@ -10626,106 +11666,7 @@ def render_square_matplotlib_figure(
     fig.subplots_adjust(left=0.12, right=0.95, top=0.92, bottom=0.12)
     return fig
 
-BLUE = "C0"
-ORANGE = "C1"
-LABEL_FS = 9
-
-# Colors for all objects (matplotlib style): blue, orange, green, purple, brown, pink, etc.
-OBJECT_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]
-# Matplotlib colors (explicit names for contour plots, same as OBJECT_COLORS but with explicit names)
-OBJECT_COLORS_MPL = OBJECT_COLORS  # Alias for consistency
-# Plotly-compatible colors (hex equivalents of matplotlib's default color cycle)
-OBJECT_COLORS_PLOTLY = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
-                        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
-# Note: OBJECT_LABELS is defined at the top of the file
-
-# ============= Lane Drawing Configuration =============
-# (functions _remove_duplicate_points, _extract_longest_object_path,
-#  _extract_centerline_from_data, _offset_polyline are defined earlier ~L688-L958)
-
-def _lane_polylines_bounds(lane_polylines: dict[str, Any] | None):
-    if not lane_polylines:
-        return None
-
-    arrays: list[np.ndarray] = []
-    boundaries = lane_polylines.get("boundaries")
-    if boundaries:
-        arrays.extend(boundaries)
-
-    centerline = lane_polylines.get("centerline")
-    if centerline is not None and centerline.size:
-        arrays.append(centerline)
-
-    if not arrays:
-        return None
-
-    stacked = np.vstack(arrays)
-    return (
-        float(np.min(stacked[:, 0])),
-        float(np.max(stacked[:, 0])),
-        float(np.min(stacked[:, 1])),
-        float(np.max(stacked[:, 1])),
-    )
-
-def _add_lane_polylines_plotly(
-    fig: go.Figure,
-    lane_polylines: dict[str, Any],
-    lane_color: str,
-    edge_color: str,
-    dashed_color: str,
-) -> go.Figure:
-    boundaries = lane_polylines.get("boundaries", [])
-    center_lines: list[np.ndarray] = lane_polylines.get("center_lines", [])
-
-    if len(boundaries) >= 2:
-        left_edge = boundaries[0]
-        right_edge = boundaries[-1]
-        polygon_x = np.concatenate([left_edge[:, 0], right_edge[::-1, 0], [left_edge[0, 0]]])
-        polygon_y = np.concatenate([left_edge[:, 1], right_edge[::-1, 1], [left_edge[0, 1]]])
-
-        # Add filled road area
-        fig.add_trace(
-            go.Scatter(
-                x=polygon_x,
-                y=polygon_y,
-                fill="toself",
-                fillcolor=lane_color,
-                line=dict(color="rgba(0, 0, 0, 0)", width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name="Road surface"
-            )
-        )
-
-        # Draw outer edge boundaries with thicker, more visible lines
-        for edge in (left_edge, right_edge):
-            fig.add_trace(  # type: ignore[call-arg]
-                go.Scatter(
-                    x=edge[:, 0],
-                    y=edge[:, 1],
-                    mode="lines",
-                    line=dict(color=edge_color, width=3),  # Increased width from 1 to 3
-                    hoverinfo="skip",
-                    showlegend=False,
-                    name="Road edge"
-                )
-            )
-
-    # Draw dashed center lines between lanes
-    for dashed_line in center_lines:
-        fig.add_trace(  # type: ignore[call-arg]
-            go.Scatter(
-                x=dashed_line[:, 0],
-                y=dashed_line[:, 1],
-                mode="lines",
-                line=dict(color=dashed_color, width=2, dash="dash"),  # Increased width from 1 to 2
-                hoverinfo="skip",
-                showlegend=False,
-                name="Lane divider"
-            )
-        )
-
-    return fig
+# Color constants and lane drawing helpers now imported from pdp_utils.drawing and pdp_utils.plotting
 
 
 def create_smooth_animation(
@@ -10854,7 +11795,7 @@ def create_smooth_animation(
             
             # Create cubic spline interpolation for x and y coordinates
             # Use 'natural' boundary condition for smooth ends
-            label = OBJECT_LABELS[oid % len(OBJECT_LABELS)]
+            label = OBJECT_LABELS[obj_id % len(OBJECT_LABELS)]
             try:
                 cs_x = CubicSpline(ts, pts[:, 0], bc_type='natural')
                 cs_y = CubicSpline(ts, pts[:, 1], bc_type='natural')
@@ -10863,23 +11804,21 @@ def create_smooth_animation(
                 x_smooth = cs_x(t_smooth)
                 y_smooth = cs_y(t_smooth)
                 
-                color = f"C{oid}"
-                # Plot original as segments between consecutive points only (never close)
-                orig_pts_up = [coord for (t_val, coord) in _ext30_orig_by_obj[oid] if t_val <= t_cutoff]
-                if len(orig_pts_up) > 1:
-                    orig_arr = np.array(orig_pts_up)
-                    for i in range(orig_arr.shape[0] - 1):
-                        xseg = [orig_arr[i, 0], orig_arr[i+1, 0]]
-                        yseg = [orig_arr[i, 1], orig_arr[i+1, 1]]
-                        ax_f.plot(xseg, yseg, linewidth=1.0, color=color, alpha=0.35, linestyle='--', label=f"{label} orig" if i == 0 else None)
-                # Generated trajectory up to t_cutoff as segments (never close)
-                gen_pts_up = [coord for (t_val, coord) in _ext30_gen_by_obj[oid] if t_val <= t_cutoff]
-                if len(gen_pts_up) > 1:
-                    gen_arr = np.array(gen_pts_up)
-                    for i in range(gen_arr.shape[0] - 1):
-                        xseg = [gen_arr[i, 0], gen_arr[i+1, 0]]
-                        yseg = [gen_arr[i, 1], gen_arr[i+1, 1]]
-                        ax_f.plot(xseg, yseg, linewidth=1.8, color=color, alpha=1.0, label=f"{label} gen" if i == 0 else None)
+                color_offset = config_info.get("color_offset", 0)
+                color_idx = color_offset * len(config_data) + obj_idx
+                # Use Plotly's default color sequence
+                plotly_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                 '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                color = plotly_colors[color_idx % len(plotly_colors)]
+                
+                all_frames_data.append({
+                    "config_name": config_name,
+                    "object_label": label,
+                    "color": color,
+                    "x_smooth": x_smooth,
+                    "y_smooth": y_smooth,
+                    "t_smooth": t_smooth,
+                })
             except Exception as e:
                 st.warning(f"Could not interpolate trajectory for {config_name} - {label}: {e}")
                 continue
@@ -11076,122 +12015,7 @@ def create_smooth_animation(
     
     return fig
 
-def _draw_intersection_lanes_matplotlib(
-    ax: matplotlib.axes.Axes,
-    config: dict[str, Any],
-    xlim: Tuple[float, float],
-    ylim: Tuple[float, float],
-) -> None:
-    lane_width = float(config.get("lane_width", 3.0))
-    lanes_h = int(config.get("lanes_horizontal", 3))
-    lanes_v = int(config.get("lanes_vertical", 3))
-    center_x, center_y = config.get("center", (0.0, 0.0))
-    
-    # Apply offsets if present
-    off_h = float(config.get("offset_horizontal", 0.0))
-    off_v = float(config.get("offset_vertical", 0.0))
-    center_y += off_h
-    center_x += off_v
-
-    # Use xlim/ylim if provided, otherwise fallback to config
-    h_x_min = xlim[0] if xlim else config.get("horizontal_range", (xlim[0], xlim[1]))[0]
-    h_x_max = xlim[1] if xlim else config.get("horizontal_range", (xlim[0], xlim[1]))[1]
-    v_y_min = ylim[0] if ylim else config.get("vertical_range", (ylim[0], ylim[1]))[0]
-    v_y_max = ylim[1] if ylim else config.get("vertical_range", (ylim[0], ylim[1]))[1]
-
-    road_color = "none"
-    edge_line_color = "black"
-    center_line_color = "black"
-    lane_line_width = 0.8
-
-    h_half = lane_width * lanes_h / 2.0
-    v_half = lane_width * lanes_v / 2.0
-
-    # Horizontal road fill
-    h_poly = np.array([  # type: ignore[var-annotated]
-        [h_x_min, center_y - h_half],
-        [h_x_max, center_y - h_half],
-        [h_x_max, center_y + h_half],
-        [h_x_min, center_y + h_half],
-    ])
-    ax.fill(h_poly[:, 0], h_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)  # type: ignore[call-overload]
-
-    # Vertical road fill
-    v_poly = np.array([  # type: ignore[var-annotated]
-        [center_x - v_half, v_y_min],
-        [center_x + v_half, v_y_min],
-        [center_x + v_half, v_y_max],
-        [center_x - v_half, v_y_max],
-    ])
-    ax.fill(v_poly[:, 0], v_poly[:, 1], facecolor=road_color, edgecolor='none', zorder=0)  # type: ignore[call-overload]
-
-    # Horizontal road edges (skip intersection)
-    # Bottom edge
-    ax.plot([h_x_min, center_x - v_half], [center_y - h_half, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    ax.plot([center_x + v_half, h_x_max], [center_y - h_half, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    # Top edge
-    ax.plot([h_x_min, center_x - v_half], [center_y + h_half, center_y + h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    ax.plot([center_x + v_half, h_x_max], [center_y + h_half, center_y + h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-
-    # Vertical road edges (skip intersection)
-    # Left edge
-    ax.plot([center_x - v_half, center_x - v_half], [v_y_min, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    ax.plot([center_x - v_half, center_x - v_half], [center_y + h_half, v_y_max], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    # Right edge
-    ax.plot([center_x + v_half, center_x + v_half], [v_y_min, center_y - h_half], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-    ax.plot([center_x + v_half, center_x + v_half], [center_y + h_half, v_y_max], color=edge_line_color, linewidth=lane_line_width, alpha=1.0, zorder=1)  # type: ignore[call-overload]
-
-    # Horizontal dashed lines (skip intersection)
-    for i in range(1, lanes_h):
-        y_val = center_y - h_half + i * lane_width
-        # Left segment
-        ax.plot(
-            [h_x_min, center_x - v_half],
-            [y_val, y_val],
-            color=center_line_color,
-            linewidth=lane_line_width,
-            linestyle="--",
-            dashes=(10, 10),
-            alpha=1.0,
-            zorder=1,
-        )
-        # Right segment
-        ax.plot(
-            [center_x + v_half, h_x_max],
-            [y_val, y_val],
-            color=center_line_color,
-            linewidth=lane_line_width,
-            linestyle="--",
-            dashes=(10, 10),
-            alpha=1.0,
-            zorder=1,
-        )
-
-    # Vertical dashed lines (skip intersection)
-    for i in range(1, lanes_v):
-        x_val = center_x - v_half + i * lane_width
-        # Bottom segment
-        ax.plot(
-            [x_val, x_val],
-            [v_y_min, center_y - h_half],
-            color=center_line_color,
-            linewidth=lane_line_width,
-            linestyle="--",
-            dashes=(10, 10),
-            alpha=1.0,
-            zorder=1,
-        )
-        # Top segment
-        ax.plot(
-            [x_val, x_val],
-            [center_y + h_half, v_y_max],
-            color=center_line_color,
-            linewidth=lane_line_width,
-            linestyle="--",
-            dashes=(10, 10),
-            alpha=1.0,
-            zorder=1,
-        )
+# _draw_intersection_lanes_matplotlib is now imported from pdp_utils.plotting
 
 def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple[float, float], ylim: tuple[float, float]) -> go.Figure:
     lane_cfg: dict[str, Any] | None = LANE_CONFIGURATIONS.get(c_value)
@@ -11225,210 +12049,9 @@ def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple[float,
 
     return _add_lane_polylines_plotly(fig, lane_polylines, lane_color, edge_color, dashed_color)
 
-def _add_intersection_lanes(fig: go.Figure, config: dict[str, Any], lane_color: str, line_color: str, dashed_color: str, xlim: tuple[float, float] | None = None, ylim: tuple[float, float] | None = None) -> go.Figure:
-    """Add intersection lane markings (crossing roads)."""
-    lanes_h = config["lanes_horizontal"]
-    lanes_v = config["lanes_vertical"]
-    lane_width = config["lane_width"]
-    cx, cy = config["center"]
-    
-    # Apply offsets if present
-    off_h = float(config.get("offset_horizontal", 0.0))
-    off_v = float(config.get("offset_vertical", 0.0))
-    cy += off_h
-    cx += off_v
-    
-    # Get road ranges - use xlim/ylim if provided
-    h_x_min = xlim[0] if xlim else config.get("horizontal_range", (cx - 100, cx + 100))[0]
-    h_x_max = xlim[1] if xlim else config.get("horizontal_range", (cx - 100, cx + 100))[1]
-    v_y_min = ylim[0] if ylim else config.get("vertical_range", (cy - 100, cy + 100))[0]
-    v_y_max = ylim[1] if ylim else config.get("vertical_range", (cy - 100, cy + 100))[1]
-    
-    # Horizontal road dimensions
-    h_width = lanes_h * lane_width
-    h_y_bottom = cy - h_width / 2
-    h_y_top = cy + h_width / 2
-    
-    # Vertical road dimensions
-    v_width = lanes_v * lane_width
-    v_x_left = cx - v_width / 2
-    v_x_right = cx + v_width / 2
-    
-    # Draw horizontal road
-    fig.add_shape(  # type: ignore[call-arg]
-        type="rect",
-        x0=h_x_min, y0=h_y_bottom,
-        x1=h_x_max, y1=h_y_top,
-        fillcolor=lane_color,
-        line=dict(color="rgba(0, 0, 0, 0)", width=0),
-        layer="below"
-    )
-    
-    # Draw vertical road
-    fig.add_shape(  # type: ignore[call-arg]
-        type="rect",
-        x0=v_x_left, y0=v_y_min,
-        x1=v_x_right, y1=v_y_max,
-        fillcolor=lane_color,
-        line=dict(color="rgba(0, 0, 0, 0)", width=0),
-        layer="below"
-    )
-    
-    # Draw horizontal lane dividers (outside intersection box)
-    for i in range(1, lanes_h):
-        y_line = h_y_bottom + i * lane_width
-        # Left segment
-        fig.add_trace(  # type: ignore[call-arg]
-            go.Scatter(
-            x=[h_x_min, v_x_left],
-            y=[y_line, y_line],
-            mode='lines',
-            line=dict(color=dashed_color, width=1.5, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        # Right segment
-        fig.add_trace(  # type: ignore[call-arg]
-            go.Scatter(
-            x=[v_x_right, h_x_max],
-            y=[y_line, y_line],
-            mode='lines',
-            line=dict(color=dashed_color, width=1.5, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-    
-    # Draw vertical lane dividers (outside intersection box)
-    for i in range(1, lanes_v):
-        x_line = v_x_left + i * lane_width
-        # Bottom segment
-        fig.add_trace(  # type: ignore[call-arg]
-            go.Scatter(
-            x=[x_line, x_line],
-            y=[v_y_min, h_y_bottom],
-            mode='lines',
-            line=dict(color=dashed_color, width=1.5, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        # Top segment
-        fig.add_trace(  # type: ignore[call-arg]
-            go.Scatter(
-            x=[x_line, x_line],
-            y=[h_y_top, v_y_max],
-            mode='lines',
-            line=dict(color=dashed_color, width=1.5, dash='dash'),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-    
-    # Draw edge lines for horizontal road
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[h_x_min, v_x_left],
-        y=[h_y_bottom, h_y_bottom],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_right, h_x_max],
-        y=[h_y_bottom, h_y_bottom],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[h_x_min, v_x_left],
-        y=[h_y_top, h_y_top],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_right, h_x_max],
-        y=[h_y_top, h_y_top],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    
-    # Draw edge lines for vertical road
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_left, v_x_left],
-        y=[v_y_min, h_y_bottom],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_left, v_x_left],
-        y=[h_y_top, v_y_max],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_right, v_x_right],
-        y=[v_y_min, h_y_bottom],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    fig.add_trace(  # type: ignore[call-arg]
-        go.Scatter(
-        x=[v_x_right, v_x_right],
-        y=[h_y_top, v_y_max],
-        mode='lines',
-        line=dict(color=line_color, width=2),
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-    
-    return fig
+# _add_intersection_lanes is now imported from pdp_utils.plotting
 
-def annotate_points(
-    ax: matplotlib.axes.Axes,
-    pts: np.ndarray,
-    ts: np.ndarray,
-    label_prefix: str,
-    color: str,
-) -> None:
-    """Draw points plus labels k_t or l_t with small offsets."""
-    offsets = [(3, 3), (3, -8), (-8, 3)]
-    for i, ((x, y), tval) in enumerate(zip(pts, ts)):  # type: ignore[misc]
-        ax.scatter([x], [y], s=25, zorder=10, color=color, marker='o')  # Same size as right plot
-        off = offsets[i % len(offsets)]
-        try:
-            tnum = float(tval)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            tnum = float(np.array(tval, dtype=float))
-        lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
-        # Use LaTeX format: italic letter with subscript number (e.g., $\mathit{k}_0$)
-        label_text = f"$\\mathit{{{label_prefix}}}_{{{lbl}}}$"
-        ax.annotate(  # type: ignore
-            label_text,
-            xy=(x, y),
-            xytext=off,
-            textcoords="offset points",
-            fontsize=LABEL_FS,
-            color=color,
-            ha="left" if off[0] >= 0 else "right",
-            va="bottom" if off[1] >= 0 else "top",
-        )
+# annotate_points is now imported from pdp_utils.plotting
 
 def draw_original(ax: matplotlib.axes.Axes) -> None:
     """Draw all object curves in the left panel, including external reference points."""
@@ -12109,911 +12732,1040 @@ def _set_display_config(config_num: int) -> None:
             update_order_match_flags()
             break
 
-# ============= Layout (two columns) ============
-col1, col2 = st.columns(2, gap="small")
 
-# Pre-render both figures to ensure identical sizing
-fig_left = render_square_matplotlib_figure(draw_original, XLIM, YLIM)
-fig_right = render_square_matplotlib_figure(draw_generated_empty, XLIM, YLIM)
+# ============= Visualization Modes =============
+tab_static, tab_animation, tab_slicing = st.tabs(["📊 Static", "▶️ Animation", "🔍 Slicing"])
 
-# Convert to PNG bytes for consistent display
-_buf_left: IO[bytes] = io.BytesIO()
-fig_left.savefig(_buf_left, format="png", dpi=160)  # type: ignore[call-arg]
-_buf_left.seek(0)
+with tab_static:
+    # ============= Layout (two columns) ============
+    col1, col2 = st.columns(2, gap="small")
 
-_buf_right: IO[bytes] = io.BytesIO()
-fig_right.savefig(_buf_right, format="png", dpi=160)  # type: ignore[call-arg]
-_buf_right.seek(0)
+    # Pre-render both figures to ensure identical sizing
+    fig_left = render_square_matplotlib_figure(draw_original, XLIM, YLIM)
+    fig_right = render_square_matplotlib_figure(draw_generated_empty, XLIM, YLIM)
 
-with col1:
-    st.markdown("<div class='figure-title'>Original configuration</div>", unsafe_allow_html=True)
-    st.latex(make_d1_order_latex())
-    st.latex(make_d2_order_latex())
-    # Use st.image instead of st.pyplot for consistent sizing
-    st.image(_buf_left, width="stretch")
-
-    # Show textual comparison of orderings when animation / generation is active
-    if "anim_generated_point" in st.session_state:
-        left_d1 = make_d1_order_latex()
-        right_d1 = make_d1_order_latex_generated()
-        left_order = extract_order_string(left_d1)
-        right_order = extract_order_string(right_d1)
-        same_d1 = left_order == right_order
-        st.caption(f"Left: {left_order}")
-        st.caption(f"Right: {right_order}")
-        st.markdown(f"**d1 order match: {same_d1}**")
-
-        left_d2 = make_d2_order_latex()
-        right_d2 = make_d2_order_latex_generated()
-        left_order_d2 = extract_order_string(left_d2)
-        right_order_d2 = extract_order_string(right_d2)
-        same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left d2: {left_order_d2}")
-        st.caption(f"Right d2: {right_order_d2}")
-        st.markdown(f"**d2 order match: {same_d2}**")
-
-    # Download original plot as PNG - reuse the buffer
+    # Convert to PNG bytes for consistent display
+    _buf_left: IO[bytes] = io.BytesIO()
+    fig_left.savefig(_buf_left, format="png", dpi=160)  # type: ignore[call-arg]
     _buf_left.seek(0)
-    st.download_button(
-        label="Save as PNG",
-        data=_buf_left.getvalue(),
-        file_name="original.png",
-        mime="image/png",
-        key="dl_left_png",
-    )
 
-with col2:
-    st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
-    _latex_d1 = make_d1_order_latex_generated()
-    _latex_d2 = make_d2_order_latex_generated()
-    st.latex(_latex_d1)
-    st.latex(_latex_d2)
-    # Use st.image instead of st.pyplot for consistent sizing
-    st.image(_buf_right, width="stretch")
-
-    if "anim_generated_point" in st.session_state:
-        left_d1 = make_d1_order_latex()
-        right_d1 = make_d1_order_latex_generated()
-        left_order = extract_order_string(left_d1)
-        right_order = extract_order_string(right_d1)
-        same_d1 = left_order == right_order
-        st.caption(f"Left: {left_order}")
-        st.caption(f"Right: {right_order}")
-        st.markdown(f"**d1 order match: {same_d1}**")
-
-        left_d2 = make_d2_order_latex()
-        right_d2 = make_d2_order_latex_generated()
-        left_order_d2 = extract_order_string(left_d2)
-        right_order_d2 = extract_order_string(right_d2)
-        same_d2 = left_order_d2 == right_order_d2
-        st.caption(f"Left d2: {left_order_d2}")
-        st.caption(f"Right d2: {right_order_d2}")
-        st.markdown(f"**d2 order match: {same_d2}**")
-
-    # Download generated plot as PNG + navigation buttons on ONE row
-    # Reuse the buffer that was already created above
+    _buf_right: IO[bytes] = io.BytesIO()
+    fig_right.savefig(_buf_right, format="png", dpi=160)  # type: ignore[call-arg]
     _buf_right.seek(0)
 
-    # Determine navigation state
-    all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
-    anim_running_flag = bool(st.session_state.get("anim_running", False))
+    with col1:
+        st.markdown("<div class='figure-title'>Original configuration</div>", unsafe_allow_html=True)
+        st.latex(make_d1_order_latex())
+        st.latex(make_d2_order_latex())
+        # Use st.image instead of st.pyplot for consistent sizing
+        st.image(_buf_left, width="stretch")
 
-    if all_configs_list:
-        config_nums = sorted(cfg.get("config_num", 1) for cfg in all_configs_list)
-        min_cfg = config_nums[0]
-        max_cfg = config_nums[-1]
-        current_cfg = int(st.session_state.get("anim_current_config", max_cfg))
+        # Show textual comparison of orderings when animation / generation is active
+        if "anim_generated_point" in st.session_state:
+            left_d1 = make_d1_order_latex()
+            right_d1 = make_d1_order_latex_generated()
+            left_order = extract_order_string(left_d1)
+            right_order = extract_order_string(right_d1)
+            same_d1 = left_order == right_order
+            st.caption(f"Left: {left_order}")
+            st.caption(f"Right: {right_order}")
+            st.markdown(f"**d1 order match: {same_d1}**")
 
-        prev_disabled = anim_running_flag or (current_cfg <= min_cfg)
-        next_disabled = anim_running_flag or (current_cfg >= max_cfg)
-    else:
-        config_nums = []
-        min_cfg = max_cfg = current_cfg = 1
-        prev_disabled = True
-        next_disabled = True
+            left_d2 = make_d2_order_latex()
+            right_d2 = make_d2_order_latex_generated()
+            left_order_d2 = extract_order_string(left_d2)
+            right_order_d2 = extract_order_string(right_d2)
+            same_d2 = left_order_d2 == right_order_d2
+            st.caption(f"Left d2: {left_order_d2}")
+            st.caption(f"Right d2: {right_order_d2}")
+            st.markdown(f"**d2 order match: {same_d2}**")
 
-    col_save, col_prev, col_next = st.columns([1, 1, 1], gap="small")
-    with col_save:
+        # Download original plot as PNG - reuse the buffer
+        _buf_left.seek(0)
         st.download_button(
             label="Save as PNG",
-            data=_buf_right.getvalue(),
-            file_name="generated.png",
+            data=_buf_left.getvalue(),
+            file_name="original.png",
             mime="image/png",
-            key="dl_right_png",
-        )
-    with col_prev:
-        prev_clicked = st.button(
-            "Previous config",
-            key="btn_prev_config",
-            disabled=prev_disabled,
-        )
-    with col_next:
-        next_clicked = st.button(
-            "Next config",
-            key="btn_next_config",
-            disabled=next_disabled,
+            key="dl_left_png",
         )
 
-    # Handle navigation clicks
-    if all_configs_list and not anim_running_flag:
-        if prev_clicked and not prev_disabled:
-            new_cfg = max(min_cfg, current_cfg - 1)
-            _set_display_config(new_cfg)
-            st.rerun()
+    with col2:
+        st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
+        _latex_d1 = make_d1_order_latex_generated()
+        _latex_d2 = make_d2_order_latex_generated()
+        st.latex(_latex_d1)
+        st.latex(_latex_d2)
+        # Use st.image instead of st.pyplot for consistent sizing
+        st.image(_buf_right, width="stretch")
 
-        if next_clicked and not next_disabled:
-            new_cfg = min(max_cfg, current_cfg + 1)
-            _set_display_config(new_cfg)
-            st.rerun()
+        if "anim_generated_point" in st.session_state:
+            left_d1 = make_d1_order_latex()
+            right_d1 = make_d1_order_latex_generated()
+            left_order = extract_order_string(left_d1)
+            right_order = extract_order_string(right_d1)
+            same_d1 = left_order == right_order
+            st.caption(f"Left: {left_order}")
+            st.caption(f"Right: {right_order}")
+            st.markdown(f"**d1 order match: {same_d1}**")
 
-# ============= Heat Maps for PDP Inequality Matrices ============
-st.markdown("---")
-st.markdown("### PDP Inequality Matrix Heat Maps")
+            left_d2 = make_d2_order_latex()
+            right_d2 = make_d2_order_latex_generated()
+            left_order_d2 = extract_order_string(left_d2)
+            right_order_d2 = extract_order_string(right_d2)
+            same_d2 = left_order_d2 == right_order_d2
+            st.caption(f"Left d2: {left_order_d2}")
+            st.caption(f"Right d2: {right_order_d2}")
+            st.markdown(f"**d2 order match: {same_d2}**")
 
-# Determine when to update heat maps based on animation settings:
-# a) Auto-advance with wait_interval >= 1000ms: update every step
-# b) Auto-advance with wait_interval < 1000ms: update only at end of iteration
-# c) Manual modes: update only at end of last step/iteration/config
+        # Download generated plot as PNG + navigation buttons on ONE row
+        # Reuse the buffer that was already created above
+        _buf_right.seek(0)
 
-anim_mode = st.session_state.get("cfg_anim_mode", "Auto-advance")
-wait_interval = int(st.session_state.get("cfg_wait_interval", 2000))
-anim_running = st.session_state.get("anim_running", False)
-search_steps = int(st.session_state.get("anim_search_steps", 0))
+        # Determine navigation state
+        all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
+        anim_running_flag = bool(st.session_state.get("anim_running", False))
 
-# Determine if we should update heat maps now
-should_update_heatmaps = False
+        if all_configs_list:
+            config_nums = sorted(cfg.get("config_num", 1) for cfg in all_configs_list)
+            min_cfg = config_nums[0]
+            max_cfg = config_nums[-1]
+            current_cfg = int(st.session_state.get("anim_current_config", max_cfg))
 
-if not anim_running:
-    # Not running animation - always update (final state)
-    should_update_heatmaps = True
-elif anim_mode == "Auto-advance":
-    if wait_interval >= 1000:
-        # a) Auto-advance with slow interval: update every step
+            prev_disabled = anim_running_flag or (current_cfg <= min_cfg)
+            next_disabled = anim_running_flag or (current_cfg >= max_cfg)
+        else:
+            config_nums = []
+            min_cfg = max_cfg = current_cfg = 1
+            prev_disabled = True
+            next_disabled = True
+
+        col_save, col_prev, col_next = st.columns([1, 1, 1], gap="small")
+        with col_save:
+            st.download_button(
+                label="Save as PNG",
+                data=_buf_right.getvalue(),
+                file_name="generated.png",
+                mime="image/png",
+                key="dl_right_png",
+            )
+        with col_prev:
+            prev_clicked = st.button(
+                "Previous config",
+                key="btn_prev_config",
+                disabled=prev_disabled,
+            )
+        with col_next:
+            next_clicked = st.button(
+                "Next config",
+                key="btn_next_config",
+                disabled=next_disabled,
+            )
+
+        # Handle navigation clicks
+        if all_configs_list and not anim_running_flag:
+            if prev_clicked and not prev_disabled:
+                new_cfg = max(min_cfg, current_cfg - 1)
+                _set_display_config(new_cfg)
+                st.rerun()
+
+            if next_clicked and not next_disabled:
+                new_cfg = min(max_cfg, current_cfg + 1)
+                _set_display_config(new_cfg)
+                st.rerun()
+
+    # ============= Heat Maps for PDP Inequality Matrices ============
+    st.markdown("---")
+    st.markdown("### PDP Inequality Matrix Heat Maps")
+
+    # Determine when to update heat maps based on animation settings:
+    # a) Auto-advance with wait_interval >= 1000ms: update every step
+    # b) Auto-advance with wait_interval < 1000ms: update only at end of iteration
+    # c) Manual modes: update only at end of last step/iteration/config
+
+    anim_mode = st.session_state.get("cfg_anim_mode", "Auto-advance")
+    wait_interval = int(st.session_state.get("cfg_wait_interval", 2000))
+    anim_running = st.session_state.get("anim_running", False)
+    search_steps = int(st.session_state.get("anim_search_steps", 0))
+
+    # Determine if we should update heat maps now
+    should_update_heatmaps = False
+
+    if not anim_running:
+        # Not running animation - always update (final state)
         should_update_heatmaps = True
+    elif anim_mode == "Auto-advance":
+        if wait_interval >= 1000:
+            # a) Auto-advance with slow interval: update every step
+            should_update_heatmaps = True
+        else:
+            # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 7)
+            # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
+            should_update_heatmaps = (search_steps == 0)
     else:
-        # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 7)
-        # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
+        # c) Manual modes: only update at end of step/iteration/config
+        # In manual mode, we update after each manual advancement (when not in middle of search)
         should_update_heatmaps = (search_steps == 0)
-else:
-    # c) Manual modes: only update at end of step/iteration/config
-    # In manual mode, we update after each manual advancement (when not in middle of search)
-    should_update_heatmaps = (search_steps == 0)
 
-pdp_detailed = None
+    pdp_detailed = None
 
-if n_total_points > 0 and should_update_heatmaps:
-    # Get PDP variant parameters from session_state
-    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    match_threshold = get_match_threshold()
-    
-    # Build generated configuration INCLUDING current candidate point
-    generated_points: np.ndarray = all_pts_flat.copy()
-    successful_points_hm: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-    
-    # Track the latest generated point for each original index
-    latest_generated: dict[int, np.ndarray] = {}
-    for sp in successful_points_hm:
-        orig_idx = int(sp["original_parent_idx"])
-        latest_generated[orig_idx] = sp["point"]
-    
-    # Include current candidate point being tested (for live heat map update)
-    anim_generated_points = st.session_state.get("anim_generated_points", {})
-    gen_pt = st.session_state.get("anim_generated_point", None)
-    
-    if anim_generated_points:
-        for idx, pt in anim_generated_points.items():
-            latest_generated[int(idx)] = np.array(pt)
-    elif gen_pt is not None:
+    if n_total_points > 0 and should_update_heatmaps:
+        # Get PDP variant parameters from session_state
+        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+        match_threshold = get_match_threshold()
+
+        # Build generated configuration INCLUDING current candidate point
+        generated_points: np.ndarray = all_pts_flat.copy()
+        successful_points_hm: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+
+        # Track the latest generated point for each original index
+        latest_generated: dict[int, np.ndarray] = {}
+        for sp in successful_points_hm:
+            orig_idx = int(sp["original_parent_idx"])
+            latest_generated[orig_idx] = sp["point"]
+
+        # Include current candidate point being tested (for live heat map update)
+        anim_generated_points = st.session_state.get("anim_generated_points", {})
+        gen_pt = st.session_state.get("anim_generated_point", None)
+
+        if anim_generated_points:
+            for idx, pt in anim_generated_points.items():
+                latest_generated[int(idx)] = np.array(pt)
+        elif gen_pt is not None:
+            parent_idx = int(st.session_state.get("anim_parent_idx", 0))
+            if parent_idx < n_total_points:
+                current_original_parent_idx = parent_idx
+            else:
+                sidx = parent_idx - n_total_points
+                if 0 <= sidx < len(successful_points_hm):
+                    current_original_parent_idx = int(successful_points_hm[sidx]["original_parent_idx"])
+                else:
+                    current_original_parent_idx = 0
+            latest_generated[current_original_parent_idx] = np.array(gen_pt)
+
+        # Apply all generated points to the configuration
+        for flat_idx in range(n_total_points):
+            if flat_idx in latest_generated:
+                generated_points[flat_idx] = latest_generated[flat_idx]
+
+        # Get threshold settings to pass to detailed check
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
+
+        # Compute detailed results with the current configuration
+        pdp_detailed = check_pdp_match_detailed(
+            all_pts_flat,
+            generated_points,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y,
+            match_threshold=match_threshold,
+            max_mismatches=max_mismatches_param
+        )
+        # Store for later use
+        st.session_state["pdp_detailed_results"] = pdp_detailed
+    elif n_total_points > 0:
+        # Use cached results if not updating
+        pdp_detailed: dict[str, Any] | None = st.session_state.get("pdp_detailed_results", None)
+
+    if pdp_detailed is not None:
+        # Get match percentages
+        d1_pct = pdp_detailed.get("d1_percentage", 0.0) * 100
+        d2_pct = pdp_detailed.get("d2_percentage", 0.0) * 100
+        avg_pct = pdp_detailed.get("avg_percentage", (d1_pct/100 + d2_pct/100) / 2.0) * 100
+        d1_match = pdp_detailed.get("d1_match", False)
+        d2_match = pdp_detailed.get("d2_match", False)
+
+        # Get threshold settings for display
+        mode, pct_threshold, max_mismatches = get_threshold_settings()
+        d1_mismatches = pdp_detailed.get("d1_mismatches", 0)
+        d2_mismatches = pdp_detailed.get("d2_mismatches", 0)
+        total_cells = pdp_detailed.get("total_cells", 0)
+
+        # Re-evaluate match based on new threshold settings
+        d1_match, d2_match = check_threshold_match(d1_pct/100, d2_pct/100, total_cells, d1_mismatches, d2_mismatches)
+        avg_match = d1_match and d2_match
+
+        # Display match percentages with threshold info
+        if mode == "Percentage":
+            threshold_display = f"{int(pct_threshold * 100)}%"
+            if pct_threshold < 1.0:
+                # Show average for relaxed thresholds
+                st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_pct:.1f}% | **d2:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
+            else:
+                # Show individual matches for strict threshold
+                st.markdown(f"**Threshold:** {threshold_display} | **d1 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d2 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
+        else:
+            # Max mismatches mode
+            threshold_display = f"≤{max_mismatches} mismatches"
+            st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d2:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
+
+        # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
+        hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
+
+        # Color map: 0=green (greater precedence), 1=yellow (equal), 2=red (less precedence)
+        from matplotlib.colors import ListedColormap
+        hm_cmap = ListedColormap(['#00AA00', '#FFFF00', '#FF0000'])  # green, yellow, red
+
+        # Labels should be: k0, l0, k1, l1, k2, l2 (sorted by timestamp first, then by object)
+        # But data in all_pts_flat is: k0, k1, k2, l0, l1, l2 (sorted by object first, then by timestamp)
+        # We need to reorder the matrix to match the desired label order
+
+        def get_reorder_indices(n: int) -> list[int]:
+            """Get indices to reorder from (k0,k1,k2,l0,l1,l2) to (k0,l0,k1,l1,k2,l2)."""
+            if n != 6:
+                return list(range(n))  # No reordering if not exactly 6 points
+            # Original order: k0(0), k1(1), k2(2), l0(3), l1(4), l2(5)
+            # Desired order:  k0(0), l0(3), k1(1), l1(4), k2(2), l2(5)
+            return [0, 3, 1, 4, 2, 5]
+
+        def reorder_matrix(matrix: np.ndarray) -> np.ndarray:
+            """Reorder matrix rows and columns to match desired label order."""
+            n = matrix.shape[0]
+            if n != 6:
+                return matrix
+            idx = get_reorder_indices(n)
+            # Reorder both rows and columns
+            return matrix[np.ix_(idx, idx)]
+
+        def get_point_labels(n: int) -> list[str]:
+            """Generate labels: k0, l0, k1, l1, k2, l2 (sorted by timestamp, then object)."""
+            if n > 6:
+                return []  # Don't show labels if more than 6 points
+            labels = []
+            for t in range(3):  # 3 timestamps
+                for obj in ["k", "l"]:  # 2 objects per timestamp
+                    if len(labels) < n:
+                        labels.append(f"{obj}{t}")
+            return labels
+
+        def create_heatmap_figure(matrix: np.ndarray, title: str, 
+                                   comparison_matrix: np.ndarray = None,
+                                   highlight_differences: bool = False) -> Figure:
+            """Create a heat map figure for an inequality matrix.
+
+            Args:
+                matrix: The matrix to display
+                title: Title for the heatmap
+                comparison_matrix: Original matrix to compare against (for highlighting differences)
+                highlight_differences: If True and comparison_matrix provided, highlight differing cells
+            """
+            fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
+            n = matrix.shape[0]
+
+            # Reorder matrix to match label order (k0, l0, k1, l1, k2, l2)
+            display_matrix = reorder_matrix(matrix)
+
+            # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
+            ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
+
+            # Highlight differences if requested - subtle style with transparent fill and thin black border
+            if highlight_differences and comparison_matrix is not None:
+                comparison_display = reorder_matrix(comparison_matrix)
+                # Color map for semi-transparent overlays (same colors but with alpha)
+                diff_colors = {
+                    0: (0.0, 0.67, 0.0, 0.3),   # green with alpha
+                    1: (1.0, 1.0, 0.0, 0.3),     # yellow with alpha
+                    2: (1.0, 0.0, 0.0, 0.3),     # red with alpha
+                }
+                # Find cells where values differ
+                for i in range(n):
+                    for j in range(n):
+                        if display_matrix[i, j] != comparison_display[i, j]:
+                            # Get the cell's color with transparency
+                            cell_val = int(display_matrix[i, j])
+                            fill_color = diff_colors.get(cell_val, (0.5, 0.5, 0.5, 0.3))
+                            # Draw a rectangle with transparent fill and thin black border
+                            rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+                                                fill=True, facecolor=fill_color,
+                                                edgecolor='black', linewidth=1.5)
+                            ax_hm.add_patch(rect)
+
+            # Add axis labels only if 6 or fewer points
+            point_labels = get_point_labels(n)
+            if point_labels:
+                ax_hm.set_xticks(range(n))
+                ax_hm.set_yticks(range(n))
+                ax_hm.set_xticklabels(point_labels, fontsize=7)
+                ax_hm.set_yticklabels(point_labels, fontsize=7)
+            else:
+                ax_hm.set_xticks([])
+                ax_hm.set_yticks([])
+
+            ax_hm.set_title(title, fontsize=9, fontweight='bold')
+            # No axis titles (removed 'Point j' and 'Point i')
+
+            fig_hm.tight_layout()
+            return fig_hm
+
+        # Create heat map for each matrix
+        orig_d1_matrix = pdp_detailed.get("original_d1_matrix")  # type: ignore[assignment]
+        orig_d2_matrix = pdp_detailed.get("original_d2_matrix")  # type: ignore[assignment]
+        gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")  # type: ignore[assignment]
+        gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")  # type: ignore[assignment]
+
+        # Determine if we should highlight differences (when threshold < 100% or max_mismatches > 0)
+        if mode == "Percentage":
+            highlight_diffs = pct_threshold < 1.0
+        else:
+            # In absolute mode, always highlight differences since we're explicitly allowing mismatches
+            highlight_diffs = max_mismatches > 0
+
+        with hm_col1:
+            st.markdown("**Original d1**")
+            if orig_d1_matrix is not None:
+                fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d1 (x)")
+                st.pyplot(fig_hm1)
+                plt.close(fig_hm1)
+
+        with hm_col2:
+            st.markdown("**Original d2**")
+            if orig_d2_matrix is not None:
+                fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d2 (y)")
+                st.pyplot(fig_hm2)
+                plt.close(fig_hm2)
+
+        with hm_col3:
+            st.markdown("**Generated d1**")
+            if gen_d1_matrix is not None:
+                fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d1 (x)",
+                                               comparison_matrix=orig_d1_matrix,
+                                               highlight_differences=highlight_diffs)
+                st.pyplot(fig_hm3)
+                plt.close(fig_hm3)
+
+        with hm_col4:
+            st.markdown("**Generated d2**")
+            if gen_d2_matrix is not None:
+                fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d2 (y)",
+                                               comparison_matrix=orig_d2_matrix,
+                                               highlight_differences=highlight_diffs)
+                st.pyplot(fig_hm4)
+                plt.close(fig_hm4)
+
+        # Legend
+        if highlight_diffs:
+            st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
+        else:
+            st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
+
+    else:
+        st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
+
+
+with tab_animation:
+    # ============= Animation progress (both strategies) ============
+    # In manual mode, only process animation when user clicked the appropriate "Next" button
+    # In auto mode, always process
+    _manual_mode = st.session_state.get("anim_manual_mode", False)
+    _manual_step_mode = st.session_state.get("anim_manual_step_mode", False)
+    _manual_iteration_mode = st.session_state.get("anim_manual_iteration_mode", False)
+    _manual_config_mode = st.session_state.get("anim_manual_config_mode", False)
+
+    # Determine if we should process animation based on mode
+    _manual_step_requested = st.session_state.get("anim_manual_step_requested", False)
+    _manual_iteration_requested = st.session_state.get("anim_manual_iteration_requested", False)
+    _manual_config_requested = st.session_state.get("anim_manual_config_requested", False)
+
+    # For iteration/config modes, we also continue if we're in the middle of completing one
+    _iteration_in_progress = st.session_state.get("_iteration_in_progress", False)
+    _config_in_progress = st.session_state.get("_config_in_progress", False)
+
+    # Start tracking progress when a request is made
+    if _manual_iteration_requested:
+        st.session_state["_iteration_in_progress"] = True
+        _iteration_in_progress = True
+    if _manual_config_requested:
+        st.session_state["_config_in_progress"] = True
+        _config_in_progress = True
+
+    # INSTANT ITERATION COMPLETION for manual iteration/config modes
+    # When user clicks "Next iteration" or "Next config", complete the iteration instantly without animations
+    if _manual_iteration_requested or _manual_config_requested:
+        # Set flag to skip all wait intervals and complete iteration in single pass
+        st.session_state["_skip_wait_intervals"] = True
+    else:
+        st.session_state["_skip_wait_intervals"] = False
+
+    _should_process_animation = (
+        st.session_state.get("anim_running", False) and 
+        (not _manual_mode or _manual_step_requested or _manual_iteration_requested or _iteration_in_progress or _manual_config_requested or _config_in_progress)
+    )
+
+    if _should_process_animation:
+        # Save current state to history before advancing (for "Previous step" functionality)
+        # This allows users to go back to previous animation states in manual mode
+        if _manual_mode:
+            # List of all animation state keys that need to be saved/restored
+            # This includes all variables that define the current animation state:
+            # - Point positions and parent relationships
+            # - Search parameters (distance, angle, steps)
+            # - Configuration progress tracking
+            # - Circle visualization state
+            # - Multi-point animation support variables
+            anim_state_keys = [
+                "anim_generated_point",
+                "anim_parent_idx",
+                "anim_successful_points",
+                "anim_distance",
+                "anim_angle",
+                "anim_search_steps",
+                "anim_completed_iterations",
+                "anim_current_config",
+                "anim_in_search",
+                "anim_binary_mode",
+                "anim_binary_step",
+                "anim_ok_point",
+                "anim_delta",
+                "anim_had_full_match",
+                # Linear search state
+                "anim_linear_mode",
+                "anim_linear_step",
+                "anim_linear_current_distance",
+                "anim_linear_maxdist",
+                "anim_linear_step_size",
+                "anim_all_pts",
+                "anim_all_ts",
+                "diag_rows",
+                "binary_iteration_summary",
+                # Circle visualization state - needed to restore the search circle position
+                "anim_circle_idx",
+                "show_anim_circle",
+                # Multi-point animation support - needed to restore all selected points and their positions
+                "anim_selected_indices",
+                "anim_generated_points",
+                "anim_movement_vectors",
+                # Multi-variant support
+                "anim_pdp_variants_list",
+                "anim_current_variant_idx",
+                "anim_current_variant",
+            ]
+            # Create a snapshot of current state
+            current_state_snapshot = {}
+            import copy
+            for key in anim_state_keys:
+                if key in st.session_state:
+                    value = st.session_state[key]
+                    # Deep copy numpy arrays, lists, and dicts to avoid reference issues
+                    if isinstance(value, np.ndarray):
+                        current_state_snapshot[key] = value.copy()
+                    elif isinstance(value, (list, dict)):
+                        # Deep copy lists (e.g., SuccessfulPoints) and dicts (e.g., generated_points, movement_vectors)
+                        current_state_snapshot[key] = copy.deepcopy(value)  # type: ignore[arg-type]
+                    else:
+                        current_state_snapshot[key] = value
+
+            # Append to history (initialize if not exists)
+            if "anim_state_history" not in st.session_state:
+                st.session_state["anim_state_history"] = []
+            st.session_state["anim_state_history"].append(current_state_snapshot)
+
+            # Limit history size to prevent memory issues (keep last 100 states)
+            if len(st.session_state["anim_state_history"]) > 100:
+                st.session_state["anim_state_history"] = st.session_state["anim_state_history"][-100:]
+
+        # Clear the manual step flag early so we don't re-process on the next rerun
+        if _manual_mode:
+            st.session_state["anim_manual_step_requested"] = False
+
+        # Build current generated configuration for PDP comparison
+        gen_pt = st.session_state.get("anim_generated_point", None)
+        successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+
+        # Get parent info for the current candidate point
         parent_idx = int(st.session_state.get("anim_parent_idx", 0))
+
+        # Determine the original parent index for the current candidate
         if parent_idx < n_total_points:
             current_original_parent_idx = parent_idx
         else:
+            # Parent is a previously generated point - find its original parent
             sidx = parent_idx - n_total_points
-            if 0 <= sidx < len(successful_points_hm):
-                current_original_parent_idx = int(successful_points_hm[sidx]["original_parent_idx"])
+            if 0 <= sidx < len(successful_points):
+                current_original_parent_idx = int(successful_points[sidx]["original_parent_idx"])
             else:
                 current_original_parent_idx = 0
-        latest_generated[current_original_parent_idx] = np.array(gen_pt)
-    
-    # Apply all generated points to the configuration
-    for flat_idx in range(n_total_points):
-        if flat_idx in latest_generated:
-            generated_points[flat_idx] = latest_generated[flat_idx]
-    
-    # Get threshold settings to pass to detailed check
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
-    
-    # Compute detailed results with the current configuration
-    pdp_detailed = check_pdp_match_detailed(
-        all_pts_flat,
-        generated_points,
-        pdp_variant=pdp_variant,
-        buffer_x=buffer_x,
-        buffer_y=buffer_y,
-        rough_x=rough_x,
-        rough_y=rough_y,
-        match_threshold=match_threshold,
-        max_mismatches=max_mismatches_param
-    )
-    # Store for later use
-    st.session_state["pdp_detailed_results"] = pdp_detailed
-elif n_total_points > 0:
-    # Use cached results if not updating
-    pdp_detailed: dict[str, Any] | None = st.session_state.get("pdp_detailed_results", None)
 
-if pdp_detailed is not None:
-    # Get match percentages
-    d1_pct = pdp_detailed.get("d1_percentage", 0.0) * 100
-    d2_pct = pdp_detailed.get("d2_percentage", 0.0) * 100
-    avg_pct = pdp_detailed.get("avg_percentage", (d1_pct/100 + d2_pct/100) / 2.0) * 100
-    d1_match = pdp_detailed.get("d1_match", False)
-    d2_match = pdp_detailed.get("d2_match", False)
-    
-    # Get threshold settings for display
-    mode, pct_threshold, max_mismatches = get_threshold_settings()
-    d1_mismatches = pdp_detailed.get("d1_mismatches", 0)
-    d2_mismatches = pdp_detailed.get("d2_mismatches", 0)
-    total_cells = pdp_detailed.get("total_cells", 0)
-    
-    # Re-evaluate match based on new threshold settings
-    d1_match, d2_match = check_threshold_match(d1_pct/100, d2_pct/100, total_cells, d1_mismatches, d2_mismatches)
-    avg_match = d1_match and d2_match
-    
-    # Display match percentages with threshold info
-    if mode == "Percentage":
-        threshold_display = f"{int(pct_threshold * 100)}%"
-        if pct_threshold < 1.0:
-            # Show average for relaxed thresholds
-            st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_pct:.1f}% | **d2:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
-        else:
-            # Show individual matches for strict threshold
-            st.markdown(f"**Threshold:** {threshold_display} | **d1 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d2 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
-    else:
-        # Max mismatches mode
-        threshold_display = f"≤{max_mismatches} mismatches"
-        st.markdown(f"**Threshold:** {threshold_display} | **d1:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d2:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
-    
-    # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
-    hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
-    
-    # Color map: 0=green (greater precedence), 1=yellow (equal), 2=red (less precedence)
-    from matplotlib.colors import ListedColormap
-    hm_cmap = ListedColormap(['#00AA00', '#FFFF00', '#FF0000'])  # green, yellow, red
-    
-    # Labels should be: k0, l0, k1, l1, k2, l2 (sorted by timestamp first, then by object)
-    # But data in all_pts_flat is: k0, k1, k2, l0, l1, l2 (sorted by object first, then by timestamp)
-    # We need to reorder the matrix to match the desired label order
-    
-    def get_reorder_indices(n: int) -> list[int]:
-        """Get indices to reorder from (k0,k1,k2,l0,l1,l2) to (k0,l0,k1,l1,k2,l2)."""
-        if n != 6:
-            return list(range(n))  # No reordering if not exactly 6 points
-        # Original order: k0(0), k1(1), k2(2), l0(3), l1(4), l2(5)
-        # Desired order:  k0(0), l0(3), k1(1), l1(4), k2(2), l2(5)
-        return [0, 3, 1, 4, 2, 5]
-    
-    def reorder_matrix(matrix: np.ndarray) -> np.ndarray:
-        """Reorder matrix rows and columns to match desired label order."""
-        n = matrix.shape[0]
-        if n != 6:
-            return matrix
-        idx = get_reorder_indices(n)
-        # Reorder both rows and columns
-        return matrix[np.ix_(idx, idx)]
-    
-    def get_point_labels(n: int) -> list[str]:
-        """Generate labels: k0, l0, k1, l1, k2, l2 (sorted by timestamp, then object)."""
-        if n > 6:
-            return []  # Don't show labels if more than 6 points
-        labels = []
-        for t in range(3):  # 3 timestamps
-            for obj in ["k", "l"]:  # 2 objects per timestamp
-                if len(labels) < n:
-                    labels.append(f"{obj}{t}")
-        return labels
-    
-    def create_heatmap_figure(matrix: np.ndarray, title: str, 
-                               comparison_matrix: np.ndarray = None,
-                               highlight_differences: bool = False) -> Figure:
-        """Create a heat map figure for an inequality matrix.
-        
-        Args:
-            matrix: The matrix to display
-            title: Title for the heatmap
-            comparison_matrix: Original matrix to compare against (for highlighting differences)
-            highlight_differences: If True and comparison_matrix provided, highlight differing cells
-        """
-        fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
-        n = matrix.shape[0]
-        
-        # Reorder matrix to match label order (k0, l0, k1, l1, k2, l2)
-        display_matrix = reorder_matrix(matrix)
-        
-        # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
-        ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
-        
-        # Highlight differences if requested - subtle style with transparent fill and thin black border
-        if highlight_differences and comparison_matrix is not None:
-            comparison_display = reorder_matrix(comparison_matrix)
-            # Color map for semi-transparent overlays (same colors but with alpha)
-            diff_colors = {
-                0: (0.0, 0.67, 0.0, 0.3),   # green with alpha
-                1: (1.0, 1.0, 0.0, 0.3),     # yellow with alpha
-                2: (1.0, 0.0, 0.0, 0.3),     # red with alpha
-            }
-            # Find cells where values differ
-            for i in range(n):
-                for j in range(n):
-                    if display_matrix[i, j] != comparison_display[i, j]:
-                        # Get the cell's color with transparency
-                        cell_val = int(display_matrix[i, j])
-                        fill_color = diff_colors.get(cell_val, (0.5, 0.5, 0.5, 0.3))
-                        # Draw a rectangle with transparent fill and thin black border
-                        rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                            fill=True, facecolor=fill_color,
-                                            edgecolor='black', linewidth=1.5)
-                        ax_hm.add_patch(rect)
-        
-        # Add axis labels only if 6 or fewer points
-        point_labels = get_point_labels(n)
-        if point_labels:
-            ax_hm.set_xticks(range(n))
-            ax_hm.set_yticks(range(n))
-            ax_hm.set_xticklabels(point_labels, fontsize=7)
-            ax_hm.set_yticklabels(point_labels, fontsize=7)
-        else:
-            ax_hm.set_xticks([])
-            ax_hm.set_yticks([])
-        
-        ax_hm.set_title(title, fontsize=9, fontweight='bold')
-        # No axis titles (removed 'Point j' and 'Point i')
-        
-        fig_hm.tight_layout()
-        return fig_hm
-    
-    # Create heat map for each matrix
-    orig_d1_matrix = pdp_detailed.get("original_d1_matrix")  # type: ignore[assignment]
-    orig_d2_matrix = pdp_detailed.get("original_d2_matrix")  # type: ignore[assignment]
-    gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")  # type: ignore[assignment]
-    gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")  # type: ignore[assignment]
-    
-    # Determine if we should highlight differences (when threshold < 100% or max_mismatches > 0)
-    if mode == "Percentage":
-        highlight_diffs = pct_threshold < 1.0
-    else:
-        # In absolute mode, always highlight differences since we're explicitly allowing mismatches
-        highlight_diffs = max_mismatches > 0
-    
-    with hm_col1:
-        st.markdown("**Original d1**")
-        if orig_d1_matrix is not None:
-            fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d1 (x)")
-            st.pyplot(fig_hm1)
-            plt.close(fig_hm1)
-    
-    with hm_col2:
-        st.markdown("**Original d2**")
-        if orig_d2_matrix is not None:
-            fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d2 (y)")
-            st.pyplot(fig_hm2)
-            plt.close(fig_hm2)
-    
-    with hm_col3:
-        st.markdown("**Generated d1**")
-        if gen_d1_matrix is not None:
-            fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d1 (x)",
-                                           comparison_matrix=orig_d1_matrix,
-                                           highlight_differences=highlight_diffs)
-            st.pyplot(fig_hm3)
-            plt.close(fig_hm3)
-    
-    with hm_col4:
-        st.markdown("**Generated d2**")
-        if gen_d2_matrix is not None:
-            fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d2 (y)",
-                                           comparison_matrix=orig_d2_matrix,
-                                           highlight_differences=highlight_diffs)
-            st.pyplot(fig_hm4)
-            plt.close(fig_hm4)
-    
-    # Legend
-    if highlight_diffs:
-        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
-    else:
-        st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
-    
-else:
-    st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
+        # Build generated points array (start with original, then override with generated)
+        latest_generated: dict[int, np.ndarray] = {}
+        for sp in successful_points:
+            orig_idx = int(sp["original_parent_idx"])
+            latest_generated[orig_idx] = sp["point"]
 
-# ============= Animation progress (both strategies) ============
-# In manual mode, only process animation when user clicked the appropriate "Next" button
-# In auto mode, always process
-_manual_mode = st.session_state.get("anim_manual_mode", False)
-_manual_step_mode = st.session_state.get("anim_manual_step_mode", False)
-_manual_iteration_mode = st.session_state.get("anim_manual_iteration_mode", False)
-_manual_config_mode = st.session_state.get("anim_manual_config_mode", False)
-
-# Determine if we should process animation based on mode
-_manual_step_requested = st.session_state.get("anim_manual_step_requested", False)
-_manual_iteration_requested = st.session_state.get("anim_manual_iteration_requested", False)
-_manual_config_requested = st.session_state.get("anim_manual_config_requested", False)
-
-# For iteration/config modes, we also continue if we're in the middle of completing one
-_iteration_in_progress = st.session_state.get("_iteration_in_progress", False)
-_config_in_progress = st.session_state.get("_config_in_progress", False)
-
-# Start tracking progress when a request is made
-if _manual_iteration_requested:
-    st.session_state["_iteration_in_progress"] = True
-    _iteration_in_progress = True
-if _manual_config_requested:
-    st.session_state["_config_in_progress"] = True
-    _config_in_progress = True
-
-# INSTANT ITERATION COMPLETION for manual iteration/config modes
-# When user clicks "Next iteration" or "Next config", complete the iteration instantly without animations
-if _manual_iteration_requested or _manual_config_requested:
-    # Set flag to skip all wait intervals and complete iteration in single pass
-    st.session_state["_skip_wait_intervals"] = True
-else:
-    st.session_state["_skip_wait_intervals"] = False
-
-_should_process_animation = (
-    st.session_state.get("anim_running", False) and 
-    (not _manual_mode or _manual_step_requested or _manual_iteration_requested or _iteration_in_progress or _manual_config_requested or _config_in_progress)
-)
-
-if _should_process_animation:
-    # Save current state to history before advancing (for "Previous step" functionality)
-    # This allows users to go back to previous animation states in manual mode
-    if _manual_mode:
-        # List of all animation state keys that need to be saved/restored
-        # This includes all variables that define the current animation state:
-        # - Point positions and parent relationships
-        # - Search parameters (distance, angle, steps)
-        # - Configuration progress tracking
-        # - Circle visualization state
-        # - Multi-point animation support variables
-        anim_state_keys = [
-            "anim_generated_point",
-            "anim_parent_idx",
-            "anim_successful_points",
-            "anim_distance",
-            "anim_angle",
-            "anim_search_steps",
-            "anim_completed_iterations",
-            "anim_current_config",
-            "anim_in_search",
-            "anim_binary_mode",
-            "anim_binary_step",
-            "anim_ok_point",
-            "anim_delta",
-            "anim_had_full_match",
-            # Linear search state
-            "anim_linear_mode",
-            "anim_linear_step",
-            "anim_linear_current_distance",
-            "anim_linear_maxdist",
-            "anim_linear_step_size",
-            "anim_all_pts",
-            "anim_all_ts",
-            "diag_rows",
-            "binary_iteration_summary",
-            # Circle visualization state - needed to restore the search circle position
-            "anim_circle_idx",
-            "show_anim_circle",
-            # Multi-point animation support - needed to restore all selected points and their positions
-            "anim_selected_indices",
-            "anim_generated_points",
-            "anim_movement_vectors",
-            # Multi-variant support
-            "anim_pdp_variants_list",
-            "anim_current_variant_idx",
-            "anim_current_variant",
-        ]
-        # Create a snapshot of current state
-        current_state_snapshot = {}
-        import copy
-        for key in anim_state_keys:
-            if key in st.session_state:
-                value = st.session_state[key]
-                # Deep copy numpy arrays, lists, and dicts to avoid reference issues
-                if isinstance(value, np.ndarray):
-                    current_state_snapshot[key] = value.copy()
-                elif isinstance(value, (list, dict)):
-                    # Deep copy lists (e.g., SuccessfulPoints) and dicts (e.g., generated_points, movement_vectors)
-                    current_state_snapshot[key] = copy.deepcopy(value)  # type: ignore[arg-type]
-                else:
-                    current_state_snapshot[key] = value
-        
-        # Append to history (initialize if not exists)
-        if "anim_state_history" not in st.session_state:
-            st.session_state["anim_state_history"] = []
-        st.session_state["anim_state_history"].append(current_state_snapshot)
-        
-        # Limit history size to prevent memory issues (keep last 100 states)
-        if len(st.session_state["anim_state_history"]) > 100:
-            st.session_state["anim_state_history"] = st.session_state["anim_state_history"][-100:]
-    
-    # Clear the manual step flag early so we don't re-process on the next rerun
-    if _manual_mode:
-        st.session_state["anim_manual_step_requested"] = False
-    
-    # Build current generated configuration for PDP comparison
-    gen_pt = st.session_state.get("anim_generated_point", None)
-    successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-    
-    # Get parent info for the current candidate point
-    parent_idx = int(st.session_state.get("anim_parent_idx", 0))
-    
-    # Determine the original parent index for the current candidate
-    if parent_idx < n_total_points:
-        current_original_parent_idx = parent_idx
-    else:
-        # Parent is a previously generated point - find its original parent
-        sidx = parent_idx - n_total_points
-        if 0 <= sidx < len(successful_points):
-            current_original_parent_idx = int(successful_points[sidx]["original_parent_idx"])
-        else:
-            current_original_parent_idx = 0
-    
-    # Build generated points array (start with original, then override with generated)
-    latest_generated: dict[int, np.ndarray] = {}
-    for sp in successful_points:
-        orig_idx = int(sp["original_parent_idx"])
-        latest_generated[orig_idx] = sp["point"]
-    
-    # CRITICAL: Add ALL current candidate points we're testing (multi-point support)!
-    # Use anim_generated_points dict which contains all n selected points
-    anim_generated_points = st.session_state.get("anim_generated_points", {})
-    if anim_generated_points:
-        for idx, pt in anim_generated_points.items():
-            latest_generated[int(idx)] = np.array(pt)
-    elif gen_pt is not None:
-        # Fallback for single point (backwards compatibility)
-        latest_generated[current_original_parent_idx] = np.array(gen_pt)
-    
-    # Construct generated_points array (same order as all_pts_flat)
-    generated_points_arr = all_pts_flat.copy()
-    for flat_idx in range(n_total_points):
-        if flat_idx in latest_generated:
-            generated_points_arr[flat_idx] = latest_generated[flat_idx]
-    
-    # Use PDP inequality matrix comparison (legacy order strings kept for display)
-    left_d1 = make_d1_order_latex()
-    left_d2 = make_d2_order_latex()
-    right_d1 = make_d1_order_latex_generated()
-    right_d2 = make_d2_order_latex_generated()
-
-    # Get PDP variant parameters from session_state
-    # Use current variant in animation, or first selected variant otherwise
-    pdp_variant = st.session_state.get("anim_current_variant")
-    if not pdp_variant:
-        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    
-    # Use PDP inequality matrix comparison with selected variant
-    # Get both threshold parameters
-    _thresh, _max_mm = get_threshold_params()
-    same_d1, same_d2 = check_pdp_match(
-        all_pts_flat,
-        generated_points_arr,
-        pdp_variant=pdp_variant,
-        buffer_x=buffer_x,
-        buffer_y=buffer_y,
-        rough_x=rough_x,
-        rough_y=rough_y,
-        match_threshold=_thresh,
-        max_mismatches=_max_mm
-    )
-
-    completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
-
-    # Use radio-button value as default for max_iterations
-    default_iterations = int(st.session_state.get("cfg_iterations", 3))
-    max_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
-    # Use radio-button value as default for number of configurations
-    default_num_configs = int(st.session_state.get("cfg_num_configs", 1))
-
-    search_steps = int(st.session_state.get("anim_search_steps", 0))
-    max_search_steps = 7
-
-    distance = float(st.session_state.get("anim_distance", maxdist))
-    angle = float(st.session_state.get("anim_angle", 0.0))
-    gen_pt = st.session_state.get("anim_generated_point", None)
-    parent_idx = int(st.session_state.get("anim_parent_idx", 0))
-    all_pts = st.session_state.get("anim_all_pts", np.array([]))
-    successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-    in_search = bool(st.session_state.get("anim_in_search", True))
-
-    ok_point = st.session_state.get("anim_ok_point", gen_pt)
-    binary_mode = bool(st.session_state.get("anim_binary_mode", False))
-    linear_mode = bool(st.session_state.get("anim_linear_mode", False))
-    binary_step = int(st.session_state.get("anim_binary_step", 0))
-
-    current_strategy = st.session_state.get("cfg_strategy", strategy)
-
-    # Wachttijd in seconden voor alle animatie-sleeps
-    wait_ms = int(st.session_state.get("cfg_wait_ms", 2000))
-    wait_s = wait_ms / 1000.0
-
-    if st.session_state.get("anim_config_complete_wait", False):
-        st.session_state["anim_config_complete_wait"] = False
-        if st.session_state.get("anim_manual_mode", False):
-            # Manual mode: button click already triggered, just rerun
-            st.rerun()
-        else:
-            # Non-blocking wait: sleep in short increments so Streamlit stays responsive
-            _elapsed = 0.0
-            while _elapsed < wait_s:
-                _step = min(0.1, wait_s - _elapsed)
-                time.sleep(_step)
-                _elapsed += _step
-            st.rerun()
-
-    # === Case 1: success (orders match) or distance collapsed to 0 ===
-    # For BINARY mode: ONLY complete after 7 steps (distance will be set to 0 after step 7)
-    # For EXPONENTIAL mode: complete when orders match or distance <= 0
-    binary_complete = binary_mode and distance <= 0.0 and gen_pt is not None
-    exponential_complete = not binary_mode and ((same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None))
-    
-    if binary_complete or exponential_complete:
-        # Multi-point support: add ALL n selected points as successful
+        # CRITICAL: Add ALL current candidate points we're testing (multi-point support)!
+        # Use anim_generated_points dict which contains all n selected points
         anim_generated_points = st.session_state.get("anim_generated_points", {})
-        selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
-        
-        # For each selected point, add to successful_points (with damping applied)
-        for idx in selected_indices:
-            # Get parent point and original parent index
-            if idx < n_total_points:
-                parent_point_val = all_pts[idx]
-                original_parent_idx_val = idx
+        if anim_generated_points:
+            for idx, pt in anim_generated_points.items():
+                latest_generated[int(idx)] = np.array(pt)
+        elif gen_pt is not None:
+            # Fallback for single point (backwards compatibility)
+            latest_generated[current_original_parent_idx] = np.array(gen_pt)
+
+        # Construct generated_points array (same order as all_pts_flat)
+        generated_points_arr = all_pts_flat.copy()
+        for flat_idx in range(n_total_points):
+            if flat_idx in latest_generated:
+                generated_points_arr[flat_idx] = latest_generated[flat_idx]
+
+        # Use PDP inequality matrix comparison (legacy order strings kept for display)
+        left_d1 = make_d1_order_latex()
+        left_d2 = make_d2_order_latex()
+        right_d1 = make_d1_order_latex_generated()
+        right_d2 = make_d2_order_latex_generated()
+
+        # Get PDP variant parameters from session_state
+        # Use current variant in animation, or first selected variant otherwise
+        pdp_variant = st.session_state.get("anim_current_variant")
+        if not pdp_variant:
+            pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = st.session_state.get("cfg_rough_y", 0.0)
+
+        # Use PDP inequality matrix comparison with selected variant
+        # Get both threshold parameters
+        _thresh, _max_mm = get_threshold_params()
+        same_d1, same_d2 = check_pdp_match(
+            all_pts_flat,
+            generated_points_arr,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y,
+            match_threshold=_thresh,
+            max_mismatches=_max_mm
+        )
+
+        completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
+
+        # Use radio-button value as default for max_iterations
+        default_iterations = int(st.session_state.get("cfg_iterations", 3))
+        max_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
+        # Use radio-button value as default for number of configurations
+        default_num_configs = int(st.session_state.get("cfg_num_configs", 1))
+
+        search_steps = int(st.session_state.get("anim_search_steps", 0))
+        max_search_steps = 7
+
+        distance = float(st.session_state.get("anim_distance", maxdist))
+        angle = float(st.session_state.get("anim_angle", 0.0))
+        gen_pt = st.session_state.get("anim_generated_point", None)
+        parent_idx = int(st.session_state.get("anim_parent_idx", 0))
+        all_pts = st.session_state.get("anim_all_pts", np.array([]))
+        successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+        in_search = bool(st.session_state.get("anim_in_search", True))
+
+        ok_point = st.session_state.get("anim_ok_point", gen_pt)
+        binary_mode = bool(st.session_state.get("anim_binary_mode", False))
+        linear_mode = bool(st.session_state.get("anim_linear_mode", False))
+        binary_step = int(st.session_state.get("anim_binary_step", 0))
+
+        current_strategy = st.session_state.get("cfg_strategy", strategy)
+
+        # Wachttijd in seconden voor alle animatie-sleeps
+        wait_ms = int(st.session_state.get("cfg_wait_ms", 2000))
+        wait_s = wait_ms / 1000.0
+
+        if st.session_state.get("anim_config_complete_wait", False):
+            st.session_state["anim_config_complete_wait"] = False
+            if st.session_state.get("anim_manual_mode", False):
+                # Manual mode: button click already triggered, just rerun
+                st.rerun()
             else:
-                succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-                sidx = int(idx - n_total_points)
-                if 0 <= sidx < len(succ_list):
-                    parent_point_val = succ_list[sidx]["point"]
-                    original_parent_idx_val = succ_list[sidx]["original_parent_idx"]
+                # Non-blocking wait: sleep in short increments so Streamlit stays responsive
+                _elapsed = 0.0
+                while _elapsed < wait_s:
+                    _step = min(0.1, wait_s - _elapsed)
+                    time.sleep(_step)
+                    _elapsed += _step
+                st.rerun()
+
+        # === Case 1: success (orders match) or distance collapsed to 0 ===
+        # For BINARY mode: ONLY complete after 7 steps (distance will be set to 0 after step 7)
+        # For EXPONENTIAL mode: complete when orders match or distance <= 0
+        binary_complete = binary_mode and distance <= 0.0 and gen_pt is not None
+        exponential_complete = not binary_mode and ((same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None))
+
+        if binary_complete or exponential_complete:
+            # Multi-point support: add ALL n selected points as successful
+            anim_generated_points = st.session_state.get("anim_generated_points", {})
+            selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+
+            # For each selected point, add to successful_points (with damping applied)
+            for idx in selected_indices:
+                # Get parent point and original parent index
+                if idx < n_total_points:
+                    parent_point_val = all_pts[idx]
+                    original_parent_idx_val = idx
                 else:
-                    parent_point_val = np.array([0.0, 0.0])
-                    original_parent_idx_val = 0
-            
-            # Get the final generated point for this index
-            final_pt = anim_generated_points.get(idx, gen_pt if idx == parent_idx else np.array([0.0, 0.0]))
-            # Apply random damping factor to reduce distance from parent
-            damped_pt = apply_damping_factor(parent_point_val, np.array(final_pt, dtype=float))
-            
-            sp: SuccessfulPoint = {
-                "point": damped_pt,
-                "parent_idx": idx,
-                "parent_point": parent_point_val,
-                "original_parent_idx": original_parent_idx_val,
-                "iteration": completed_iterations,
-            }
-            successful_points.append(sp)
-        
-        st.session_state["anim_successful_points"] = successful_points
-        st.session_state["anim_completed_iterations"] = completed_iterations + 1
-        st.session_state["anim_search_steps"] = 0
-        st.session_state["anim_in_search"] = True
-        st.session_state["anim_delta"] = None
-        
-        # Flag that an iteration was just completed (for manual iteration mode)
-        st.session_state["_iteration_just_completed"] = True
+                    succ_list: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+                    sidx = int(idx - n_total_points)
+                    if 0 <= sidx < len(succ_list):
+                        parent_point_val = succ_list[sidx]["point"]
+                        original_parent_idx_val = succ_list[sidx]["original_parent_idx"]
+                    else:
+                        parent_point_val = np.array([0.0, 0.0])
+                        original_parent_idx_val = 0
 
-        # <<< hier opnieuw: match evalueren na plaatsing >>>
-        update_order_match_flags()
+                # Get the final generated point for this index
+                final_pt = anim_generated_points.get(idx, gen_pt if idx == parent_idx else np.array([0.0, 0.0]))
+                # Apply random damping factor to reduce distance from parent
+                damped_pt = apply_damping_factor(parent_point_val, np.array(final_pt, dtype=float))
 
-        if completed_iterations + 1 >= max_iterations:
-            current_config = int(st.session_state.get("anim_current_config", 1))
-            num_configs = int(st.session_state.get("anim_num_configs", default_num_configs))
+                sp: SuccessfulPoint = {
+                    "point": damped_pt,
+                    "parent_idx": idx,
+                    "parent_point": parent_point_val,
+                    "original_parent_idx": original_parent_idx_val,
+                    "iteration": completed_iterations,
+                }
+                successful_points.append(sp)
 
-            all_configs: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
-            all_configs.append({
-                "config_num": current_config,
-                "points": list(successful_points)
-            })
-            st.session_state["anim_all_configs"] = all_configs
+            st.session_state["anim_successful_points"] = successful_points
+            st.session_state["anim_completed_iterations"] = completed_iterations + 1
+            st.session_state["anim_search_steps"] = 0
+            st.session_state["anim_in_search"] = True
+            st.session_state["anim_delta"] = None
 
-            for sp in successful_points:
-                sp["config_num"] = current_config  # type: ignore
-            
-            # Flag that a configuration was just completed (for manual config mode)
-            st.session_state["_config_just_completed"] = True
+            # Flag that an iteration was just completed (for manual iteration mode)
+            st.session_state["_iteration_just_completed"] = True
 
-            if current_config < num_configs:
-                st.session_state["anim_current_config"] = current_config + 1
-                st.session_state["anim_completed_iterations"] = 0
-                st.session_state["anim_search_steps"] = 0
-                st.session_state["anim_running"] = True
-                st.session_state["show_anim_circle"] = True
+            # <<< hier opnieuw: match evalueren na plaatsing >>>
+            update_order_match_flags()
 
-                all_pts_reset = all_pts_flat.copy()
-                
-                # Multi-point selection for new configuration
+            if completed_iterations + 1 >= max_iterations:
+                current_config = int(st.session_state.get("anim_current_config", 1))
+                num_configs = int(st.session_state.get("anim_num_configs", default_num_configs))
+
+                all_configs: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
+                all_configs.append({
+                    "config_num": current_config,
+                    "points": list(successful_points)
+                })
+                st.session_state["anim_all_configs"] = all_configs
+
+                for sp in successful_points:
+                    sp["config_num"] = current_config  # type: ignore
+
+                # Flag that a configuration was just completed (for manual config mode)
+                st.session_state["_config_just_completed"] = True
+
+                if current_config < num_configs:
+                    st.session_state["anim_current_config"] = current_config + 1
+                    st.session_state["anim_completed_iterations"] = 0
+                    st.session_state["anim_search_steps"] = 0
+                    st.session_state["anim_running"] = True
+                    st.session_state["show_anim_circle"] = True
+
+                    all_pts_reset = all_pts_flat.copy()
+
+                    # Multi-point selection for new configuration
+                    selected_indices = select_points_for_iteration()
+                    if not selected_indices:
+                        movable_indices = get_movable_indices()
+                        selected_indices = [int(np.random.choice(movable_indices))] if movable_indices else [0]
+
+                    # Generate movement vectors for all selected points
+                    movement_vectors = generate_movement_vectors(selected_indices, maxdist)
+
+                    # Check all points within bounds, retry if needed
+                    max_direction_attempts = 10
+                    generated_points: dict[int, np.ndarray] = {}
+                    for _ in range(max_direction_attempts):
+                        all_within_bounds = True
+                        generated_points: dict[int, np.ndarray] = {}
+
+                        for idx in selected_indices:
+                            dx, dy = movement_vectors.get(idx, (0.0, 0.0))
+                            # Get parent position (could be from successful_points)
+                            parent_pt = None
+                            for s in reversed(successful_points):
+                                if int(s.get("original_parent_idx", -1)) == idx:
+                                    parent_pt = s["point"]
+                                    break
+                            if parent_pt is None:
+                                parent_pt = all_pts_reset[idx] if idx < len(all_pts_reset) else np.array([0.0, 0.0])
+
+                            new_x = parent_pt[0] + dx
+                            new_y = parent_pt[1] + dy
+
+                            if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
+                                all_within_bounds = False
+
+                            # NO CLIPPING - all points must be at exact same distance from parent
+                            generated_points[idx] = np.array([new_x, new_y])
+
+                        if all_within_bounds:
+                            break
+                        # Regenerate movement vectors
+                        movement_vectors = generate_movement_vectors(selected_indices, maxdist)
+
+                    # For backwards compatibility, use first point as primary
+                    parent_idx_reset = selected_indices[0]
+                    parent_pt_reset = all_pts_reset[parent_idx_reset] if parent_idx_reset < len(all_pts_reset) else np.array([0.0, 0.0])
+                    new_gen_pt = generated_points.get(parent_idx_reset, parent_pt_reset.copy())
+                    angle_local = np.arctan2(new_gen_pt[1] - parent_pt_reset[1], new_gen_pt[0] - parent_pt_reset[0])
+                    direction = np.array([np.cos(angle_local), np.sin(angle_local)])
+
+                    st.session_state["anim_parent_idx"] = parent_idx_reset
+                    st.session_state["anim_angle"] = angle_local
+                    st.session_state["anim_generated_point"] = new_gen_pt
+                    st.session_state["anim_distance"] = maxdist
+                    st.session_state["anim_all_pts"] = all_pts_reset
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_config_complete_wait"] = True
+                    # CORRECTED Binary search state - PRESERVE binary mode!
+                    st.session_state["anim_binary_mode"] = binary_mode  # Keep the same mode
+                    st.session_state["anim_binary_step"] = 0  # Init step (will be incremented to 1 on first progress)
+                    st.session_state["anim_binary_correct_order"] = parent_pt_reset.copy()  # correct_order = parent (first point)
+                    st.session_state["anim_binary_correct_orders"] = {int(idx): all_pts_reset[idx].copy() if idx < len(all_pts_reset) else np.array([0.0, 0.0]) for idx in selected_indices}
+                    st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
+                    st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector (first point)
+                    st.session_state["anim_had_full_match"] = False
+                    # Sync multi-point data
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    gen_pts_items: list[tuple[int, np.ndarray]] = list(generated_points.items())
+                    st.session_state["anim_generated_points"] = {int(k): v for k, v in gen_pts_items}
+                    move_vecs_items: list[tuple[int, tuple[float, float]]] = list(movement_vectors.items())
+                    st.session_state["anim_movement_vectors"] = {int(k): v for k, v in move_vecs_items}
+                else:
+                    st.session_state["anim_running"] = False
+                    st.session_state["show_anim_circle"] = False
+            else:
+                # Prepare the next iteration for the same configuration (multi-point support)
                 selected_indices = select_points_for_iteration()
                 if not selected_indices:
                     movable_indices = get_movable_indices()
                     selected_indices = [int(np.random.choice(movable_indices))] if movable_indices else [0]
-                
+
                 # Generate movement vectors for all selected points
                 movement_vectors = generate_movement_vectors(selected_indices, maxdist)
-                
+
+                # Helper to get parent position for an index
+                def get_parent_for_idx(idx: int) -> np.ndarray:
+                    for s in reversed(successful_points):
+                        if int(s.get("original_parent_idx", -1)) == idx:
+                            return s["point"]
+                    return get_point_for_flat_idx(idx)
+
                 # Check all points within bounds, retry if needed
                 max_direction_attempts = 10
                 generated_points: dict[int, np.ndarray] = {}
                 for _ in range(max_direction_attempts):
                     all_within_bounds = True
                     generated_points: dict[int, np.ndarray] = {}
-                    
+
                     for idx in selected_indices:
                         dx, dy = movement_vectors.get(idx, (0.0, 0.0))
-                        # Get parent position (could be from successful_points)
-                        parent_pt = None
-                        for s in reversed(successful_points):
-                            if int(s.get("original_parent_idx", -1)) == idx:
-                                parent_pt = s["point"]
-                                break
-                        if parent_pt is None:
-                            parent_pt = all_pts_reset[idx] if idx < len(all_pts_reset) else np.array([0.0, 0.0])
-                        
+                        parent_pt = get_parent_for_idx(idx)
+
                         new_x = parent_pt[0] + dx
                         new_y = parent_pt[1] + dy
-                        
+
                         if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
                             all_within_bounds = False
-                        
+
                         # NO CLIPPING - all points must be at exact same distance from parent
                         generated_points[idx] = np.array([new_x, new_y])
-                    
+
                     if all_within_bounds:
                         break
                     # Regenerate movement vectors
                     movement_vectors = generate_movement_vectors(selected_indices, maxdist)
-                
+
                 # For backwards compatibility, use first point as primary
-                parent_idx_reset = selected_indices[0]
-                parent_pt_reset = all_pts_reset[parent_idx_reset] if parent_idx_reset < len(all_pts_reset) else np.array([0.0, 0.0])
-                new_gen_pt = generated_points.get(parent_idx_reset, parent_pt_reset.copy())
-                angle_local = np.arctan2(new_gen_pt[1] - parent_pt_reset[1], new_gen_pt[0] - parent_pt_reset[0])
+                parent_idx_new = selected_indices[0]
+                parent_pt_new = get_parent_for_idx(parent_idx_new)
+                new_gen_pt = generated_points.get(parent_idx_new, parent_pt_new.copy())
+                angle_local = np.arctan2(new_gen_pt[1] - parent_pt_new[1], new_gen_pt[0] - parent_pt_new[0])
                 direction = np.array([np.cos(angle_local), np.sin(angle_local)])
 
-                st.session_state["anim_parent_idx"] = parent_idx_reset
+                st.session_state["anim_parent_idx"] = parent_idx_new
                 st.session_state["anim_angle"] = angle_local
                 st.session_state["anim_generated_point"] = new_gen_pt
                 st.session_state["anim_distance"] = maxdist
-                st.session_state["anim_all_pts"] = all_pts_reset
                 st.session_state["anim_in_search"] = True
-                st.session_state["anim_config_complete_wait"] = True
                 # CORRECTED Binary search state - PRESERVE binary mode!
                 st.session_state["anim_binary_mode"] = binary_mode  # Keep the same mode
                 st.session_state["anim_binary_step"] = 0  # Init step (will be incremented to 1 on first progress)
-                st.session_state["anim_binary_correct_order"] = parent_pt_reset.copy()  # correct_order = parent (first point)
-                st.session_state["anim_binary_correct_orders"] = {int(idx): all_pts_reset[idx].copy() if idx < len(all_pts_reset) else np.array([0.0, 0.0]) for idx in selected_indices}
+                st.session_state["anim_binary_correct_order"] = parent_pt_new.copy()  # correct_order = parent (first point)
+                st.session_state["anim_binary_correct_orders"] = {int(idx): get_parent_for_idx(idx).copy() for idx in selected_indices}
                 st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
                 st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector (first point)
                 st.session_state["anim_had_full_match"] = False
+                # Linear mode state reset for new iteration
+                st.session_state["anim_linear_mode"] = linear_mode  # Keep the same mode
+                st.session_state["anim_linear_step"] = 0
+                st.session_state["anim_linear_current_distance"] = maxdist
+                st.session_state["anim_linear_step_size"] = maxdist * 0.1
                 # Sync multi-point data
                 st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                gen_pts_items: list[tuple[int, np.ndarray]] = list(generated_points.items())
-                st.session_state["anim_generated_points"] = {int(k): v for k, v in gen_pts_items}
-                move_vecs_items: list[tuple[int, tuple[float, float]]] = list(movement_vectors.items())
-                st.session_state["anim_movement_vectors"] = {int(k): v for k, v in move_vecs_items}
-            else:
-                st.session_state["anim_running"] = False
-                st.session_state["show_anim_circle"] = False
+                st.session_state["anim_generated_points"] = {int(k): v for k, v in generated_points.items()}
+                st.session_state["anim_movement_vectors"] = {int(k): v for k, v in movement_vectors.items()}
         else:
-            # Prepare the next iteration for the same configuration (multi-point support)
-            selected_indices = select_points_for_iteration()
-            if not selected_indices:
-                movable_indices = get_movable_indices()
-                selected_indices = [int(np.random.choice(movable_indices))] if movable_indices else [0]
-            
-            # Generate movement vectors for all selected points
-            movement_vectors = generate_movement_vectors(selected_indices, maxdist)
-            
-            # Helper to get parent position for an index
-            def get_parent_for_idx(idx: int) -> np.ndarray:
-                for s in reversed(successful_points):
-                    if int(s.get("original_parent_idx", -1)) == idx:
-                        return s["point"]
-                return get_point_for_flat_idx(idx)
-            
-            # Check all points within bounds, retry if needed
-            max_direction_attempts = 10
-            generated_points: dict[int, np.ndarray] = {}
-            for _ in range(max_direction_attempts):
-                all_within_bounds = True
-                generated_points: dict[int, np.ndarray] = {}
-                
-                for idx in selected_indices:
-                    dx, dy = movement_vectors.get(idx, (0.0, 0.0))
-                    parent_pt = get_parent_for_idx(idx)
-                    
-                    new_x = parent_pt[0] + dx
-                    new_y = parent_pt[1] + dy
-                    
-                    if not (COORD_MIN_X <= new_x <= COORD_MAX_X and COORD_MIN_Y <= new_y <= COORD_MAX_Y):
-                        all_within_bounds = False
-                    
-                    # NO CLIPPING - all points must be at exact same distance from parent
-                    generated_points[idx] = np.array([new_x, new_y])
-                
-                if all_within_bounds:
-                    break
-                # Regenerate movement vectors
-                movement_vectors = generate_movement_vectors(selected_indices, maxdist)
-            
-            # For backwards compatibility, use first point as primary
-            parent_idx_new = selected_indices[0]
-            parent_pt_new = get_parent_for_idx(parent_idx_new)
-            new_gen_pt = generated_points.get(parent_idx_new, parent_pt_new.copy())
-            angle_local = np.arctan2(new_gen_pt[1] - parent_pt_new[1], new_gen_pt[0] - parent_pt_new[0])
-            direction = np.array([np.cos(angle_local), np.sin(angle_local)])
+            # === Case 2: keep searching ===
+            # Different behavior for binary vs linear vs exponential strategy
 
-            st.session_state["anim_parent_idx"] = parent_idx_new
-            st.session_state["anim_angle"] = angle_local
-            st.session_state["anim_generated_point"] = new_gen_pt
-            st.session_state["anim_distance"] = maxdist
-            st.session_state["anim_in_search"] = True
-            # CORRECTED Binary search state - PRESERVE binary mode!
-            st.session_state["anim_binary_mode"] = binary_mode  # Keep the same mode
-            st.session_state["anim_binary_step"] = 0  # Init step (will be incremented to 1 on first progress)
-            st.session_state["anim_binary_correct_order"] = parent_pt_new.copy()  # correct_order = parent (first point)
-            st.session_state["anim_binary_correct_orders"] = {int(idx): get_parent_for_idx(idx).copy() for idx in selected_indices}
-            st.session_state["anim_binary_current_distance"] = maxdist  # Start at maxdist
-            st.session_state["anim_binary_direction"] = direction.copy()  # Direction unit vector (first point)
-            st.session_state["anim_had_full_match"] = False
-            # Linear mode state reset for new iteration
-            st.session_state["anim_linear_mode"] = linear_mode  # Keep the same mode
-            st.session_state["anim_linear_step"] = 0
-            st.session_state["anim_linear_current_distance"] = maxdist
-            st.session_state["anim_linear_step_size"] = maxdist * 0.1
-            # Sync multi-point data
-            st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-            st.session_state["anim_generated_points"] = {int(k): v for k, v in generated_points.items()}
-            st.session_state["anim_movement_vectors"] = {int(k): v for k, v in movement_vectors.items()}
-    else:
-        # === Case 2: keep searching ===
-        # Different behavior for binary vs linear vs exponential strategy
-        
-        # DEBUG: Print which strategy branch we're taking
-        logger.debug(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
-        
-        # Check if we should skip wait intervals (manual iteration/config mode)
-        _skip_wait_intervals = st.session_state.get("_skip_wait_intervals", False)
-        
-        if binary_mode:
-            # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
-            # Algorithm:
-            # - Init: all n points at distance maxdist, correct_orders = parent coords, current_distance = maxdist
-            # - Step 0: halve naar 0.5×maxdist BEFORE testing
-            # - Steps 1-7: 
-            #   - Test ALL n points for combined PDP order match
-            #   - If ALL match: distance += 0.5^(n+1) × maxdist, correct_orders = current positions
-            #   - If any no match: distance -= 0.5^(n+1) × maxdist
-            # - End: place all n points at their correct_order positions
-            
-            binary_step = int(st.session_state.get("anim_binary_step", 0))
-            
-            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining binary steps at once
-            if _skip_wait_intervals and binary_step < 7:
-                # Get all selected indices and movement vectors
+            # DEBUG: Print which strategy branch we're taking
+            logger.debug(f"[DEBUG ANIM] binary_mode={binary_mode}, linear_mode={linear_mode}, cfg_strategy={st.session_state.get('cfg_strategy')}, anim_binary_mode={st.session_state.get('anim_binary_mode')}")
+
+            # Check if we should skip wait intervals (manual iteration/config mode)
+            _skip_wait_intervals = st.session_state.get("_skip_wait_intervals", False)
+
+            if binary_mode:
+                # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
+                # Algorithm:
+                # - Init: all n points at distance maxdist, correct_orders = parent coords, current_distance = maxdist
+                # - Step 0: halve naar 0.5×maxdist BEFORE testing
+                # - Steps 1-7: 
+                #   - Test ALL n points for combined PDP order match
+                #   - If ALL match: distance += 0.5^(n+1) × maxdist, correct_orders = current positions
+                #   - If any no match: distance -= 0.5^(n+1) × maxdist
+                # - End: place all n points at their correct_order positions
+
+                binary_step = int(st.session_state.get("anim_binary_step", 0))
+
+                # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining binary steps at once
+                if _skip_wait_intervals and binary_step < 7:
+                    # Get all selected indices and movement vectors
+                    selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                    movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                    correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+
+                    if not correct_orders:
+                        for idx in selected_indices:
+                            if idx < n_total_points:
+                                correct_orders[idx] = all_pts[idx].copy()
+                            else:
+                                sidx = int(idx - n_total_points)
+                                succ_list = st.session_state.get("anim_successful_points", [])
+                                if 0 <= sidx < len(succ_list):
+                                    correct_orders[idx] = succ_list[sidx]["point"].copy()
+                                else:
+                                    correct_orders[idx] = np.array([0.0, 0.0])
+
+                    current_distance = float(st.session_state.get("anim_binary_current_distance", maxdist))
+
+                    # Helper function to compute positions at a given distance
+                    def _compute_positions_at_distance(dist: float) -> dict[int, np.ndarray]:
+                        positions: dict[int, np.ndarray] = {}
+                        for idx in selected_indices:
+                            parent_pt = None
+                            succ_list = st.session_state.get("anim_successful_points", [])
+                            for s in reversed(succ_list):
+                                if int(s.get("original_parent_idx", -1)) == idx:
+                                    parent_pt = s["point"]
+                                    break
+                            if parent_pt is None:
+                                if idx < n_total_points:
+                                    parent_pt = all_pts[idx]
+                                else:
+                                    sidx = int(idx - n_total_points)
+                                    if 0 <= sidx < len(succ_list):
+                                        parent_pt = succ_list[sidx]["point"]
+                                    else:
+                                        parent_pt = np.array([0.0, 0.0])
+
+                            orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                            orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                            if orig_mag > 1e-9:
+                                direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
+                            else:
+                                direction = np.array([1.0, 0.0])
+
+                            new_pt = parent_pt + direction * dist
+                            new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
+                            new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                            positions[idx] = new_pt
+                        return positions
+
+                    # Helper to check PDP match for a set of positions
+                    # Get threshold parameters once outside the helper
+                    _thresh_bin, _max_mm_bin = get_threshold_params()
+                    def _check_match_for_positions(positions: dict[int, np.ndarray]) -> bool:
+                        test_points = all_pts_flat.copy()
+                        for idx, pt in positions.items():
+                            if idx < len(test_points):
+                                test_points[idx] = pt
+                        match_d1, match_d2 = check_pdp_match(
+                            all_pts_flat, test_points,
+                            pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                            rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_bin, max_mismatches=_max_mm_bin
+                        )
+                        return match_d1 and match_d2
+
+                    # Simulate all remaining binary search steps (from current step to 7)
+                    logger.debug(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
+
+                    # Step 1: halve to 0.5×maxdist if not done yet
+                    if binary_step == 0:
+                        current_distance = 0.5 * maxdist
+                        binary_step = 1
+
+                    # Steps 2-7: simulate binary search
+                    while binary_step < 7:
+                        binary_step += 1
+                        test_positions = _compute_positions_at_distance(current_distance)
+                        matches = _check_match_for_positions(test_positions)
+
+                        delta_term = (0.5 ** binary_step) * maxdist
+                        if matches:
+                            # Update correct_orders
+                            for idx in selected_indices:
+                                if idx in test_positions:
+                                    correct_orders[int(idx)] = np.array(test_positions[idx])
+                            current_distance = current_distance + delta_term
+                        else:
+                            current_distance = max(current_distance - delta_term, 0.0)
+
+                        logger.debug(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
+
+                    # Finalize: set to step 7+ and trigger completion
+                    st.session_state["anim_binary_step"] = 7
+                    st.session_state["anim_search_steps"] = 7
+                    st.session_state["anim_binary_current_distance"] = current_distance
+                    st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+
+                    # Place final points at correct_order positions
+                    final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0  # Trigger success
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    st.session_state["_skip_wait_intervals"] = False
+                    logger.debug(f"[DEBUG INSTANT BINARY] Completed - final distance: {current_distance:.4f}")
+                else:
+                    # Normal step-by-step processing
+                    binary_step += 1
+                    st.session_state["anim_binary_step"] = binary_step
+
+                search_steps += 1
+                st.session_state["anim_search_steps"] = search_steps
+
+                # Get all selected indices and their current generated positions
                 selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                anim_generated_points = st.session_state.get("anim_generated_points", {})
                 movement_vectors = st.session_state.get("anim_movement_vectors", {})
+
+                # Get correct_orders for all points (multi-point state)
                 correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
-                
+                logger.debug(f"[DEBUG BINARY LOAD] correct_orders from session_state: {len(correct_orders)} entries, keys={list(correct_orders.keys())}")
                 if not correct_orders:
+                    # Fallback: initialize from parent positions
+                    logger.debug("[DEBUG BINARY LOAD] correct_orders was EMPTY, initializing from parent positions")
                     for idx in selected_indices:
                         if idx < n_total_points:
                             correct_orders[idx] = all_pts[idx].copy()
@@ -13024,19 +13776,40 @@ if _should_process_animation:
                                 correct_orders[idx] = succ_list[sidx]["point"].copy()
                             else:
                                 correct_orders[idx] = np.array([0.0, 0.0])
-                
+
+                # Get current distance (same for all points in synchronized movement)
                 current_distance = float(st.session_state.get("anim_binary_current_distance", maxdist))
-                
-                # Helper function to compute positions at a given distance
-                def _compute_positions_at_distance(dist: float) -> dict[int, np.ndarray]:
-                    positions: dict[int, np.ndarray] = {}
+
+                # Check if current candidate configuration matches PDP (ALL n points together)
+                current_matches = same_d1 and same_d2
+
+                logger.debug(f"[DEBUG BINARY STEP {binary_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
+
+                # Add diagnostic row
+                diag_rows: list[dict[str, Any]] = st.session_state.get("diag_rows", [])
+                diag_rows.append({
+                    "n": binary_step,
+                    "order_match_d1": same_d1,
+                    "order_match_d2": same_d2,
+                    "current_distance": current_distance,
+                    "n_selected_points": len(selected_indices),
+                })
+                st.session_state["diag_rows"] = diag_rows
+
+                # Helper: compute new positions for all points at given distance
+                # MUST check successful_points first for updated parent positions (same logic as iteration setup)
+                def compute_new_positions(dist: float) -> dict[int, np.ndarray]:
+                    new_positions: dict[int, np.ndarray] = {}
                     for idx in selected_indices:
+                        # Get parent position - check successful_points first for updated parent
                         parent_pt = None
                         succ_list = st.session_state.get("anim_successful_points", [])
                         for s in reversed(succ_list):
                             if int(s.get("original_parent_idx", -1)) == idx:
                                 parent_pt = s["point"]
                                 break
+
+                        # If not found in successful_points, use original position
                         if parent_pt is None:
                             if idx < n_total_points:
                                 parent_pt = all_pts[idx]
@@ -13046,269 +13819,238 @@ if _should_process_animation:
                                     parent_pt = succ_list[sidx]["point"]
                                 else:
                                     parent_pt = np.array([0.0, 0.0])
-                        
+
+                        # Get original movement vector and scale to new distance
                         orig_vec = movement_vectors.get(idx, (0.0, 0.0))
                         orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
                         if orig_mag > 1e-9:
+                            # Unit direction from original vector
                             direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
                         else:
-                            direction = np.array([1.0, 0.0])
-                        
+                            direction = np.array([1.0, 0.0])  # Fallback direction
+
+                        # New position: parent + direction × dist
                         new_pt = parent_pt + direction * dist
                         new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
                         new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
-                        positions[idx] = new_pt
-                    return positions
-                
-                # Helper to check PDP match for a set of positions
-                # Get threshold parameters once outside the helper
-                _thresh_bin, _max_mm_bin = get_threshold_params()
-                def _check_match_for_positions(positions: dict[int, np.ndarray]) -> bool:
-                    test_points = all_pts_flat.copy()
-                    for idx, pt in positions.items():
-                        if idx < len(test_points):
-                            test_points[idx] = pt
-                    match_d1, match_d2 = check_pdp_match(
-                        all_pts_flat, test_points,
-                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_bin, max_mismatches=_max_mm_bin
-                    )
-                    return match_d1 and match_d2
-                
-                # Simulate all remaining binary search steps (from current step to 7)
-                logger.debug(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
-                
-                # Step 1: halve to 0.5×maxdist if not done yet
-                if binary_step == 0:
-                    current_distance = 0.5 * maxdist
-                    binary_step = 1
-                
-                # Steps 2-7: simulate binary search
-                while binary_step < 7:
-                    binary_step += 1
-                    test_positions = _compute_positions_at_distance(current_distance)
-                    matches = _check_match_for_positions(test_positions)
-                    
-                    delta_term = (0.5 ** binary_step) * maxdist
-                    if matches:
-                        # Update correct_orders
+                        new_positions[idx] = new_pt
+                    return new_positions
+
+                if binary_step >= 7:
+                    # After 7 steps: finalize at correct_orders for ALL points
+                    # If current step matches, update correct_orders first
+                    if current_matches:
                         for idx in selected_indices:
-                            if idx in test_positions:
-                                correct_orders[int(idx)] = np.array(test_positions[idx])
-                        current_distance = current_distance + delta_term
+                            if idx in anim_generated_points:
+                                correct_orders[int(idx)] = np.array(anim_generated_points[idx])
+                        st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                        st.session_state["anim_had_full_match"] = True
+
+                    # DEBUG: print correct_orders contents
+                    logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders keys={list(correct_orders.keys())}")
+                    for k, v in correct_orders.items():
+                        logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders[{k}]={v}")
+                    logger.debug(f"[DEBUG BINARY FINALIZE] had_full_match={st.session_state.get('anim_had_full_match', False)}")
+
+                    # Place final points at correct_order positions (use int(idx) for key lookup)
+                    final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+
+                    # DEBUG: print final_positions
+                    for k, v in final_positions.items():
+                        logger.debug(f"[DEBUG BINARY FINALIZE] final_positions[{k}]={v}")
+
+                    # For backwards compatibility, keep single generated_point as first one
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0  # Trigger success
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    logger.debug(f"[DEBUG BINARY] FINALIZE at correct_orders for {len(selected_indices)} points")
+
+                elif binary_step == 1:
+                    # Step 1: Special case - halve distance FIRST before testing
+                    # Current points are at maxdist, halve to 0.5×maxdist
+                    new_distance = 0.5 * maxdist
+                    st.session_state["anim_binary_current_distance"] = new_distance
+
+                    # Compute new positions for ALL points
+                    new_positions = compute_new_positions(new_distance)
+
+                    # For backwards compatibility, keep single generated_point as first one
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = new_distance
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
+                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
+                else:
+                    # Steps 2-7: Test current position, then apply +/- formula
+                    # delta_term = 0.5^(binary_step) × maxdist
+                    # (step 2: 0.5², step 3: 0.5³, etc.)
+                    delta_term = (0.5 ** binary_step) * maxdist
+
+                    if current_matches:
+                        # Match! 
+                        # 1. Update correct_orders to current point positions for ALL points
+                        for idx in selected_indices:
+                            if idx in anim_generated_points:
+                                correct_orders[int(idx)] = np.array(anim_generated_points[idx])
+                        st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                        st.session_state["anim_had_full_match"] = True
+                        # 2. Add delta_term to distance
+                        new_distance = current_distance + delta_term
+                        logger.debug(f"[DEBUG BINARY STEP {binary_step}] MATCH! distance {current_distance:.4f} + {delta_term:.4f} = {new_distance:.4f}")
                     else:
-                        current_distance = max(current_distance - delta_term, 0.0)
-                    
-                    logger.debug(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
-                
-                # Finalize: set to step 7+ and trigger completion
-                st.session_state["anim_binary_step"] = 7
-                st.session_state["anim_search_steps"] = 7
-                st.session_state["anim_binary_current_distance"] = current_distance
-                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
-                
-                # Place final points at correct_order positions
-                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0  # Trigger success
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                st.session_state["_skip_wait_intervals"] = False
-                logger.debug(f"[DEBUG INSTANT BINARY] Completed - final distance: {current_distance:.4f}")
-            else:
-                # Normal step-by-step processing
-                binary_step += 1
-                st.session_state["anim_binary_step"] = binary_step
-            
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
-            
-            # Get all selected indices and their current generated positions
-            selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
-            anim_generated_points = st.session_state.get("anim_generated_points", {})
-            movement_vectors = st.session_state.get("anim_movement_vectors", {})
-            
-            # Get correct_orders for all points (multi-point state)
-            correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
-            logger.debug(f"[DEBUG BINARY LOAD] correct_orders from session_state: {len(correct_orders)} entries, keys={list(correct_orders.keys())}")
-            if not correct_orders:
-                # Fallback: initialize from parent positions
-                logger.debug("[DEBUG BINARY LOAD] correct_orders was EMPTY, initializing from parent positions")
-                for idx in selected_indices:
-                    if idx < n_total_points:
-                        correct_orders[idx] = all_pts[idx].copy()
-                    else:
-                        sidx = int(idx - n_total_points)
+                        # No match: subtract delta_term from distance
+                        new_distance = current_distance - delta_term
+                        logger.debug(f"[DEBUG BINARY STEP {binary_step}] NO MATCH! distance {current_distance:.4f} - {delta_term:.4f} = {new_distance:.4f}")
+
+                    # Ensure distance stays positive
+                    new_distance = max(new_distance, 0.0)
+                    st.session_state["anim_binary_current_distance"] = new_distance
+
+                    # Compute new positions for ALL points
+                    new_positions = compute_new_positions(new_distance)
+
+                    # For backwards compatibility, keep single generated_point as first one
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_binary_correct_order"] = correct_orders.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = new_distance
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
+                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] Next candidates at distance {new_distance:.4f} for {len(selected_indices)} points")
+
+            elif linear_mode:
+                # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
+                # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
+                # Stop when: (1) all points match, or (2) distance <= 0
+
+                linear_step = int(st.session_state.get("anim_linear_step", 0))
+
+                # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining linear steps at once
+                if _skip_wait_intervals:
+                    # Get all selected indices and movement vectors
+                    selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                    movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                    correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
+
+                    if not correct_orders:
+                        for idx in selected_indices:
+                            if idx < n_total_points:
+                                correct_orders[idx] = all_pts[idx].copy()
+                            else:
+                                sidx = int(idx - n_total_points)
+                                succ_list = st.session_state.get("anim_successful_points", [])
+                                if 0 <= sidx < len(succ_list):
+                                    correct_orders[idx] = succ_list[sidx]["point"].copy()
+                                else:
+                                    correct_orders[idx] = np.array([0.0, 0.0])
+
+                    current_distance = float(st.session_state.get("anim_linear_current_distance", maxdist))
+                    step_size = float(st.session_state.get("anim_linear_step_size", maxdist * 0.1))
+
+                    # Helper: get parent position for an index
+                    def _get_parent_lin(idx: int) -> np.ndarray:
                         succ_list = st.session_state.get("anim_successful_points", [])
-                        if 0 <= sidx < len(succ_list):
-                            correct_orders[idx] = succ_list[sidx]["point"].copy()
-                        else:
-                            correct_orders[idx] = np.array([0.0, 0.0])
-            
-            # Get current distance (same for all points in synchronized movement)
-            current_distance = float(st.session_state.get("anim_binary_current_distance", maxdist))
-            
-            # Check if current candidate configuration matches PDP (ALL n points together)
-            current_matches = same_d1 and same_d2
-            
-            logger.debug(f"[DEBUG BINARY STEP {binary_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
-            
-            # Add diagnostic row
-            diag_rows: list[dict[str, Any]] = st.session_state.get("diag_rows", [])
-            diag_rows.append({
-                "n": binary_step,
-                "order_match_d1": same_d1,
-                "order_match_d2": same_d2,
-                "current_distance": current_distance,
-                "n_selected_points": len(selected_indices),
-            })
-            st.session_state["diag_rows"] = diag_rows
-            
-            # Helper: compute new positions for all points at given distance
-            # MUST check successful_points first for updated parent positions (same logic as iteration setup)
-            def compute_new_positions(dist: float) -> dict[int, np.ndarray]:
-                new_positions: dict[int, np.ndarray] = {}
-                for idx in selected_indices:
-                    # Get parent position - check successful_points first for updated parent
-                    parent_pt = None
-                    succ_list = st.session_state.get("anim_successful_points", [])
-                    for s in reversed(succ_list):
-                        if int(s.get("original_parent_idx", -1)) == idx:
-                            parent_pt = s["point"]
-                            break
-                    
-                    # If not found in successful_points, use original position
-                    if parent_pt is None:
+                        for s in reversed(succ_list):
+                            if int(s.get("original_parent_idx", -1)) == idx:
+                                return s["point"]
                         if idx < n_total_points:
-                            parent_pt = all_pts[idx]
+                            return all_pts[idx]
                         else:
                             sidx = int(idx - n_total_points)
                             if 0 <= sidx < len(succ_list):
-                                parent_pt = succ_list[sidx]["point"]
+                                return succ_list[sidx]["point"]
+                            return np.array([0.0, 0.0])
+
+                    # Helper to compute positions at a given distance
+                    def _compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
+                        positions: dict[int, np.ndarray] = {}
+                        for idx in selected_indices:
+                            parent_pt = _get_parent_lin(idx)
+                            orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                            orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                            if orig_mag > 1e-9:
+                                direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
                             else:
-                                parent_pt = np.array([0.0, 0.0])
-                    
-                    # Get original movement vector and scale to new distance
-                    orig_vec = movement_vectors.get(idx, (0.0, 0.0))
-                    orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
-                    if orig_mag > 1e-9:
-                        # Unit direction from original vector
-                        direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
-                    else:
-                        direction = np.array([1.0, 0.0])  # Fallback direction
-                    
-                    # New position: parent + direction × dist
-                    new_pt = parent_pt + direction * dist
-                    new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
-                    new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
-                    new_positions[idx] = new_pt
-                return new_positions
-            
-            if binary_step >= 7:
-                # After 7 steps: finalize at correct_orders for ALL points
-                # If current step matches, update correct_orders first
-                if current_matches:
-                    for idx in selected_indices:
-                        if idx in anim_generated_points:
-                            correct_orders[int(idx)] = np.array(anim_generated_points[idx])
+                                direction = np.array([1.0, 0.0])
+                            new_pt = parent_pt + direction * dist
+                            new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
+                            new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
+                            positions[idx] = new_pt
+                        return positions
+
+                    # Helper to check PDP match for a set of positions
+                    # Get threshold parameters once outside the helper
+                    _thresh_lin, _max_mm_lin = get_threshold_params()
+                    def _check_linear_match(positions: dict[int, np.ndarray]) -> bool:
+                        test_points = all_pts_flat.copy()
+                        for idx, pt in positions.items():
+                            if idx < len(test_points):
+                                test_points[idx] = pt
+                        match_d1, match_d2 = check_pdp_match(
+                            all_pts_flat, test_points,
+                            pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                            rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_lin, max_mismatches=_max_mm_lin
+                        )
+                        return match_d1 and match_d2
+
+                    # Simulate all linear search steps until match or distance <= 0
+                    logger.debug(f"[DEBUG INSTANT LINEAR] Starting instant completion from step {linear_step}")
+                    max_linear_steps = 100  # Safety limit
+
+                    while linear_step < max_linear_steps and current_distance > 0:
+                        linear_step += 1
+                        test_positions = _compute_linear_positions(current_distance)
+                        matches = _check_linear_match(test_positions)
+
+                        logger.debug(f"[DEBUG INSTANT LINEAR] Step {linear_step}: match={matches}, distance={current_distance:.4f}")
+
+                        if matches:
+                            # Update correct_orders and finalize
+                            for idx in selected_indices:
+                                if idx in test_positions:
+                                    correct_orders[int(idx)] = np.array(test_positions[idx])
+                            break
+
+                        current_distance = max(current_distance - step_size, 0.0)
+
+                    # Finalize
+                    st.session_state["anim_linear_step"] = linear_step
+                    st.session_state["anim_search_steps"] = linear_step
+                    st.session_state["anim_linear_current_distance"] = current_distance
                     st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
-                    st.session_state["anim_had_full_match"] = True
-                
-                # DEBUG: print correct_orders contents
-                logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders keys={list(correct_orders.keys())}")
-                for k, v in correct_orders.items():
-                    logger.debug(f"[DEBUG BINARY FINALIZE] correct_orders[{k}]={v}")
-                logger.debug(f"[DEBUG BINARY FINALIZE] had_full_match={st.session_state.get('anim_had_full_match', False)}")
-                
-                # Place final points at correct_order positions (use int(idx) for key lookup)
-                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
-                
-                # DEBUG: print final_positions
-                for k, v in final_positions.items():
-                    logger.debug(f"[DEBUG BINARY FINALIZE] final_positions[{k}]={v}")
-                
-                # For backwards compatibility, keep single generated_point as first one
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0  # Trigger success
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                logger.debug(f"[DEBUG BINARY] FINALIZE at correct_orders for {len(selected_indices)} points")
-                
-            elif binary_step == 1:
-                # Step 1: Special case - halve distance FIRST before testing
-                # Current points are at maxdist, halve to 0.5×maxdist
-                new_distance = 0.5 * maxdist
-                st.session_state["anim_binary_current_distance"] = new_distance
-                
-                # Compute new positions for ALL points
-                new_positions = compute_new_positions(new_distance)
-                
-                # For backwards compatibility, keep single generated_point as first one
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = new_distance
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                logger.debug(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
-            else:
-                # Steps 2-7: Test current position, then apply +/- formula
-                # delta_term = 0.5^(binary_step) × maxdist
-                # (step 2: 0.5², step 3: 0.5³, etc.)
-                delta_term = (0.5 ** binary_step) * maxdist
-                
-                if current_matches:
-                    # Match! 
-                    # 1. Update correct_orders to current point positions for ALL points
-                    for idx in selected_indices:
-                        if idx in anim_generated_points:
-                            correct_orders[int(idx)] = np.array(anim_generated_points[idx])
-                    st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
-                    st.session_state["anim_had_full_match"] = True
-                    # 2. Add delta_term to distance
-                    new_distance = current_distance + delta_term
-                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] MATCH! distance {current_distance:.4f} + {delta_term:.4f} = {new_distance:.4f}")
+
+                    # Place final points at correct_order positions
+                    final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0  # Trigger success
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    st.session_state["_skip_wait_intervals"] = False
+                    logger.debug(f"[DEBUG INSTANT LINEAR] Completed at step {linear_step}, distance: {current_distance:.4f}")
                 else:
-                    # No match: subtract delta_term from distance
-                    new_distance = current_distance - delta_term
-                    logger.debug(f"[DEBUG BINARY STEP {binary_step}] NO MATCH! distance {current_distance:.4f} - {delta_term:.4f} = {new_distance:.4f}")
-                
-                # Ensure distance stays positive
-                new_distance = max(new_distance, 0.0)
-                st.session_state["anim_binary_current_distance"] = new_distance
-                
-                # Compute new positions for ALL points
-                new_positions = compute_new_positions(new_distance)
-                
-                # For backwards compatibility, keep single generated_point as first one
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = new_distance
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                logger.debug(f"[DEBUG BINARY STEP {binary_step}] Next candidates at distance {new_distance:.4f} for {len(selected_indices)} points")
-        
-        elif linear_mode:
-            # ============= LINEAR SEARCH STRATEGY (MULTI-POINT) =============
-            # Algorithm: Decrease distance by 0.1×maxdist per step until ALL n points have order match
-            # Stop when: (1) all points match, or (2) distance <= 0
-            
-            linear_step = int(st.session_state.get("anim_linear_step", 0))
-            
-            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining linear steps at once
-            if _skip_wait_intervals:
-                # Get all selected indices and movement vectors
+                    # Normal step-by-step processing
+                    linear_step += 1
+                    st.session_state["anim_linear_step"] = linear_step
+
+                search_steps += 1
+                st.session_state["anim_search_steps"] = search_steps
+
+                # Get all selected indices and their movement vectors
                 selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
                 movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                anim_generated_points = st.session_state.get("anim_generated_points", {})
+
+                # Get correct_orders for all points (multi-point state)
                 correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
-                
                 if not correct_orders:
                     for idx in selected_indices:
                         if idx < n_total_points:
@@ -13320,12 +14062,29 @@ if _should_process_animation:
                                 correct_orders[idx] = succ_list[sidx]["point"].copy()
                             else:
                                 correct_orders[idx] = np.array([0.0, 0.0])
-                
+
+                # Get current distance and step size
                 current_distance = float(st.session_state.get("anim_linear_current_distance", maxdist))
                 step_size = float(st.session_state.get("anim_linear_step_size", maxdist * 0.1))
-                
+
+                # Check if current candidate configuration matches PDP (ALL n points together)
+                current_matches = same_d1 and same_d2
+
+                logger.debug(f"[DEBUG LINEAR STEP {linear_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
+
+                # Add diagnostic row
+                diag_rows = st.session_state.get("diag_rows", [])
+                diag_rows.append({
+                    "n": linear_step,
+                    "order_match_d1": same_d1,
+                    "order_match_d2": same_d2,
+                    "current_distance": current_distance,
+                    "n_selected_points": len(selected_indices),
+                })
+                st.session_state["diag_rows"] = diag_rows
+
                 # Helper: get parent position for an index
-                def _get_parent_lin(idx: int) -> np.ndarray:
+                def get_parent_for_idx_lin(idx: int) -> np.ndarray:
                     succ_list = st.session_state.get("anim_successful_points", [])
                     for s in reversed(succ_list):
                         if int(s.get("original_parent_idx", -1)) == idx:
@@ -13337,12 +14096,12 @@ if _should_process_animation:
                         if 0 <= sidx < len(succ_list):
                             return succ_list[sidx]["point"]
                         return np.array([0.0, 0.0])
-                
-                # Helper to compute positions at a given distance
-                def _compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
-                    positions: dict[int, np.ndarray] = {}
+
+                # Helper: compute new positions for all points at given distance
+                def compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
+                    new_positions: dict[int, np.ndarray] = {}
                     for idx in selected_indices:
-                        parent_pt = _get_parent_lin(idx)
+                        parent_pt = get_parent_for_idx_lin(idx)
                         orig_vec = movement_vectors.get(idx, (0.0, 0.0))
                         orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
                         if orig_mag > 1e-9:
@@ -13352,166 +14111,166 @@ if _should_process_animation:
                         new_pt = parent_pt + direction * dist
                         new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
                         new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
-                        positions[idx] = new_pt
-                    return positions
-                
-                # Helper to check PDP match for a set of positions
-                # Get threshold parameters once outside the helper
-                _thresh_lin, _max_mm_lin = get_threshold_params()
-                def _check_linear_match(positions: dict[int, np.ndarray]) -> bool:
-                    test_points = all_pts_flat.copy()
-                    for idx, pt in positions.items():
-                        if idx < len(test_points):
-                            test_points[idx] = pt
-                    match_d1, match_d2 = check_pdp_match(
-                        all_pts_flat, test_points,
-                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_lin, max_mismatches=_max_mm_lin
-                    )
-                    return match_d1 and match_d2
-                
-                # Simulate all linear search steps until match or distance <= 0
-                logger.debug(f"[DEBUG INSTANT LINEAR] Starting instant completion from step {linear_step}")
-                max_linear_steps = 100  # Safety limit
-                
-                while linear_step < max_linear_steps and current_distance > 0:
-                    linear_step += 1
-                    test_positions = _compute_linear_positions(current_distance)
-                    matches = _check_linear_match(test_positions)
-                    
-                    logger.debug(f"[DEBUG INSTANT LINEAR] Step {linear_step}: match={matches}, distance={current_distance:.4f}")
-                    
-                    if matches:
-                        # Update correct_orders and finalize
-                        for idx in selected_indices:
-                            if idx in test_positions:
-                                correct_orders[int(idx)] = np.array(test_positions[idx])
-                        break
-                    
-                    current_distance = max(current_distance - step_size, 0.0)
-                
-                # Finalize
-                st.session_state["anim_linear_step"] = linear_step
-                st.session_state["anim_search_steps"] = linear_step
-                st.session_state["anim_linear_current_distance"] = current_distance
-                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
-                
-                # Place final points at correct_order positions
-                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0  # Trigger success
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                st.session_state["_skip_wait_intervals"] = False
-                logger.debug(f"[DEBUG INSTANT LINEAR] Completed at step {linear_step}, distance: {current_distance:.4f}")
+                        new_positions[idx] = new_pt
+                    return new_positions
+
+                if current_matches:
+                    # MATCH! Update correct_orders to current positions and FINALIZE
+                    for idx in selected_indices:
+                        if idx in anim_generated_points:
+                            correct_orders[int(idx)] = np.array(anim_generated_points[idx])
+                    st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
+                    st.session_state["anim_had_full_match"] = True
+
+                    # Place final points at correct_order positions
+                    final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
+
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0  # Trigger success
+                    st.session_state["anim_in_search"] = True
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    logger.debug(f"[DEBUG LINEAR] MATCH at step {linear_step}, distance {current_distance:.4f} - FINALIZE")
+
+                else:
+                    # NO MATCH: decrease distance by step_size (10% of maxdist)
+                    new_distance = current_distance - step_size
+
+                    if new_distance <= 0:
+                        # Distance reached 0, finalize at parent positions (no match found)
+                        final_positions = {int(idx): get_parent_for_idx_lin(idx).copy() for idx in selected_indices}
+
+                        first_idx = selected_indices[0] if selected_indices else parent_idx
+                        st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                        st.session_state["anim_distance"] = 0.0
+                        st.session_state["anim_in_search"] = True
+                        st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                        st.session_state["anim_generated_points"] = final_positions
+                        st.session_state["anim_movement_vectors"] = {}
+                        logger.debug(f"[DEBUG LINEAR] Distance reached 0, snapping {len(selected_indices)} points to parents")
+                    else:
+                        # Update distance and compute new positions
+                        st.session_state["anim_linear_current_distance"] = new_distance
+                        new_positions = compute_linear_positions(new_distance)
+
+                        first_idx = selected_indices[0] if selected_indices else parent_idx
+                        st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                        st.session_state["anim_distance"] = new_distance
+                        st.session_state["anim_in_search"] = True
+                        st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                        st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
+                        logger.debug(f"[DEBUG LINEAR STEP {linear_step}] NO MATCH! distance {current_distance:.4f} - {step_size:.4f} = {new_distance:.4f}")
+
             else:
-                # Normal step-by-step processing
-                linear_step += 1
-                st.session_state["anim_linear_step"] = linear_step
-            
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
-            
-            # Get all selected indices and their movement vectors
-            selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
-            movement_vectors = st.session_state.get("anim_movement_vectors", {})
-            anim_generated_points = st.session_state.get("anim_generated_points", {})
-            
-            # Get correct_orders for all points (multi-point state)
-            correct_orders: dict[int, np.ndarray] = st.session_state.get("anim_binary_correct_orders", {})
-            if not correct_orders:
-                for idx in selected_indices:
+                # ============= EXPONENTIAL SEARCH STRATEGY (MULTI-POINT) =============
+                # Algorithm: Halve distance for ALL n points TOGETHER until ALL n points have order match
+                search_steps += 1
+                st.session_state["anim_search_steps"] = search_steps
+
+                # Get all selected indices and their movement vectors
+                selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
+                movement_vectors = st.session_state.get("anim_movement_vectors", {})
+                anim_generated_points = st.session_state.get("anim_generated_points", {})
+
+                # Helper: get parent position for an index
+                # MUST check successful_points first for updated parent positions (same logic as iteration setup)
+                def get_parent_for_idx_exp(idx: int) -> np.ndarray:
+                    # First check if this point was successfully placed in a previous iteration
+                    succ_list = st.session_state.get("anim_successful_points", [])
+                    for s in reversed(succ_list):
+                        if int(s.get("original_parent_idx", -1)) == idx:
+                            return s["point"]
+                    # If not found, use original position
                     if idx < n_total_points:
-                        correct_orders[idx] = all_pts[idx].copy()
+                        return all_pts[idx]
                     else:
                         sidx = int(idx - n_total_points)
-                        succ_list = st.session_state.get("anim_successful_points", [])
                         if 0 <= sidx < len(succ_list):
-                            correct_orders[idx] = succ_list[sidx]["point"].copy()
+                            return succ_list[sidx]["point"]
+                        return np.array([0.0, 0.0])
+
+                # Helper: compute new positions for ALL points at given distance
+                def compute_exp_positions(dist: float) -> dict[int, np.ndarray]:
+                    new_positions: dict[int, np.ndarray] = {}
+                    for idx in selected_indices:
+                        parent_pt = get_parent_for_idx_exp(idx)
+
+                        # Get original movement vector and scale to new distance
+                        # Direction is preserved from initial generation - NO random tweaks!
+                        orig_vec = movement_vectors.get(idx, (0.0, 0.0))
+                        orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
+                        if orig_mag > 1e-9:
+                            direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
                         else:
-                            correct_orders[idx] = np.array([0.0, 0.0])
-            
-            # Get current distance and step size
-            current_distance = float(st.session_state.get("anim_linear_current_distance", maxdist))
-            step_size = float(st.session_state.get("anim_linear_step_size", maxdist * 0.1))
-            
-            # Check if current candidate configuration matches PDP (ALL n points together)
-            current_matches = same_d1 and same_d2
-            
-            logger.debug(f"[DEBUG LINEAR STEP {linear_step}] current_distance={current_distance:.4f}, n_points={len(selected_indices)}, matched={current_matches}")
-            
-            # Add diagnostic row
-            diag_rows = st.session_state.get("diag_rows", [])
-            diag_rows.append({
-                "n": linear_step,
-                "order_match_d1": same_d1,
-                "order_match_d2": same_d2,
-                "current_distance": current_distance,
-                "n_selected_points": len(selected_indices),
-            })
-            st.session_state["diag_rows"] = diag_rows
-            
-            # Helper: get parent position for an index
-            def get_parent_for_idx_lin(idx: int) -> np.ndarray:
-                succ_list = st.session_state.get("anim_successful_points", [])
-                for s in reversed(succ_list):
-                    if int(s.get("original_parent_idx", -1)) == idx:
-                        return s["point"]
-                if idx < n_total_points:
-                    return all_pts[idx]
-                else:
-                    sidx = int(idx - n_total_points)
-                    if 0 <= sidx < len(succ_list):
-                        return succ_list[sidx]["point"]
-                    return np.array([0.0, 0.0])
-            
-            # Helper: compute new positions for all points at given distance
-            def compute_linear_positions(dist: float) -> dict[int, np.ndarray]:
-                new_positions: dict[int, np.ndarray] = {}
-                for idx in selected_indices:
-                    parent_pt = get_parent_for_idx_lin(idx)
-                    orig_vec = movement_vectors.get(idx, (0.0, 0.0))
-                    orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
-                    if orig_mag > 1e-9:
-                        direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
-                    else:
-                        direction = np.array([1.0, 0.0])
-                    new_pt = parent_pt + direction * dist
-                    new_pt[0] = np.clip(new_pt[0], COORD_MIN_X, COORD_MAX_X)
-                    new_pt[1] = np.clip(new_pt[1], COORD_MIN_Y, COORD_MAX_Y)
-                    new_positions[idx] = new_pt
-                return new_positions
-            
-            if current_matches:
-                # MATCH! Update correct_orders to current positions and FINALIZE
-                for idx in selected_indices:
-                    if idx in anim_generated_points:
-                        correct_orders[int(idx)] = np.array(anim_generated_points[idx])
-                st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
-                st.session_state["anim_had_full_match"] = True
-                
-                # Place final points at correct_order positions
-                final_positions = {int(idx): correct_orders.get(int(idx), all_pts[idx].copy()) for idx in selected_indices}
-                
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_binary_correct_order"] = correct_orders.get(int(first_idx), np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0  # Trigger success
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                logger.debug(f"[DEBUG LINEAR] MATCH at step {linear_step}, distance {current_distance:.4f} - FINALIZE")
-                
-            else:
-                # NO MATCH: decrease distance by step_size (10% of maxdist)
-                new_distance = current_distance - step_size
-                
-                if new_distance <= 0:
-                    # Distance reached 0, finalize at parent positions (no match found)
-                    final_positions = {int(idx): get_parent_for_idx_lin(idx).copy() for idx in selected_indices}
-                    
+                            direction = np.array([1.0, 0.0])
+
+                        # New position: parent + direction × dist
+                        # NO CLIPPING - all points must be at exact same distance from parent
+                        new_pt = parent_pt + direction * dist
+                        new_positions[idx] = new_pt
+                    return new_positions
+
+                # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining exponential steps at once
+                if _skip_wait_intervals:
+                    # Helper to check PDP match for a set of positions
+                    # Get threshold parameters once outside the helper
+                    _thresh_exp, _max_mm_exp = get_threshold_params()
+                    def _check_exp_match(positions: dict[int, np.ndarray]) -> bool:
+                        test_points = all_pts_flat.copy()
+                        for idx, pt in positions.items():
+                            if idx < len(test_points):
+                                test_points[idx] = pt
+                        match_d1, match_d2 = check_pdp_match(
+                            all_pts_flat, test_points,
+                            pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
+                            rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_exp, max_mismatches=_max_mm_exp
+                        )
+                        return match_d1 and match_d2
+
+                    # Simulate all exponential search steps until match or min distance
+                    logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Starting instant completion from step {search_steps}")
+                    current_dist = float(distance)
+                    min_distance = 1e-5
+                    final_positions: dict[int, np.ndarray] = {}
+
+                    while search_steps < max_search_steps and current_dist > min_distance:
+                        search_steps += 1
+                        current_dist = current_dist / 2.0
+                        if current_dist < min_distance:
+                            current_dist = min_distance * 2.0
+
+                        test_positions = compute_exp_positions(current_dist)
+                        matches = _check_exp_match(test_positions)
+
+                        logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Step {search_steps}: match={matches}, distance={current_dist:.4f}")
+
+                        if matches:
+                            final_positions = {int(k): v.copy() for k, v in test_positions.items()}
+                            break
+
+                    # If no match found, snap to parent positions
+                    if not final_positions:
+                        for idx in selected_indices:
+                            final_positions[int(idx)] = get_parent_for_idx_exp(idx).copy()
+
+                    # Finalize
+                    st.session_state["anim_search_steps"] = search_steps
+                    first_idx = selected_indices[0] if selected_indices else parent_idx
+                    st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    st.session_state["anim_distance"] = 0.0  # Trigger success
+                    st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
+                    st.session_state["anim_generated_points"] = final_positions
+                    st.session_state["_skip_wait_intervals"] = False
+                    logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Completed at step {search_steps}, distance: {current_dist:.4f}")
+                elif search_steps >= max_search_steps:
+                    # If search did not converge, snap ALL points back to parent positions
+                    final_positions: dict[int, np.ndarray] = {}
+                    for idx in selected_indices:
+                        final_positions[int(idx)] = get_parent_for_idx_exp(idx).copy()
+
+                    # For backwards compatibility
                     first_idx = selected_indices[0] if selected_indices else parent_idx
                     st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
                     st.session_state["anim_distance"] = 0.0
@@ -13519,832 +14278,804 @@ if _should_process_animation:
                     st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                     st.session_state["anim_generated_points"] = final_positions
                     st.session_state["anim_movement_vectors"] = {}
-                    logger.debug(f"[DEBUG LINEAR] Distance reached 0, snapping {len(selected_indices)} points to parents")
+                    logger.debug(f"[DEBUG EXPONENTIAL] Max steps reached, snapping {len(selected_indices)} points to parents")
                 else:
-                    # Update distance and compute new positions
-                    st.session_state["anim_linear_current_distance"] = new_distance
-                    new_positions = compute_linear_positions(new_distance)
-                    
+                    # Standard exponential search step: halve distance for ALL n points together
+                    new_distance = distance / 2.0
+                    min_distance = 1e-5
+                    if new_distance < min_distance:
+                        new_distance = min_distance * 2.0
+
+                    # Compute new positions for ALL points at the new distance
+                    new_positions = compute_exp_positions(new_distance)
+
+                    # For backwards compatibility, use first point
                     first_idx = selected_indices[0] if selected_indices else parent_idx
-                    st.session_state["anim_generated_point"] = new_positions.get(first_idx, np.array([0.0, 0.0])).copy()
+                    first_pt = new_positions.get(first_idx, np.array([0.0, 0.0]))
+                    first_parent = get_parent_for_idx_exp(first_idx)
+                    angle_local = np.arctan2(first_pt[1] - first_parent[1], first_pt[0] - first_parent[0])
+
+                    st.session_state["anim_generated_point"] = first_pt.copy()
                     st.session_state["anim_distance"] = new_distance
+                    st.session_state["anim_angle"] = angle_local
                     st.session_state["anim_in_search"] = True
                     st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
                     st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                    logger.debug(f"[DEBUG LINEAR STEP {linear_step}] NO MATCH! distance {current_distance:.4f} - {step_size:.4f} = {new_distance:.4f}")
+                    logger.debug(f"[DEBUG EXPONENTIAL] Halving ALL {len(selected_indices)} points: {distance:.4f} -> {new_distance:.4f}")
 
-        else:
-            # ============= EXPONENTIAL SEARCH STRATEGY (MULTI-POINT) =============
-            # Algorithm: Halve distance for ALL n points TOGETHER until ALL n points have order match
-            search_steps += 1
-            st.session_state["anim_search_steps"] = search_steps
-            
-            # Get all selected indices and their movement vectors
-            selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
-            movement_vectors = st.session_state.get("anim_movement_vectors", {})
-            anim_generated_points = st.session_state.get("anim_generated_points", {})
-            
-            # Helper: get parent position for an index
-            # MUST check successful_points first for updated parent positions (same logic as iteration setup)
-            def get_parent_for_idx_exp(idx: int) -> np.ndarray:
-                # First check if this point was successfully placed in a previous iteration
-                succ_list = st.session_state.get("anim_successful_points", [])
-                for s in reversed(succ_list):
-                    if int(s.get("original_parent_idx", -1)) == idx:
-                        return s["point"]
-                # If not found, use original position
-                if idx < n_total_points:
-                    return all_pts[idx]
-                else:
-                    sidx = int(idx - n_total_points)
-                    if 0 <= sidx < len(succ_list):
-                        return succ_list[sidx]["point"]
-                    return np.array([0.0, 0.0])
-            
-            # Helper: compute new positions for ALL points at given distance
-            def compute_exp_positions(dist: float) -> dict[int, np.ndarray]:
-                new_positions: dict[int, np.ndarray] = {}
-                for idx in selected_indices:
-                    parent_pt = get_parent_for_idx_exp(idx)
-                    
-                    # Get original movement vector and scale to new distance
-                    # Direction is preserved from initial generation - NO random tweaks!
-                    orig_vec = movement_vectors.get(idx, (0.0, 0.0))
-                    orig_mag = np.sqrt(orig_vec[0]**2 + orig_vec[1]**2)
-                    if orig_mag > 1e-9:
-                        direction = np.array([orig_vec[0] / orig_mag, orig_vec[1] / orig_mag])
-                    else:
-                        direction = np.array([1.0, 0.0])
-                    
-                    # New position: parent + direction × dist
-                    # NO CLIPPING - all points must be at exact same distance from parent
-                    new_pt = parent_pt + direction * dist
-                    new_positions[idx] = new_pt
-                return new_positions
+        # Determine rerun behavior based on animation mode
+        # _manual_step_mode: pause after each step (one search iteration)
+        # _manual_iteration_mode: pause only when a point is placed (iteration complete)
+        # _manual_config_mode: pause only when a configuration is complete
 
-            # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining exponential steps at once
-            if _skip_wait_intervals:
-                # Helper to check PDP match for a set of positions
-                # Get threshold parameters once outside the helper
-                _thresh_exp, _max_mm_exp = get_threshold_params()
-                def _check_exp_match(positions: dict[int, np.ndarray]) -> bool:
-                    test_points = all_pts_flat.copy()
-                    for idx, pt in positions.items():
-                        if idx < len(test_points):
-                            test_points[idx] = pt
-                    match_d1, match_d2 = check_pdp_match(
-                        all_pts_flat, test_points,
-                        pdp_variant=pdp_variant, buffer_x=buffer_x, buffer_y=buffer_y,
-                        rough_x=rough_x, rough_y=rough_y, match_threshold=_thresh_exp, max_mismatches=_max_mm_exp
-                    )
-                    return match_d1 and match_d2
-                
-                # Simulate all exponential search steps until match or min distance
-                logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Starting instant completion from step {search_steps}")
-                current_dist = float(distance)
-                min_distance = 1e-5
-                final_positions: dict[int, np.ndarray] = {}
-                
-                while search_steps < max_search_steps and current_dist > min_distance:
-                    search_steps += 1
-                    current_dist = current_dist / 2.0
-                    if current_dist < min_distance:
-                        current_dist = min_distance * 2.0
-                    
-                    test_positions = compute_exp_positions(current_dist)
-                    matches = _check_exp_match(test_positions)
-                    
-                    logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Step {search_steps}: match={matches}, distance={current_dist:.4f}")
-                    
-                    if matches:
-                        final_positions = {int(k): v.copy() for k, v in test_positions.items()}
-                        break
-                
-                # If no match found, snap to parent positions
-                if not final_positions:
-                    for idx in selected_indices:
-                        final_positions[int(idx)] = get_parent_for_idx_exp(idx).copy()
-                
-                # Finalize
-                st.session_state["anim_search_steps"] = search_steps
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0  # Trigger success
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                st.session_state["_skip_wait_intervals"] = False
-                logger.debug(f"[DEBUG INSTANT EXPONENTIAL] Completed at step {search_steps}, distance: {current_dist:.4f}")
-            elif search_steps >= max_search_steps:
-                # If search did not converge, snap ALL points back to parent positions
-                final_positions: dict[int, np.ndarray] = {}
-                for idx in selected_indices:
-                    final_positions[int(idx)] = get_parent_for_idx_exp(idx).copy()
-                
-                # For backwards compatibility
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                st.session_state["anim_generated_point"] = final_positions.get(first_idx, np.array([0.0, 0.0])).copy()
-                st.session_state["anim_distance"] = 0.0
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = final_positions
-                st.session_state["anim_movement_vectors"] = {}
-                logger.debug(f"[DEBUG EXPONENTIAL] Max steps reached, snapping {len(selected_indices)} points to parents")
+        # Check if we just completed an iteration (point was placed)
+        _iteration_just_completed = st.session_state.get("_iteration_just_completed", False)
+        # Check if we just completed a configuration
+        _config_just_completed = st.session_state.get("_config_just_completed", False)
+
+        # Clear the completion flags
+        st.session_state["_iteration_just_completed"] = False
+        st.session_state["_config_just_completed"] = False
+
+        if _manual_step_mode:
+            # Manual step-by-step: always pause after each step
+            # Clear the step request flag
+            st.session_state["anim_manual_step_requested"] = False
+            st.rerun()
+        elif _manual_iteration_mode:
+            if _iteration_just_completed:
+                # Iteration complete - pause and wait for user
+                st.session_state["anim_manual_iteration_requested"] = False
+                st.session_state["_iteration_in_progress"] = False
+                st.rerun()
             else:
-                # Standard exponential search step: halve distance for ALL n points together
-                new_distance = distance / 2.0
-                min_distance = 1e-5
-                if new_distance < min_distance:
-                    new_distance = min_distance * 2.0
-                
-                # Compute new positions for ALL points at the new distance
-                new_positions = compute_exp_positions(new_distance)
-                
-                # For backwards compatibility, use first point
-                first_idx = selected_indices[0] if selected_indices else parent_idx
-                first_pt = new_positions.get(first_idx, np.array([0.0, 0.0]))
-                first_parent = get_parent_for_idx_exp(first_idx)
-                angle_local = np.arctan2(first_pt[1] - first_parent[1], first_pt[0] - first_parent[0])
-                
-                st.session_state["anim_generated_point"] = first_pt.copy()
-                st.session_state["anim_distance"] = new_distance
-                st.session_state["anim_angle"] = angle_local
-                st.session_state["anim_in_search"] = True
-                st.session_state["anim_selected_indices"] = [int(i) for i in selected_indices]
-                st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
-                logger.debug(f"[DEBUG EXPONENTIAL] Halving ALL {len(selected_indices)} points: {distance:.4f} -> {new_distance:.4f}")
-
-    # Determine rerun behavior based on animation mode
-    # _manual_step_mode: pause after each step (one search iteration)
-    # _manual_iteration_mode: pause only when a point is placed (iteration complete)
-    # _manual_config_mode: pause only when a configuration is complete
-    
-    # Check if we just completed an iteration (point was placed)
-    _iteration_just_completed = st.session_state.get("_iteration_just_completed", False)
-    # Check if we just completed a configuration
-    _config_just_completed = st.session_state.get("_config_just_completed", False)
-    
-    # Clear the completion flags
-    st.session_state["_iteration_just_completed"] = False
-    st.session_state["_config_just_completed"] = False
-    
-    if _manual_step_mode:
-        # Manual step-by-step: always pause after each step
-        # Clear the step request flag
-        st.session_state["anim_manual_step_requested"] = False
-        st.rerun()
-    elif _manual_iteration_mode:
-        if _iteration_just_completed:
-            # Iteration complete - pause and wait for user
-            st.session_state["anim_manual_iteration_requested"] = False
-            st.session_state["_iteration_in_progress"] = False
-            st.rerun()
+                # Still in the middle of an iteration - continue automatically
+                st.rerun()
+        elif _manual_config_mode:
+            if _config_just_completed:
+                # Configuration complete - pause and wait for user
+                st.session_state["anim_manual_config_requested"] = False
+                st.session_state["_config_in_progress"] = False
+                st.rerun()
+            else:
+                # Still in the middle of a configuration - continue automatically
+                st.rerun()
         else:
-            # Still in the middle of an iteration - continue automatically
+            # Auto mode: non-blocking wait in short increments so Streamlit stays responsive
+            _elapsed = 0.0
+            while _elapsed < wait_s:
+                _step = min(0.1, wait_s - _elapsed)
+                time.sleep(_step)
+                _elapsed += _step
             st.rerun()
-    elif _manual_config_mode:
-        if _config_just_completed:
-            # Configuration complete - pause and wait for user
-            st.session_state["anim_manual_config_requested"] = False
-            st.session_state["_config_in_progress"] = False
-            st.rerun()
-        else:
-            # Still in the middle of a configuration - continue automatically
-            st.rerun()
-    else:
-        # Auto mode: non-blocking wait in short increments so Streamlit stays responsive
-        _elapsed = 0.0
-        while _elapsed < wait_s:
-            _step = min(0.1, wait_s - _elapsed)
-            time.sleep(_step)
-            _elapsed += _step
-        st.rerun()
 
-# ============= CSV Export Section ============
-st.markdown("<hr />", unsafe_allow_html=True)
-st.markdown("<h3 style='margin-top:1.5rem;'>Generated configuration (CSV)</h3>", unsafe_allow_html=True)
 
-all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
-current_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-current_config_num = int(st.session_state.get("anim_current_config", 1))
+with tab_static:
+    # ============= CSV Export Section ============
+    st.markdown("<hr />", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top:1.5rem;'>Generated configuration (CSV)</h3>", unsafe_allow_html=True)
 
-# Initialize latest_generated and configs_by_variant for use in animation
-latest_generated: dict[tuple[int, int], np.ndarray] = {}
-configs_by_variant: dict[str, list[int]] = {}
-# Build configs_by_variant from all_configs_list
-st.write(f"DEBUG BUILD: all_configs_list has {len(all_configs_list)} entries")
-for i, cfg in enumerate(all_configs_list):
-    variant = cfg.get("pdp_variant", "fundamental")
-    config_num = cfg.get("config_num", 0)
-    if i < 3:  # Show first 3
-        st.write(f"  Config {i}: variant={variant}, config_num={config_num}, points={len(cfg.get('points', []))}")
-    if variant not in configs_by_variant:
-        configs_by_variant[variant] = []
-    if config_num not in configs_by_variant[variant]:
-        configs_by_variant[variant].append(config_num)
+    all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
+    current_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+    current_config_num = int(st.session_state.get("anim_current_config", 1))
 
-if all_configs_list or current_successful_points:
-    # Collect all generated points, grouped per configuration
-    all_points_by_config: dict[int, list[SuccessfulPoint]] = {}
-
-    for config_data in all_configs_list:
-        config_num = config_data["config_num"]
-        points = config_data["points"]
-        all_points_by_config[config_num] = points
-
-    if current_successful_points:
-        all_points_by_config[current_config_num] = current_successful_points
-
-    # For each original_index keep the latest generated point (from most recent config)
+    # Initialize latest_generated and configs_by_variant for use in animation
     latest_generated: dict[tuple[int, int], np.ndarray] = {}
-    for config_num, points in all_points_by_config.items():
-        st.write(f"DEBUG POPULATE: Config {config_num} has {len(points)} points")
-        for sp in points:
-            orig_idx = int(sp.get("original_parent_idx", 0))
-            latest_generated[(config_num, orig_idx)] = sp["point"]
+    configs_by_variant: dict[str, list[int]] = {}
+    # Build configs_by_variant from all_configs_list
+    st.write(f"DEBUG BUILD: all_configs_list has {len(all_configs_list)} entries")
+    for i, cfg in enumerate(all_configs_list):
+        variant = cfg.get("pdp_variant", "fundamental")
+        config_num = cfg.get("config_num", 0)
+        if i < 3:  # Show first 3
+            st.write(f"  Config {i}: variant={variant}, config_num={config_num}, points={len(cfg.get('points', []))}")
+        if variant not in configs_by_variant:
+            configs_by_variant[variant] = []
+        if config_num not in configs_by_variant[variant]:
+            configs_by_variant[variant].append(config_num)
 
-    all_config_nums = sorted(all_points_by_config.keys())
+    if all_configs_list or current_successful_points:
+        # Collect all generated points, grouped per configuration
+        all_points_by_config: dict[int, list[SuccessfulPoint]] = {}
 
-    csv_rows: list[tuple[int, float, int, float, float]] = []
+        for config_data in all_configs_list:
+            config_num = config_data["config_num"]
+            points = config_data["points"]
+            all_points_by_config[config_num] = points
 
-    # Build rows for each configuration, in the style (c, t, o, x, y)
-    for config_num in all_config_nums:
-        # Shift configuration id so each configuration has a unique c-value
-        c_value = selected_c_int + config_num
+        if current_successful_points:
+            all_points_by_config[current_config_num] = current_successful_points
 
-        # Iterate over all objects in the flat index order
-        for flat_idx in range(n_total_points):
-            obj_id, local_idx, _ = get_object_info_for_flat_idx(flat_idx)
-            t_val = get_timestamp_for_flat_idx(flat_idx)
-            if (config_num, flat_idx) in latest_generated:
-                point = latest_generated[(config_num, flat_idx)]
-            else:
-                point = get_point_for_flat_idx(flat_idx)
-            csv_rows.append((c_value, float(t_val), int(obj_id), float(point[0]), float(point[1])))
+        # For each original_index keep the latest generated point (from most recent config)
+        latest_generated: dict[tuple[int, int], np.ndarray] = {}
+        for config_num, points in all_points_by_config.items():
+            st.write(f"DEBUG POPULATE: Config {config_num} has {len(points)} points")
+            for sp in points:
+                orig_idx = int(sp.get("original_parent_idx", 0))
+                latest_generated[(config_num, orig_idx)] = sp["point"]
 
-    csv_rows.sort(key=lambda row: (row[0], row[1], row[2]))
+        all_config_nums = sorted(all_points_by_config.keys())
 
-    csv_lines = ["c,t,o,x,y"]
-    for c, t, o, x, y in csv_rows:
-        csv_lines.append(f"{c},{t},{o},{x:.{COORD_CSV_PRECISION}f},{y:.{COORD_CSV_PRECISION}f}")
+        csv_rows: list[tuple[int, float, int, float, float]] = []
 
-    csv_content = "\n".join(csv_lines)
+        # Build rows for each configuration, in the style (c, t, o, x, y)
+        for config_num in all_config_nums:
+            # Shift configuration id so each configuration has a unique c-value
+            c_value = selected_c_int + config_num
 
-    st.text_area(
-        "Copy the generated configuration below:",
-        value=csv_content,
-        height=200,
-        key="csv_export"
-    )
-
-    st.download_button(
-        label="Download as CSV",
-        data=csv_content,
-        file_name=f"generated_config_c{selected_c_int}.csv",
-        mime="text/csv",
-        key="dl_csv"
-    )
-
-    # ============= Visualization of all configurations (Plotly) ============
-    st.markdown("<h3 style='margin-top:1.5rem;'>Visualization of generated configurations</h3>", unsafe_allow_html=True)
-    
-    # Build list of all available configurations: "Original" + generated configs
-    available_configs = ["Original"]
-    
-    # Build config labels for multiselect (format: "variant C{num}")
-    for variant in sorted(configs_by_variant.keys()):
-        for config_num in sorted(configs_by_variant[variant]):
-            available_configs.append(f"{variant} C{config_num}")
-    
-    # Configuration selector - default to only "Original"
-    st.markdown("**Select configurations to display:**")
-    selected_configs = st.multiselect(
-        "Show configurations:",
-        options=available_configs,
-        default=["Original"],
-        key="viz_config_filter",
-        help="Select which configurations to display in the visualization. "
-             "The 'Original' configuration shows the reference points as entered. "
-             "Generated configurations (e.g., 'fundamental C0') show alternative point arrangements "
-             "that satisfy the same PDP inequality matrix. Select multiple configurations to compare them visually."
-    )
-    
-    fig = go.Figure()
-    
-    # Add lane markings for traffic configurations (skip for custom uploads)
-    if not _is_custom_upload:
-        fig = add_lane_markings_to_figure(fig, selected_c_int, XLIM, YLIM)
-
-    # 1. Add Original Configuration - loop through ALL objects (only if selected)
-    if "Original" in selected_configs:
-        for i, obj_id in enumerate(sorted(all_points_plot.keys())):
-            pts = all_points_plot[obj_id]
-            vals = all_vals_plot[obj_id]
-            color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
-            label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-            # Build hover text for each point
-            hover_texts: list[str] = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
-                          for j, t in enumerate(vals)]
-            fig.add_trace(  # type: ignore[call-arg]
-                go.Scatter(
-                x=pts[:, 0],
-                y=pts[:, 1],
-                mode='lines+markers+text',
-                name=f'Original ({label})',
-                line=dict(color=color, width=2),
-                marker=dict(size=8),
-                text=[f"{label}_{{{int(t)}}}" for t in vals],
-                textposition="top center",
-                legendgroup='Original',
-                hovertemplate='%{hovertext}<extra></extra>',
-                hovertext=hover_texts,
-            ))
-        
-        # Add external reference points to Original configuration
-        if external_pts_for_window:
-            ext_pts_arr = np.array(external_pts_for_window)
-            hover_texts_ext: list[str] = []
-            text_labels_ext: list[str] = []
-            n_timestamps = len(selected_ts_window)
-            for idx, (ext_pt, ext_t) in enumerate(zip(external_pts_for_window, external_ts_for_window)):
-                ext_point_idx = idx % len(external_points_list) if external_points_list else idx
-                hover_texts_ext.append(
-                    f"<b>Original</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
-                    f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
-                    f"<i>(Fixed - does not move)</i>"
-                )
-                text_labels_ext.append(f"ext_{ext_point_idx}")
-            
-            fig.add_trace(  # type: ignore[call-arg]
-                go.Scatter(
-                x=ext_pts_arr[:, 0],
-                y=ext_pts_arr[:, 1],
-                mode='markers+text',
-                name='Original (external)',
-                marker=dict(size=10, symbol='square', color='gray', line=dict(color='black', width=1.5)),
-                text=text_labels_ext,
-                textposition="top center",
-                legendgroup='Original',
-                hovertemplate='%{hovertext}<extra></extra>',
-                hovertext=hover_texts_ext,
-            ))
-
-    # 2. Add Generated Configurations (only those selected)
-    for variant in sorted(configs_by_variant.keys()):
-        for config_num in sorted(configs_by_variant[variant]):
-            config_label = f"{variant} C{config_num}"
-            if config_label not in selected_configs:
-                continue  # Skip configurations not selected
-            
-            # Build generated points for this config (only movable objects)
-            generated_pts_config: dict[int, np.ndarray] = {}
+            # Iterate over all objects in the flat index order
             for flat_idx in range(n_total_points):
                 obj_id, local_idx, _ = get_object_info_for_flat_idx(flat_idx)
-                if obj_id == -1:  # Skip external points
-                    continue
-                if obj_id not in generated_pts_config:
-                    generated_pts_config[obj_id] = all_points_plot[obj_id].copy()
+                t_val = get_timestamp_for_flat_idx(flat_idx)
                 if (config_num, flat_idx) in latest_generated:
-                    generated_pts_config[obj_id][local_idx] = latest_generated[(config_num, flat_idx)]
-            
-            # Plot each object with its own color
-            for i, obj_id in enumerate(sorted(generated_pts_config.keys())):
-                pts = generated_pts_config[obj_id]
-                vals = all_vals_plot[obj_id]  # Get timestamps for point labels
+                    point = latest_generated[(config_num, flat_idx)]
+                else:
+                    point = get_point_for_flat_idx(flat_idx)
+                csv_rows.append((c_value, float(t_val), int(obj_id), float(point[0]), float(point[1])))
+
+        csv_rows.sort(key=lambda row: (row[0], row[1], row[2]))
+
+        csv_lines = ["c,t,o,x,y"]
+        for c, t, o, x, y in csv_rows:
+            csv_lines.append(f"{c},{t},{o},{x:.{COORD_CSV_PRECISION}f},{y:.{COORD_CSV_PRECISION}f}")
+
+        csv_content = "\n".join(csv_lines)
+
+        st.text_area(
+            "Copy the generated configuration below:",
+            value=csv_content,
+            height=200,
+            key="csv_export"
+        )
+
+        st.download_button(
+            label="Download as CSV",
+            data=csv_content,
+            file_name=f"generated_config_c{selected_c_int}.csv",
+            mime="text/csv",
+            key="dl_csv"
+        )
+
+        # ============= Visualization of all configurations (Plotly) ============
+        st.markdown("<h3 style='margin-top:1.5rem;'>Visualization of generated configurations</h3>", unsafe_allow_html=True)
+
+        # Build list of all available configurations: "Original" + generated configs
+        available_configs = ["Original"]
+
+        # Build config labels for multiselect (format: "variant C{num}")
+        for variant in sorted(configs_by_variant.keys()):
+            for config_num in sorted(configs_by_variant[variant]):
+                available_configs.append(f"{variant} C{config_num}")
+
+        # Configuration selector - default to only "Original"
+        st.markdown("**Select configurations to display:**")
+        selected_configs = st.multiselect(
+            "Show configurations:",
+            options=available_configs,
+            default=["Original"],
+            key="viz_config_filter",
+            help="Select which configurations to display in the visualization. "
+                 "The 'Original' configuration shows the reference points as entered. "
+                 "Generated configurations (e.g., 'fundamental C0') show alternative point arrangements "
+                 "that satisfy the same PDP inequality matrix. Select multiple configurations to compare them visually."
+        )
+
+        fig = go.Figure()
+
+        # Add lane markings for traffic configurations (skip for custom uploads)
+        if not _is_custom_upload:
+            fig = add_lane_markings_to_figure(fig, selected_c_int, XLIM, YLIM)
+
+        # 1. Add Original Configuration - loop through ALL objects (only if selected)
+        if "Original" in selected_configs:
+            for i, obj_id in enumerate(sorted(all_points_plot.keys())):
+                pts = all_points_plot[obj_id]
+                vals = all_vals_plot[obj_id]
                 color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
                 label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-                # Build hover text for each point showing config info
-                hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
-                              for j in range(len(pts))]
+                # Build hover text for each point
+                hover_texts: list[str] = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                              for j, t in enumerate(vals)]
                 fig.add_trace(  # type: ignore[call-arg]
                     go.Scatter(
                     x=pts[:, 0],
                     y=pts[:, 1],
-                    mode='lines+markers',
-                    name=f'{variant} C{config_num} ({label})',
-                    line=dict(color=color, width=1, dash='dash'),
-                    marker=dict(size=6, symbol='circle-open'),
-                    legendgroup=f'{variant}_C{config_num}',
+                    mode='lines+markers+text',
+                    name=f'Original ({label})',
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8),
+                    text=[f"{label}_{{{int(t)}}}" for t in vals],
+                    textposition="top center",
+                    legendgroup='Original',
                     hovertemplate='%{hovertext}<extra></extra>',
                     hovertext=hover_texts,
                 ))
-            
-            # Add external reference points to generated config (they remain fixed)
+
+            # Add external reference points to Original configuration
             if external_pts_for_window:
                 ext_pts_arr = np.array(external_pts_for_window)
-                hover_texts_ext = []
-                text_labels_ext = []
+                hover_texts_ext: list[str] = []
+                text_labels_ext: list[str] = []
                 n_timestamps = len(selected_ts_window)
                 for idx, (ext_pt, ext_t) in enumerate(zip(external_pts_for_window, external_ts_for_window)):
                     ext_point_idx = idx % len(external_points_list) if external_points_list else idx
                     hover_texts_ext.append(
-                        f"<b>{config_label}</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
+                        f"<b>Original</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
                         f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
                         f"<i>(Fixed - does not move)</i>"
                     )
-                
+                    text_labels_ext.append(f"ext_{ext_point_idx}")
+
                 fig.add_trace(  # type: ignore[call-arg]
                     go.Scatter(
                     x=ext_pts_arr[:, 0],
                     y=ext_pts_arr[:, 1],
-                    mode='markers',
-                    name=f'{config_label} (external)',
-                    marker=dict(size=8, symbol='square-open', color='gray', line=dict(color='black', width=1)),
-                    legendgroup=f'{variant}_C{config_num}',
+                    mode='markers+text',
+                    name='Original (external)',
+                    marker=dict(size=10, symbol='square', color='gray', line=dict(color='black', width=1.5)),
+                    text=text_labels_ext,
+                    textposition="top center",
+                    legendgroup='Original',
                     hovertemplate='%{hovertext}<extra></extra>',
                     hovertext=hover_texts_ext,
-                    showlegend=False,  # Don't show in legend to avoid clutter
                 ))
 
-    fig.update_layout(
-        width=800,
-        height=800,
-        xaxis=dict(
-            scaleanchor="y",
-            scaleratio=1,
-            constrain="domain",
-            range=[XLIM[0], XLIM[1]],
-            title="d1"
-        ),
-        yaxis=dict(
-            constrain="domain",
-            range=[YLIM[0], YLIM[1]],
-            title="d2"
-        ),
-        legend=dict(
-            groupclick="toggleitem" # Clicking a legend item toggles the whole group
-        ),
-        title="Comparison of Selected Configurations"
-    )
-    
-    st.plotly_chart(fig, width="stretch")
+        # 2. Add Generated Configurations (only those selected)
+        for variant in sorted(configs_by_variant.keys()):
+            for config_num in sorted(configs_by_variant[variant]):
+                config_label = f"{variant} C{config_num}"
+                if config_label not in selected_configs:
+                    continue  # Skip configurations not selected
 
-else:
-    st.info("Run an animation or use 'Generate configurations' to generate configuration data.")
+                # Build generated points for this config (only movable objects)
+                generated_pts_config: dict[int, np.ndarray] = {}
+                for flat_idx in range(n_total_points):
+                    obj_id, local_idx, _ = get_object_info_for_flat_idx(flat_idx)
+                    if obj_id == -1:  # Skip external points
+                        continue
+                    if obj_id not in generated_pts_config:
+                        generated_pts_config[obj_id] = all_points_plot[obj_id].copy()
+                    if (config_num, flat_idx) in latest_generated:
+                        generated_pts_config[obj_id][local_idx] = latest_generated[(config_num, flat_idx)]
 
-# ============= Smooth Animation Button (Always Available) ============
-st.markdown("---")
-st.markdown("### 🎬 Smooth Trajectory Animation")
-st.markdown("""
-Animate the selected configurations with smooth, continuous motion:
-- **Cubic spline interpolation** for natural, fluid trajectories
-- **Road boundaries and lane markings** clearly visible (3 meter rijvakken)
-- **Independent y-scale** to maximize space usage
-- Works with both **Original** and **Generated configurations**
-""")
+                # Plot each object with its own color
+                for i, obj_id in enumerate(sorted(generated_pts_config.keys())):
+                    pts = generated_pts_config[obj_id]
+                    vals = all_vals_plot[obj_id]  # Get timestamps for point labels
+                    color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
+                    label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
+                    # Build hover text for each point showing config info
+                    hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                                  for j in range(len(pts))]
+                    fig.add_trace(  # type: ignore[call-arg]
+                        go.Scatter(
+                        x=pts[:, 0],
+                        y=pts[:, 1],
+                        mode='lines+markers',
+                        name=f'{variant} C{config_num} ({label})',
+                        line=dict(color=color, width=1, dash='dash'),
+                        marker=dict(size=6, symbol='circle-open'),
+                        legendgroup=f'{variant}_C{config_num}',
+                        hovertemplate='%{hovertext}<extra></extra>',
+                        hovertext=hover_texts,
+                    ))
 
-# Build list of all available configurations for animation
-available_configs_anim = ["Original"]
-for variant in sorted(configs_by_variant.keys()):
-    for config_num in sorted(configs_by_variant[variant]):
-        available_configs_anim.append(f"{variant} C{config_num}")
+                # Add external reference points to generated config (they remain fixed)
+                if external_pts_for_window:
+                    ext_pts_arr = np.array(external_pts_for_window)
+                    hover_texts_ext = []
+                    text_labels_ext = []
+                    n_timestamps = len(selected_ts_window)
+                    for idx, (ext_pt, ext_t) in enumerate(zip(external_pts_for_window, external_ts_for_window)):
+                        ext_point_idx = idx % len(external_points_list) if external_points_list else idx
+                        hover_texts_ext.append(
+                            f"<b>{config_label}</b><br>Type: External Reference<br>Point: ext_{ext_point_idx}<br>"
+                            f"d1: {ext_pt[0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {ext_pt[1]:.{COORD_DISPLAY_PRECISION}f}<br>"
+                            f"<i>(Fixed - does not move)</i>"
+                        )
 
-# Configuration selector for animation - default to only "Original"
-st.markdown("**Select configurations to animate:**")
-selected_configs_anim = st.multiselect(
-    "Animate configurations:",
-    options=available_configs_anim,
-    default=["Original"],
-    key="anim_config_filter",
-    help="Select which configurations to animate. Multiple selections will be shown together in one animation."
-)
+                    fig.add_trace(  # type: ignore[call-arg]
+                        go.Scatter(
+                        x=ext_pts_arr[:, 0],
+                        y=ext_pts_arr[:, 1],
+                        mode='markers',
+                        name=f'{config_label} (external)',
+                        marker=dict(size=8, symbol='square-open', color='gray', line=dict(color='black', width=1)),
+                        legendgroup=f'{variant}_C{config_num}',
+                        hovertemplate='%{hovertext}<extra></extra>',
+                        hovertext=hover_texts_ext,
+                        showlegend=False,  # Don't show in legend to avoid clutter
+                    ))
 
-if st.button("▶ Play Animation", key="btn_smooth_animation", 
-             help="Opens an interactive animation of all selected configurations with smooth trajectories, road boundaries, and lane markings"):
-    st.session_state["show_smooth_animation"] = True
-    st.session_state["selected_configs_for_anim"] = selected_configs_anim
+        fig.update_layout(
+            width=800,
+            height=800,
+            xaxis=dict(
+                scaleanchor="y",
+                scaleratio=1,
+                constrain="domain",
+                range=[XLIM[0], XLIM[1]],
+                title="d1"
+            ),
+            yaxis=dict(
+                constrain="domain",
+                range=[YLIM[0], YLIM[1]],
+                title="d2"
+            ),
+            legend=dict(
+                groupclick="toggleitem" # Clicking a legend item toggles the whole group
+            ),
+            title="Comparison of Selected Configurations"
+        )
 
-# Display the smooth animation if requested
-if st.session_state.get("show_smooth_animation", False):
+        st.plotly_chart(fig, width="stretch")
+
+    else:
+        st.info("Run an animation or use 'Generate configurations' to generate configuration data.")
+
+
+with tab_animation:
+    # ============= Smooth Animation Button (Always Available) ============
     st.markdown("---")
-    st.markdown("**Animation Controls:** Use Play/Pause buttons and the slider to control playback.")
-    
-    # Get the selected configs from session state
-    anim_configs = st.session_state.get("selected_configs_for_anim", ["Original"])
-    
-    # Create the animation
-    anim_fig = create_smooth_animation(
-        all_points_plot=all_points_plot,
-        all_vals_plot=all_vals_plot,
-        latest_generated=latest_generated,
-        selected_configs=anim_configs,
-        configs_by_variant=configs_by_variant,
-        all_configs_list=all_configs_list,
-        external_pts_for_window=external_pts_for_window,
-        external_ts_for_window=external_ts_for_window,
-        external_points_list=external_points_list,
-        n_total_points=n_total_points,
-        selected_c_int=selected_c_int,
-        xlim=XLIM,
-        ylim=YLIM,
+    st.markdown("### 🎬 Smooth Trajectory Animation")
+    st.markdown("""
+    Animate the selected configurations with smooth, continuous motion:
+    - **Cubic spline interpolation** for natural, fluid trajectories
+    - **Road boundaries and lane markings** clearly visible (3 meter rijvakken)
+    - **Independent y-scale** to maximize space usage
+    - Works with both **Original** and **Generated configurations**
+    """)
+
+    # Build list of all available configurations for animation
+    available_configs_anim = ["Original"]
+    for variant in sorted(configs_by_variant.keys()):
+        for config_num in sorted(configs_by_variant[variant]):
+            available_configs_anim.append(f"{variant} C{config_num}")
+
+    # Configuration selector for animation - default to only "Original"
+    st.markdown("**Select configurations to animate:**")
+    selected_configs_anim = st.multiselect(
+        "Animate configurations:",
+        options=available_configs_anim,
+        default=["Original"],
+        key="anim_config_filter",
+        help="Select which configurations to animate. Multiple selections will be shown together in one animation."
     )
-    
-    # Display the animation
-    st.plotly_chart(anim_fig, width="stretch")
-    
-    # Add a close button
-    if st.button("✖ Close Animation", key="btn_close_animation_v2"):
-        st.session_state["show_smooth_animation"] = False
-        st.rerun()
 
-# ============= Diagnostic table for binary strategy ============
-st.markdown("<hr />", unsafe_allow_html=True)
-st.markdown("<h3 style='margin-top:1.5rem;'>Diagnostics binary strategy (per step)</h3>", unsafe_allow_html=True)
+    if st.button("▶ Play Animation", key="btn_smooth_animation", 
+                 help="Opens an interactive animation of all selected configurations with smooth trajectories, road boundaries, and lane markings"):
+        st.session_state["show_smooth_animation"] = True
+        st.session_state["selected_configs_for_anim"] = selected_configs_anim
 
-diag_rows = st.session_state.get("diag_rows", [])
+    # Display the smooth animation if requested
+    if st.session_state.get("show_smooth_animation", False):
+        st.markdown("---")
+        st.markdown("**Animation Controls:** Use Play/Pause buttons and the slider to control playback.")
 
-if diag_rows:
-    diag_df = pd.DataFrame(diag_rows, columns=[
-        "n",
-        "order_match_d1",
-        "order_match_d2",
-        "D_before_update",
-        "delta",
-    ])
-    st.table(diag_df)
-else:
-    st.info("No binary approximation steps recorded yet.")
+        # Get the selected configs from session state
+        anim_configs = st.session_state.get("selected_configs_for_anim", ["Original"])
 
-# ============= Diagnostic text box: result per iteration ============
-st.markdown("<h3 style='margin-top:1.5rem;'>Order match per iteration (binary strategy)</h3>", unsafe_allow_html=True)
+        # Create the animation
+        anim_fig = create_smooth_animation(
+            all_points_plot=all_points_plot,
+            all_vals_plot=all_vals_plot,
+            latest_generated=latest_generated,
+            selected_configs=anim_configs,
+            configs_by_variant=configs_by_variant,
+            all_configs_list=all_configs_list,
+            external_pts_for_window=external_pts_for_window,
+            external_ts_for_window=external_ts_for_window,
+            external_points_list=external_points_list,
+            n_total_points=n_total_points,
+            selected_c_int=selected_c_int,
+            xlim=XLIM,
+            ylim=YLIM,
+        )
 
-iter_log = st.session_state.get("binary_iteration_summary", [])
+        # Display the animation
+        st.plotly_chart(anim_fig, width="stretch")
 
-if iter_log:
-    lines: list[str] = []
-    for item in iter_log:
-        cnum = item.get("config", 1)
-        it = item.get("iteration", 0)
-        m1 = item.get("match_d1", False)
-        m2 = item.get("match_d2", False)
-        lines.append(f"Config {cnum}, iteration {it}: d1 match = {m1}, d2 match = {m2}")
-    summary_text = "\n".join(lines)
-    st.text_area(
-        "Overview of order match after final placement of the point",
-        value=summary_text,
-        height=160,
-        key="binary_iter_overview"
-    )
-else:
-    st.info("No final points placed with the binary strategy yet.")
+        # Add a close button
+        if st.button("✖ Close Animation", key="btn_close_animation_v2"):
+            st.session_state["show_smooth_animation"] = False
+            st.rerun()
 
-# ============= Angles Between Consecutive Timestamps Graph ============
-st.markdown("<hr />", unsafe_allow_html=True)
-st.markdown("<h3 style='margin-top:1.5rem;'>Angles Between Consecutive Timestamps</h3>", unsafe_allow_html=True)
 
-def compute_vector_angle(p1: np.ndarray, p2: np.ndarray) -> float:
-    """
-    Compute the angle (in degrees) of the vector from p1 to p2.
-    Angle is measured from the positive x-axis, counterclockwise.
-    Returns angle in degrees [-180, 180].
-    """
-    dx = p2[0] - p1[0]
-    dy = p2[1] - p1[1]
-    return np.degrees(np.arctan2(dy, dx))
+with tab_static:
+    # ============= Diagnostic table for binary strategy ============
+    st.markdown("<hr />", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top:1.5rem;'>Diagnostics binary strategy (per step)</h3>", unsafe_allow_html=True)
 
-def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict: dict[int, np.ndarray], timestamps: list) -> dict[str, dict[str, float]]:
-    """
-    Build angle series data from points and timestamps.
-    Only calculates angles between consecutive timestamps for the SAME object.
-    e.g., k0→k1, k1→k2, l0→l1, l1→l2 (NOT k0→l0 or k0→k2)
-    Returns dict of series_name -> {timestamp_label: angle}
-    """
-    angle_series: dict[str, dict[str, float]] = {}  # type: ignore[misc]
-    
-    # Only angles between consecutive timestamps for each object
-    for i, o_id in enumerate(sorted(points_dict.keys())):
-        pts = points_dict[o_id]
-        ts = vals_dict[o_id]
-        label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
-        
-        for idx in range(len(pts) - 1):
-            t_from = ts[idx]
-            t_to = ts[idx + 1]
-            angle = compute_vector_angle(pts[idx], pts[idx + 1])
-            series_name = f"{label}{int(t_from)}→{label}{int(t_to)}"
-            ts_label = f"t={int(t_from)}"
-            if series_name not in angle_series:
-                angle_series[series_name] = {}
-            angle_series[series_name][ts_label] = angle
-    
-    return angle_series
+    diag_rows = st.session_state.get("diag_rows", [])
 
-# ============= Angle Comparison Section =============
-st.markdown("<hr />", unsafe_allow_html=True)
-st.markdown("<h3 style='margin-top:1.5rem;'>📐 Angle Comparison</h3>", unsafe_allow_html=True)
+    if diag_rows:
+        diag_df = pd.DataFrame(diag_rows, columns=[
+            "n",
+            "order_match_d1",
+            "order_match_d2",
+            "D_before_update",
+            "delta",
+        ])
+        st.table(diag_df)
+    else:
+        st.info("No binary approximation steps recorded yet.")
 
-# Check if we have generated configurations to display
-# Use the same data source as the Plotly comparison chart (anim_all_configs)
-angles_all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
-angles_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
-has_generated_data = len(angles_all_configs_list) > 0 or len(angles_successful_points) > 0
+    # ============= Diagnostic text box: result per iteration ============
+    st.markdown("<h3 style='margin-top:1.5rem;'>Order match per iteration (binary strategy)</h3>", unsafe_allow_html=True)
 
-if has_generated_data:
-    # Get all timestamps
-    all_timestamps = sorted(selected_ts_window)
-    
-    # Build angle data for ORIGINAL configuration
-    original_angle_series = build_angle_series_from_points(all_points_plot, all_vals_plot, all_timestamps)
-    
-    # Build angle data for ALL configurations (1 to max_config)
-    generated_angle_series_all: dict[int, dict[str, dict[str, float]]] = {}
-    
-    # First, collect all generated points per config
-    all_generated_pts_per_config: dict[int, dict[tuple[int, int], np.ndarray]] = {}  # config_num -> {(obj_id, local_idx) -> point}
-    
-    # From stored configs
-    for config_data in angles_all_configs_list:
-        config_num = config_data.get("config_num", 1)
-        if config_num not in all_generated_pts_per_config:
-            all_generated_pts_per_config[config_num] = {}
-        # Note: data is stored as "points" not "successful_points"
-        points_list = config_data.get("points", config_data.get("successful_points", []))
-        for sp in points_list:
+    iter_log = st.session_state.get("binary_iteration_summary", [])
+
+    if iter_log:
+        lines: list[str] = []
+        for item in iter_log:
+            cnum = item.get("config", 1)
+            it = item.get("iteration", 0)
+            m1 = item.get("match_d1", False)
+            m2 = item.get("match_d2", False)
+            lines.append(f"Config {cnum}, iteration {it}: d1 match = {m1}, d2 match = {m2}")
+        summary_text = "\n".join(lines)
+        st.text_area(
+            "Overview of order match after final placement of the point",
+            value=summary_text,
+            height=160,
+            key="binary_iter_overview"
+        )
+    else:
+        st.info("No final points placed with the binary strategy yet.")
+
+    # ============= Angles Between Consecutive Timestamps Graph ============
+    st.markdown("<hr />", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top:1.5rem;'>Angles Between Consecutive Timestamps</h3>", unsafe_allow_html=True)
+
+    def compute_vector_angle(p1: np.ndarray, p2: np.ndarray) -> float:
+        """
+        Compute the angle (in degrees) of the vector from p1 to p2.
+        Angle is measured from the positive x-axis, counterclockwise.
+        Returns angle in degrees [-180, 180].
+        """
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        return np.degrees(np.arctan2(dy, dx))
+
+    def build_angle_series_from_points(points_dict: dict[int, np.ndarray], vals_dict: dict[int, np.ndarray], timestamps: list) -> dict[str, dict[str, float]]:
+        """
+        Build angle series data from points and timestamps.
+        Only calculates angles between consecutive timestamps for the SAME object.
+        e.g., k0→k1, k1→k2, l0→l1, l1→l2 (NOT k0→l0 or k0→k2)
+        Returns dict of series_name -> {timestamp_label: angle}
+        """
+        angle_series: dict[str, dict[str, float]] = {}  # type: ignore[misc]
+
+        # Only angles between consecutive timestamps for each object
+        for i, o_id in enumerate(sorted(points_dict.keys())):
+            pts = points_dict[o_id]
+            ts = vals_dict[o_id]
+            label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
+
+            for idx in range(len(pts) - 1):
+                t_from = ts[idx]
+                t_to = ts[idx + 1]
+                angle = compute_vector_angle(pts[idx], pts[idx + 1])
+                series_name = f"{label}{int(t_from)}→{label}{int(t_to)}"
+                ts_label = f"t={int(t_from)}"
+                if series_name not in angle_series:
+                    angle_series[series_name] = {}
+                angle_series[series_name][ts_label] = angle
+
+        return angle_series
+
+    # ============= Angle Comparison Section =============
+    st.markdown("<hr />", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top:1.5rem;'>📐 Angle Comparison</h3>", unsafe_allow_html=True)
+
+    # Check if we have generated configurations to display
+    # Use the same data source as the Plotly comparison chart (anim_all_configs)
+    angles_all_configs_list: list[dict[str, Any]] = st.session_state.get("anim_all_configs", [])
+    angles_successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+    has_generated_data = len(angles_all_configs_list) > 0 or len(angles_successful_points) > 0
+
+    if has_generated_data:
+        # Get all timestamps
+        all_timestamps = sorted(selected_ts_window)
+
+        # Build angle data for ORIGINAL configuration
+        original_angle_series = build_angle_series_from_points(all_points_plot, all_vals_plot, all_timestamps)
+
+        # Build angle data for ALL configurations (1 to max_config)
+        generated_angle_series_all: dict[int, dict[str, dict[str, float]]] = {}
+
+        # First, collect all generated points per config
+        all_generated_pts_per_config: dict[int, dict[tuple[int, int], np.ndarray]] = {}  # config_num -> {(obj_id, local_idx) -> point}
+
+        # From stored configs
+        for config_data in angles_all_configs_list:
+            config_num = config_data.get("config_num", 1)
+            if config_num not in all_generated_pts_per_config:
+                all_generated_pts_per_config[config_num] = {}
+            # Note: data is stored as "points" not "successful_points"
+            points_list = config_data.get("points", config_data.get("successful_points", []))
+            for sp in points_list:
+                orig_idx = sp.get("original_parent_idx", sp.get("parent_idx", 0))
+                obj_id, local_idx, _ = get_object_info_for_flat_idx(orig_idx)
+                if obj_id != -1:
+                    all_generated_pts_per_config[config_num][(obj_id, local_idx)] = np.array(sp["point"])
+
+        # From current animation state (if not yet in all_configs)
+        current_config_num = st.session_state.get("anim_current_config", 1)
+        if current_config_num not in all_generated_pts_per_config:
+            all_generated_pts_per_config[current_config_num] = {}
+        for sp in angles_successful_points:
             orig_idx = sp.get("original_parent_idx", sp.get("parent_idx", 0))
             obj_id, local_idx, _ = get_object_info_for_flat_idx(orig_idx)
             if obj_id != -1:
-                all_generated_pts_per_config[config_num][(obj_id, local_idx)] = np.array(sp["point"])
-    
-    # From current animation state (if not yet in all_configs)
-    current_config_num = st.session_state.get("anim_current_config", 1)
-    if current_config_num not in all_generated_pts_per_config:
-        all_generated_pts_per_config[current_config_num] = {}
-    for sp in angles_successful_points:
-        orig_idx = sp.get("original_parent_idx", sp.get("parent_idx", 0))
-        obj_id, local_idx, _ = get_object_info_for_flat_idx(orig_idx)
-        if obj_id != -1:
-            all_generated_pts_per_config[current_config_num][(obj_id, local_idx)] = np.array(sp["point"])
-    
-    # Get the maximum config number to ensure we have all configs from 1 to max
-    config_nums_list: list[int] = [int(k) for k in all_generated_pts_per_config.keys()]
-    max_config_num: int = max(config_nums_list) if config_nums_list else 1
-    
-    # Build angle series for each config from 1 to max_config_num
-    for config_num in range(1, max_config_num + 1):
-        # Build generated points for this config
-        gen_points_dict: dict[int, np.ndarray] = {}
-        gen_vals_dict: dict[int, np.ndarray] = {}
-        
-        # Start with original points
-        for o_id in all_points_plot.keys():
-            gen_points_dict[o_id] = all_points_plot[o_id].copy()
-            gen_vals_dict[o_id] = all_vals_plot[o_id].copy()
-        
-        # Apply generated points for this config (if any)
-        if config_num in all_generated_pts_per_config:
-            for (obj_id, local_idx), gen_pt in all_generated_pts_per_config[config_num].items():
-                if obj_id in gen_points_dict:
-                    gen_points_dict[obj_id][local_idx] = gen_pt
-        
-        # Calculate angles for this config
-        if gen_points_dict:
-            generated_angle_series_all[config_num] = build_angle_series_from_points(
-                gen_points_dict, gen_vals_dict, all_timestamps
-            )
-    
-    # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360°)
-    # Each line = one vector pair (e.g., k0→k1), showing its angle across all configurations
-    fig_angles = go.Figure()
-    
-    colors_plotly = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
-                     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
-    
-    # Get all unique vector pairs from the original angle series
-    # Each series_name is like "k0→k1" or "k0→l0"
-    all_vector_pairs = sorted(original_angle_series.keys())
-    
-    # Get all config numbers and sort them (starting from 1)
-    # Explicit list comprehension ensures type clarity for Pylance
-    all_config_nums: list[int] = sorted([int(k) for k in generated_angle_series_all.keys()])
-    
-    # Store stats for each vector pair
-    vector_pair_stats: dict[str, dict[str, float]] = {}
-    
-    # For each vector pair, collect angles across all configurations
-    for idx, vector_pair in enumerate(all_vector_pairs):
-        x_vals: list[int] = []  # Config numbers (1, 2, 3, ...)
-        y_vals: list[float] = []  # Angles for this vector pair (0-360°)
-        
-        # Get angle from each generated configuration
-        for config_num in all_config_nums:
-            if config_num in generated_angle_series_all:
-                gen_series = generated_angle_series_all[config_num]
-                if vector_pair in gen_series:
-                    # Get the first (and should be only) angle value for this vector pair
-                    angles_dict = gen_series[vector_pair]
-                    if angles_dict:
-                        # Take the first angle value (there should be one per vector pair)
-                        angle_val = list(angles_dict.values())[0]
-                        # Convert from -180/180 to 0/360 range
-                        if angle_val < 0:
-                            angle_val = angle_val + 360
-                        # Convert to 0-360 range first, then take remainder of 90
-                        angle_mod90 = angle_val % 90
-                        x_vals.append(config_num)
-                        y_vals.append(angle_mod90)
-        
-        # Calculate stats for this vector pair
-        if len(y_vals) >= 1:
-            avg_angle: float = float(np.mean(y_vals))
-            std_angle: float = float(np.std(y_vals)) if len(y_vals) > 1 else 0.0
-            vector_pair_stats[vector_pair] = {
-                "avg": avg_angle,
-                "std": std_angle,
-                "count": len(y_vals)
-            }
-        
-        # Only add trace if we have data
-        if len(x_vals) >= 1:
-            # Show k0→k1 by default, hide others (click legend to show)
-            is_visible = (vector_pair == "k0→k1")
-            
-            fig_angles.add_trace(go.Scatter(
-                name=f"{vector_pair} (avg={avg_angle:.1f}°, σ={std_angle:.1f}°)",
-                x=x_vals,
-                y=y_vals,
-                mode='lines+markers',
-                line=dict(color=colors_plotly[idx % len(colors_plotly)], width=2),
-                marker=dict(size=8),
-                visible=True if is_visible else "legendonly"  # Hide by default, show in legend
-            ))
-    
-    # Determine x-axis range
-    min_config = min([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
-    max_config = max([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
-    
-    # Get the search strategy (exponential, linear, binary)
-    search_strategy = st.session_state.get("cfg_strategy", "exponential")
-    
-    # Get the PDP variants (fundamental, rough, buffer, etc.)
-    pdp_variants_list = st.session_state.get("anim_pdp_variants_list", [])
-    if not pdp_variants_list:
-        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    pdp_variants_str = ", ".join(pdp_variants_list) if pdp_variants_list else "fundamental"
-    
-    fig_angles.update_layout(
-        title=f"Vector Angles (mod 90°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
-        xaxis_title="Configuration",
-        yaxis_title="Angle mod 90° (degrees)",
-        height=800,  # Twice as high
-        showlegend=True,
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02,
-            itemclick="toggle",  # Click to toggle visibility
-            itemdoubleclick="toggleothers"  # Double-click to isolate
-        ),
-        xaxis=dict(
-            range=[0, max_config + 1],
-            tickmode='linear',
-            tick0=0,
-            dtick=1 if max_config <= 20 else 2,
-            fixedrange=True  # Disable zoom on x-axis
-        ),
-        yaxis=dict(
-            range=[0, 90],
-            tickvals=[0, 15, 30, 45, 60, 75, 90],
-            gridcolor='lightgray',
-            fixedrange=True  # Disable zoom on y-axis
-        ),
-        dragmode=False  # Disable all drag interactions (pan, zoom)
-    )
-    
-    # Display without zoom/pan controls
-    st.plotly_chart(fig_angles, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
-    
-    # Display statistics summary
-    st.subheader("ðŸ“ˆ Angle Statistics per Vector Pair")
-    stats_data = []
-    for vp, stats in sorted(vector_pair_stats.items()):
-        stats_data.append({
-            "Vector Pair": vp,
-            "Average (°)": f"{stats['avg']:.2f}",
-            "Std Dev (°)": f"{stats['std']:.2f}",
-            "Count": int(stats['count'])
-        })
-    if stats_data:
-        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
-    
-    # Show angle values in expandable table
-    with st.expander("ðŸ“Š Angle Values (degrees)"):
-        angle_table_data = []
-        # Generated angles per config
-        for config_num in sorted(generated_angle_series_all.keys()):
-            gen_angle_series = generated_angle_series_all[config_num]
-            for vector_pair in sorted(gen_angle_series.keys()):
-                angles_dict = gen_angle_series[vector_pair]
-                for ts_label, angle in angles_dict.items():
-                    angle_mod90 = angle % 90
-                    angle_table_data.append({
-                        "Config": config_num,
-                        "Vector": vector_pair,
-                        "Angle (°)": f"{angle:.2f}",
-                        "Mod 90°": f"{angle_mod90:.2f}"
-                    })
-        if angle_table_data:
-            st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
-else:
-    st.info("Generate configurations to see angle comparisons between original and generated point configurations.")
+                all_generated_pts_per_config[current_config_num][(obj_id, local_idx)] = np.array(sp["point"])
+
+        # Get the maximum config number to ensure we have all configs from 1 to max
+        config_nums_list: list[int] = [int(k) for k in all_generated_pts_per_config.keys()]
+        max_config_num: int = max(config_nums_list) if config_nums_list else 1
+
+        # Build angle series for each config from 1 to max_config_num
+        for config_num in range(1, max_config_num + 1):
+            # Build generated points for this config
+            gen_points_dict: dict[int, np.ndarray] = {}
+            gen_vals_dict: dict[int, np.ndarray] = {}
+
+            # Start with original points
+            for o_id in all_points_plot.keys():
+                gen_points_dict[o_id] = all_points_plot[o_id].copy()
+                gen_vals_dict[o_id] = all_vals_plot[o_id].copy()
+
+            # Apply generated points for this config (if any)
+            if config_num in all_generated_pts_per_config:
+                for (obj_id, local_idx), gen_pt in all_generated_pts_per_config[config_num].items():
+                    if obj_id in gen_points_dict:
+                        gen_points_dict[obj_id][local_idx] = gen_pt
+
+            # Calculate angles for this config
+            if gen_points_dict:
+                generated_angle_series_all[config_num] = build_angle_series_from_points(
+                    gen_points_dict, gen_vals_dict, all_timestamps
+                )
+
+        # Build the plot: X-axis = Configuration number (1, 2, 3, ...), Y-axis = Angle (0-360°)
+        # Each line = one vector pair (e.g., k0→k1), showing its angle across all configurations
+        fig_angles = go.Figure()
+
+        colors_plotly = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+                         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+        # Get all unique vector pairs from the original angle series
+        # Each series_name is like "k0→k1" or "k0→l0"
+        all_vector_pairs = sorted(original_angle_series.keys())
+
+        # Get all config numbers and sort them (starting from 1)
+        # Explicit list comprehension ensures type clarity for Pylance
+        all_config_nums: list[int] = sorted([int(k) for k in generated_angle_series_all.keys()])
+
+        # Store stats for each vector pair
+        vector_pair_stats: dict[str, dict[str, float]] = {}
+
+        # For each vector pair, collect angles across all configurations
+        for idx, vector_pair in enumerate(all_vector_pairs):
+            x_vals: list[int] = []  # Config numbers (1, 2, 3, ...)
+            y_vals: list[float] = []  # Angles for this vector pair (0-360°)
+
+            # Get angle from each generated configuration
+            for config_num in all_config_nums:
+                if config_num in generated_angle_series_all:
+                    gen_series = generated_angle_series_all[config_num]
+                    if vector_pair in gen_series:
+                        # Get the first (and should be only) angle value for this vector pair
+                        angles_dict = gen_series[vector_pair]
+                        if angles_dict:
+                            # Take the first angle value (there should be one per vector pair)
+                            angle_val = list(angles_dict.values())[0]
+                            # Convert from -180/180 to 0/360 range
+                            if angle_val < 0:
+                                angle_val = angle_val + 360
+                            # Convert to 0-360 range first, then take remainder of 90
+                            angle_mod90 = angle_val % 90
+                            x_vals.append(config_num)
+                            y_vals.append(angle_mod90)
+
+            # Calculate stats for this vector pair
+            if len(y_vals) >= 1:
+                avg_angle: float = float(np.mean(y_vals))
+                std_angle: float = float(np.std(y_vals)) if len(y_vals) > 1 else 0.0
+                vector_pair_stats[vector_pair] = {
+                    "avg": avg_angle,
+                    "std": std_angle,
+                    "count": len(y_vals)
+                }
+
+            # Only add trace if we have data
+            if len(x_vals) >= 1:
+                # Show k0→k1 by default, hide others (click legend to show)
+                is_visible = (vector_pair == "k0→k1")
+
+                fig_angles.add_trace(go.Scatter(
+                    name=f"{vector_pair} (avg={avg_angle:.1f}°, σ={std_angle:.1f}°)",
+                    x=x_vals,
+                    y=y_vals,
+                    mode='lines+markers',
+                    line=dict(color=colors_plotly[idx % len(colors_plotly)], width=2),
+                    marker=dict(size=8),
+                    visible=True if is_visible else "legendonly"  # Hide by default, show in legend
+                ))
+
+        # Determine x-axis range
+        min_config = min([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
+        max_config = max([int(c) for c in all_config_nums]) if all_config_nums else 1  # type: ignore[type-var]
+
+        # Get the search strategy (exponential, linear, binary)
+        search_strategy = st.session_state.get("cfg_strategy", "exponential")
+
+        # Get the PDP variants (fundamental, rough, buffer, etc.)
+        pdp_variants_list = st.session_state.get("anim_pdp_variants_list", [])
+        if not pdp_variants_list:
+            pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        pdp_variants_str = ", ".join(pdp_variants_list) if pdp_variants_list else "fundamental"
+
+        fig_angles.update_layout(
+            title=f"Vector Angles (mod 90°) | Strategy: {search_strategy} | PDP Variants: {pdp_variants_str}",
+            xaxis_title="Configuration",
+            yaxis_title="Angle mod 90° (degrees)",
+            height=800,  # Twice as high
+            showlegend=True,
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02,
+                itemclick="toggle",  # Click to toggle visibility
+                itemdoubleclick="toggleothers"  # Double-click to isolate
+            ),
+            xaxis=dict(
+                range=[0, max_config + 1],
+                tickmode='linear',
+                tick0=0,
+                dtick=1 if max_config <= 20 else 2,
+                fixedrange=True  # Disable zoom on x-axis
+            ),
+            yaxis=dict(
+                range=[0, 90],
+                tickvals=[0, 15, 30, 45, 60, 75, 90],
+                gridcolor='lightgray',
+                fixedrange=True  # Disable zoom on y-axis
+            ),
+            dragmode=False  # Disable all drag interactions (pan, zoom)
+        )
+
+        # Display without zoom/pan controls
+        st.plotly_chart(fig_angles, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
+
+        # Display statistics summary
+        st.subheader("ðŸ“ˆ Angle Statistics per Vector Pair")
+        stats_data = []
+        for vp, stats in sorted(vector_pair_stats.items()):
+            stats_data.append({
+                "Vector Pair": vp,
+                "Average (°)": f"{stats['avg']:.2f}",
+                "Std Dev (°)": f"{stats['std']:.2f}",
+                "Count": int(stats['count'])
+            })
+        if stats_data:
+            st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+
+        # Show angle values in expandable table
+        with st.expander("ðŸ“Š Angle Values (degrees)"):
+            angle_table_data = []
+            # Generated angles per config
+            for config_num in sorted(generated_angle_series_all.keys()):
+                gen_angle_series = generated_angle_series_all[config_num]
+                for vector_pair in sorted(gen_angle_series.keys()):
+                    angles_dict = gen_angle_series[vector_pair]
+                    for ts_label, angle in angles_dict.items():
+                        angle_mod90 = angle % 90
+                        angle_table_data.append({
+                            "Config": config_num,
+                            "Vector": vector_pair,
+                            "Angle (°)": f"{angle:.2f}",
+                            "Mod 90°": f"{angle_mod90:.2f}"
+                        })
+            if angle_table_data:
+                st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
+    else:
+        st.info("Generate configurations to see angle comparisons between original and generated point configurations.")
+
+
+with tab_slicing:
+    st.markdown("### 🔍 Interactive Time Slicing")
+    st.markdown("""
+    Use the slider below to explore the data at a specific point in time.
+    The plot updates in real-time as you move the slider.
+    """)
+
+    if _df_all is not None and not _df_all.empty:
+        _slice_c = int(st.session_state.get("cfg_c", 0))
+        _slice_df_c = _df_all[_df_all["c"] == _slice_c]
+
+        if not _slice_df_c.empty:
+            _t_vals = sorted(_slice_df_c["t"].unique())
+            _t_min = float(_t_vals[0])
+            _t_max = float(_t_vals[-1])
+
+            if len(_t_vals) > 1:
+                _selected_t = st.slider(
+                    "Timestamp",
+                    min_value=_t_min,
+                    max_value=_t_max,
+                    value=_t_min,
+                    step=float(_t_vals[1] - _t_vals[0]) if len(_t_vals) > 1 else 1.0,
+                    key="slicing_time_slider",
+                )
+
+                # Filter data at selected timestamp
+                _slice_df_t = _slice_df_c[_slice_df_c["t"] == _selected_t]
+
+                _fig_slice = go.Figure()
+
+                # Add lane markings
+                add_lane_markings_to_figure(_fig_slice, _slice_c, XLIM, YLIM)
+
+                _obj_ids = sorted(_slice_df_t["o"].unique())
+                for _i_obj, _oid in enumerate(_obj_ids):
+                    _obj_df = _slice_df_t[_slice_df_t["o"] == _oid]
+                    _fig_slice.add_trace(go.Scatter(
+                        x=_obj_df["x"].values,
+                        y=_obj_df["y"].values,
+                        mode="markers+text",
+                        marker=dict(size=12, color=OBJECT_COLORS_PLOTLY[_i_obj % len(OBJECT_COLORS_PLOTLY)]),
+                        text=[OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]],
+                        textposition="top center",
+                        name=f"Object {OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]}",
+                    ))
+
+                # Also show trailing trajectory (all timestamps up to selected)
+                _slice_df_hist = _slice_df_c[_slice_df_c["t"] <= _selected_t]
+                for _i_obj, _oid in enumerate(sorted(_slice_df_hist["o"].unique())):
+                    _hist = _slice_df_hist[_slice_df_hist["o"] == _oid].sort_values("t")
+                    if len(_hist) > 1:
+                        _fig_slice.add_trace(go.Scatter(
+                            x=_hist["x"].values,
+                            y=_hist["y"].values,
+                            mode="lines",
+                            line=dict(
+                                color=OBJECT_COLORS_PLOTLY[_i_obj % len(OBJECT_COLORS_PLOTLY)],
+                                width=2,
+                                dash="dot",
+                            ),
+                            opacity=0.5,
+                            showlegend=False,
+                            name=f"Trail {OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]}",
+                        ))
+
+                _fig_slice.update_layout(
+                    title=f"Configuration {_slice_c} at t = {_selected_t}",
+                    xaxis=dict(
+                        title="x",
+                        range=[XLIM[0] - 2, XLIM[1] + 2],
+                        scaleanchor="y",
+                        scaleratio=1,
+                    ),
+                    yaxis=dict(
+                        title="y",
+                        range=[YLIM[0] - 2, YLIM[1] + 2],
+                    ),
+                    height=600,
+                    showlegend=True,
+                )
+
+                st.plotly_chart(_fig_slice, use_container_width=True)
+
+                # Show data table for selected timestamp
+                with st.expander("Data at selected timestamp", expanded=False):
+                    st.dataframe(_slice_df_t, use_container_width=True)
+            else:
+                st.warning("Only one timestamp available \u2014 nothing to slice.")
+        else:
+            st.info("No data for the selected configuration.")
+    else:
+        st.info("Load a dataset to use interactive slicing.")
 
