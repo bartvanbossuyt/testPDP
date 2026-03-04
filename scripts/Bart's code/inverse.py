@@ -5726,6 +5726,277 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
         st.session_state["_generate_5000_results"] = top_500
         st.rerun()
 
+
+# ---------------------------------------------------------------------------
+# Helper: run full-timestamp batch generation (deduplicates ext30 / ext30_rough
+#          / br_consec / br_consec_rd / ext30_fe blocks)
+# ---------------------------------------------------------------------------
+def _run_full_ts_generation(
+    *,
+    request_key: str,
+    results_key: str,
+    title: str,
+    caption: str = "",
+    status_prefix: str = "Generation",
+    # Data construction
+    all_objects_points: dict[int, tuple[np.ndarray, np.ndarray]],
+    external_pts_for_window: np.ndarray,
+    external_ts_for_window: np.ndarray,
+    is_fixed_fn: Callable[[int, int, int], bool] | None = None,
+    # PDP parameter overrides (None → read from sidebar session_state)
+    pdp_variant_override: str | None = None,
+    buffer_x_override: float | None = None,
+    buffer_y_override: float | None = None,
+    rough_x_override: float | None = None,
+    rough_y_override: float | None = None,
+    # Generation parameters
+    num_configs: int = MAX_FILTER_CONFIGS,
+    num_iterations: int = MAX_FILTER_ITERATIONS,
+    top_n: int = 3,
+    use_checker: bool = True,
+    # Result storage keys (for filtered data that display sections need)
+    full_points_key: str | None = None,
+    full_vals_key: str | None = None,
+    # Hooks for br_consec-style variants
+    session_overrides: dict[str, Any] | None = None,
+    per_config_hook: Callable[[int, list[int], dict[str, Any]], None] | None = None,
+    cleanup_session_keys: list[str] | None = None,
+    # Optional custom success message
+    success_msg: str | None = None,
+) -> None:
+    """Generic batch generation using ALL timestamps from *all_objects_points*.
+
+    Builds flattened data, swaps 8 globals, runs *num_configs* × *num_iterations*
+    loop with optional ``IncrementalPDPChecker`` and early stopping, ranks results
+    by perpendicular variance, and stores the top-*top_n* in session state.
+
+    Parameters
+    ----------
+    is_fixed_fn : callable, optional
+        ``(oid, local_idx, n_pts_for_obj) -> bool``.  Default: all ``False``.
+    per_config_hook : callable, optional
+        ``(config_idx, sorted_oids, hook_state) -> None``.  Called before each
+        config's iteration loop.  *hook_state* is a dict that may contain:
+        * ``"status_suffix"`` – appended to the status text
+        * any other key – merged into the config result dict
+    """
+    global all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat
+    global all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot
+
+    if is_fixed_fn is None:
+        is_fixed_fn = lambda _oid, _li, _n: False
+
+    st.markdown("---")
+    st.markdown(f"### {title}")
+    if caption:
+        st.caption(caption)
+
+    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
+    sorted_oids = sorted(all_objects_points.keys())
+    full_points: dict[int, np.ndarray] = {}
+    full_vals: dict[int, np.ndarray] = {}
+    for oid in sorted_oids:
+        pts, ts = all_objects_points[oid]
+        full_points[oid] = pts
+        full_vals[oid] = ts
+
+    n_ts_per_obj = {oid: full_points[oid].shape[0] for oid in sorted_oids}
+    n_ts_total = sum(n_ts_per_obj.values())
+    ts_info = ", ".join(f"obj {oid}: {n} ts" for oid, n in n_ts_per_obj.items())
+
+    # Count fixed endpoints for info message
+    n_fixed = sum(
+        sum(1 for li in range(n_ts_per_obj[oid]) if is_fixed_fn(oid, li, n_ts_per_obj[oid]))
+        for oid in sorted_oids
+    )
+    if n_fixed > 0:
+        st.info(
+            f"Full timestamp data: {n_ts_total} total points ({ts_info}). "
+            f"**{n_fixed} endpoints fixed** (first + last per object)."
+        )
+    else:
+        st.info(f"Full timestamp data: {n_ts_total} total points ({ts_info})")
+
+    # --- Step 2: Build flattened arrays ---
+    pts_list: list[np.ndarray] = []
+    ts_list: list[float] = []
+    obj_ids: list[int] = []
+    local_idx: list[int] = []
+    is_fixed: list[bool] = []
+    for oid in sorted_oids:
+        n_pts = full_points[oid].shape[0]
+        for li in range(n_pts):
+            pts_list.append(full_points[oid][li])
+            ts_list.append(float(full_vals[oid][li]))
+            obj_ids.append(oid)
+            local_idx.append(li)
+            is_fixed.append(is_fixed_fn(oid, li, n_pts))
+    for ext_pt, ext_t in zip(external_pts_for_window, external_ts_for_window):
+        pts_list.append(ext_pt)
+        ts_list.append(float(ext_t))
+        obj_ids.append(-1)
+        local_idx.append(len(pts_list) - 1)
+        is_fixed.append(True)
+    pts_flat = np.array(pts_list) if pts_list else np.array([]).reshape(0, 2)
+    ts_flat = np.array(ts_list) if ts_list else np.array([])
+
+    # --- Step 3: Temporarily swap global variables ---
+    saved = (
+        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    )
+    all_pts_flat = pts_flat
+    all_ts_flat = ts_flat
+    all_obj_ids_flat = obj_ids
+    all_local_idx_flat = local_idx
+    all_is_fixed_flat = is_fixed
+    n_total_points = pts_flat.shape[0]
+    all_points_plot = full_points
+    all_vals_plot = full_vals
+
+    # Apply session overrides (e.g. consecutive-timestamp selection mode)
+    if session_overrides:
+        for k, v in session_overrides.items():
+            st.session_state[k] = v
+
+    try:
+        # --- Resolve PDP parameters ---
+        if pdp_variant_override is not None:
+            pdp_variant = pdp_variant_override
+        else:
+            _variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+            pdp_variant = _variants_list[0] if _variants_list else "fundamental"
+        buffer_x = buffer_x_override if buffer_x_override is not None else st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = buffer_y_override if buffer_y_override is not None else st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = rough_x_override if rough_x_override is not None else st.session_state.get("cfg_rough_x", 0.0)
+        rough_y = rough_y_override if rough_y_override is not None else st.session_state.get("cfg_rough_y", 0.0)
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        all_generated_configs: list[dict[str, Any]] = []
+
+        # --- Optional incremental PDP checker ---
+        checker = None
+        if use_checker:
+            _thresh_ck, _max_mm_ck = get_threshold_params()
+            checker = IncrementalPDPChecker(
+                all_pts_flat, pdp_variant,
+                buffer_x=buffer_x, buffer_y=buffer_y,
+                rough_x=rough_x, rough_y=rough_y,
+                match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
+            )
+
+        _t_gen_start = time.perf_counter()
+        _total_iters = 0
+        _early_stops = 0
+
+        for config_idx in range(num_configs):
+            if checker:
+                checker.reset_to_original()
+            current_points = all_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
+            _stagnant = 0
+            _iters_used = num_iterations
+
+            # Per-config hook (e.g. br_consec sets random group size / object)
+            hook_state: dict[str, Any] = {}
+            if per_config_hook:
+                per_config_hook(config_idx, sorted_oids, hook_state)
+            _status_suffix = hook_state.pop("status_suffix", "")
+
+            for iteration in range(num_iterations):
+                _status = f"{status_prefix} — config {config_idx + 1}/{num_configs} | iter {iteration + 1}/{num_iterations}"
+                if _status_suffix:
+                    _status += f" {_status_suffix}"
+                status_text.text(_status + "...")
+                _sp_before = len(successful_points)
+                successful_points, success = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=successful_points,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                    pdp_checker=checker,
+                )
+                _n_added = len(successful_points) - _sp_before
+                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                    _stagnant += 1
+                else:
+                    _stagnant = 0
+                if _stagnant >= EARLY_STOP_PATIENCE:
+                    _iters_used = iteration + 1
+                    _early_stops += 1
+                    break
+
+            _total_iters += _iters_used
+            if successful_points:
+                config_entry: dict[str, Any] = {
+                    "successful_points": successful_points,
+                    "config_number": config_idx + 1,
+                    "pdp_variant": pdp_variant,
+                    "iterations": _iters_used,
+                    "buffer_x": buffer_x,
+                    "buffer_y": buffer_y,
+                    "rough_x": rough_x,
+                    "rough_y": rough_y,
+                    "threshold_mode": mode,
+                    "max_threshold": max_threshold,
+                }
+                # Merge any extra fields from per_config_hook
+                config_entry.update(hook_state)
+                all_generated_configs.append(config_entry)
+
+            progress_bar.progress((config_idx + 1) / num_configs)
+
+        progress_bar.empty()
+        status_text.empty()
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        _max_possible = num_configs * num_iterations
+        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+            f"({_t_gen_elapsed / max(1, num_configs):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+            f"Early stopped {_early_stops}/{num_configs} configs — "
+            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+        )
+
+        if not all_generated_configs:
+            st.error("No configurations were successfully generated.")
+            st.session_state[request_key] = False
+        else:
+            _msg = success_msg or f"Successfully generated {len(all_generated_configs)} configurations!"
+            st.success(_msg)
+
+            deviations: list[tuple[int, float, dict[str, Any]]] = []
+            for config in all_generated_configs:
+                sp = config.get("successful_points", [])
+                pv = _perpendicular_variance(all_points_plot, sp)
+                deviations.append((config.get("config_number", 0), pv, config))
+
+            deviations.sort(key=lambda x: x[1], reverse=True)
+            top = deviations[:top_n]
+
+            st.session_state[results_key] = top
+            if full_points_key:
+                st.session_state[full_points_key] = full_points
+            if full_vals_key:
+                st.session_state[full_vals_key] = full_vals
+            st.rerun()
+    finally:
+        # --- Restore original globals ---
+        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = saved
+        # --- Remove override keys ---
+        if cleanup_session_keys:
+            for k in cleanup_session_keys:
+                st.session_state.pop(k, None)
+
+
 # ============= Generate 200 configs x 200 iterations (reinsertion) ============
 if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
     st.markdown("---")
@@ -5819,904 +6090,129 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
         st.session_state["_generate_50_results"] = top_5
         st.rerun()
 
-# ============= Generate 30 configs x 600 iterations (ext30) ============
+# ============= Generate 100 configs × 2500 iterations (ext30) ============
 if st.session_state.get("_generate_ext30_requested", False) and not st.session_state.get("_generate_ext30_results", None):
-    # We need to swap globals, but since this is top-level Streamlit code (not inside a function),
-    # we can just reassign directly — no 'global' keyword needed.
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (2500 iterations each)...")
-    st.caption("Using ALL timestamps — building full-range dataset first.")
-
-    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
-    _ext30_sorted_oids_gen = sorted(all_objects_points.keys())
-    _ext30_full_points: dict[int, np.ndarray] = {}
-    _ext30_full_vals: dict[int, np.ndarray] = {}
-    for _oid in _ext30_sorted_oids_gen:
-        _pts, _ts = all_objects_points[_oid]
-        _ext30_full_points[_oid] = _pts
-        _ext30_full_vals[_oid] = _ts
-
-    _ext30_n_ts_per_obj = {oid: _ext30_full_points[oid].shape[0] for oid in _ext30_sorted_oids_gen}
-    _ext30_n_ts_total = sum(_ext30_n_ts_per_obj.values())
-    _ext30_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _ext30_n_ts_per_obj.items())
-    st.info(f"Full timestamp data: {_ext30_n_ts_total} total points ({_ext30_ts_info_gen})")
-
-    # --- Step 2: Build flattened arrays from full data ---
-    _ext30_pts_list: list[np.ndarray] = []
-    _ext30_ts_list: list[float] = []
-    _ext30_obj_ids: list[int] = []
-    _ext30_local_idx: list[int] = []
-    _ext30_is_fixed: list[bool] = []
-    for _oid in _ext30_sorted_oids_gen:
-        for _li in range(_ext30_full_points[_oid].shape[0]):
-            _ext30_pts_list.append(_ext30_full_points[_oid][_li])
-            _ext30_ts_list.append(float(_ext30_full_vals[_oid][_li]))
-            _ext30_obj_ids.append(_oid)
-            _ext30_local_idx.append(_li)
-            _ext30_is_fixed.append(False)
-    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _ext30_pts_list.append(_ext_pt)
-        _ext30_ts_list.append(float(_ext_t))
-        _ext30_obj_ids.append(-1)
-        _ext30_local_idx.append(len(_ext30_pts_list) - 1)
-        _ext30_is_fixed.append(True)
-    _ext30_pts_flat = np.array(_ext30_pts_list) if _ext30_pts_list else np.array([]).reshape(0, 2)
-    _ext30_ts_flat = np.array(_ext30_ts_list) if _ext30_ts_list else np.array([])
-
-    # --- Step 3: Temporarily swap global variables ---
-    _ext30_saved = (
-        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    _run_full_ts_generation(
+        request_key="_generate_ext30_requested",
+        results_key="_generate_ext30_results",
+        title="Generating 100 Configurations (2500 iterations each)...",
+        caption="Using ALL timestamps — building full-range dataset first.",
+        status_prefix="ext30",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        full_points_key="_ext30_full_points_plot",
+        full_vals_key="_ext30_full_vals_plot",
     )
-    all_pts_flat = _ext30_pts_flat
-    all_ts_flat = _ext30_ts_flat
-    all_obj_ids_flat = _ext30_obj_ids
-    all_local_idx_flat = _ext30_local_idx
-    all_is_fixed_flat = _ext30_is_fixed
-    n_total_points = _ext30_pts_flat.shape[0]
-    all_points_plot = _ext30_full_points
-    all_vals_plot = _ext30_full_vals
-
-    try:
-        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _ext30_iterations = 2500
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        # --- Create incremental PDP checker for O(k·N) checks ---
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        _thresh_ck, _max_mm_ck = get_threshold_params()
-        _ext30_checker = IncrementalPDPChecker(
-            all_pts_flat, pdp_variant,
-            buffer_x=buffer_x, buffer_y=buffer_y,
-            rough_x=rough_x, rough_y=rough_y,
-            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
-        )
-        _t_gen_start = time.perf_counter()
-        _total_iters = 0
-        _early_stops = 0
-
-        for config_idx in range(MAX_FILTER_CONFIGS):
-            _ext30_checker.reset_to_original()
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            _stagnant = 0
-            _iters_used = _ext30_iterations
-
-            for iteration in range(_ext30_iterations):
-                status_text.text(f"Generating configuration {config_idx + 1}/{MAX_FILTER_CONFIGS} | iteration {iteration + 1}/{_ext30_iterations}...")
-                _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_ext30_checker,
-                )
-                _n_added = len(successful_points) - _sp_before
-                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                    _stagnant += 1
-                else:
-                    _stagnant = 0
-                if _stagnant >= EARLY_STOP_PATIENCE:
-                    _iters_used = iteration + 1
-                    _early_stops += 1
-                    break
-
-            _total_iters += _iters_used
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _iters_used,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                })
-
-            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-        progress_bar.empty()
-        status_text.empty()
-        _t_gen_elapsed = time.perf_counter() - _t_gen_start
-        _max_possible = MAX_FILTER_CONFIGS * _ext30_iterations
-        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-        st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-        )
-
-        if not all_generated_configs:
-            st.error("No configurations were successfully generated.")
-            st.session_state["_generate_ext30_requested"] = False
-        else:
-            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-            deviations: list[tuple[int, float, dict[str, Any]]] = []
-            for config in all_generated_configs:
-                successful_points = config.get("successful_points", [])
-                pv = _perpendicular_variance(all_points_plot, successful_points)
-                config_num = config.get("config_number", 0)
-                deviations.append((config_num, pv, config))
-
-            deviations.sort(key=lambda x: x[1], reverse=True)
-            top_3 = deviations[:3]
-
-            # Store full-timestamp data alongside results for display
-            st.session_state["_generate_ext30_results"] = top_3
-            st.session_state["_ext30_full_points_plot"] = _ext30_full_points
-            st.session_state["_ext30_full_vals_plot"] = _ext30_full_vals
-            st.rerun()
-    finally:
-        # --- Restore original globals ---
-        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _ext30_saved
 
 # ============= Generate 100 configs × 2500 iter — ROUGH d1=d2=0.30m (ext30_rough) ============
 if st.session_state.get("_generate_ext30_rough_requested", False) and not st.session_state.get("_generate_ext30_rough_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (2500 iter, rough d1=d2=0.30m)...")
-    st.caption("Using ALL timestamps — rough d1=d2=0.30m geforceerd (ongeacht sidebar).")
-
-    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
-    _r30_sorted_oids_gen = sorted(all_objects_points.keys())
-    _r30_full_points: dict[int, np.ndarray] = {}
-    _r30_full_vals: dict[int, np.ndarray] = {}
-    for _oid in _r30_sorted_oids_gen:
-        _pts, _ts = all_objects_points[_oid]
-        _r30_full_points[_oid] = _pts
-        _r30_full_vals[_oid] = _ts
-
-    _r30_n_ts_per_obj = {oid: _r30_full_points[oid].shape[0] for oid in _r30_sorted_oids_gen}
-    _r30_n_ts_total = sum(_r30_n_ts_per_obj.values())
-    _r30_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _r30_n_ts_per_obj.items())
-    st.info(f"Full timestamp data: {_r30_n_ts_total} total points ({_r30_ts_info_gen})")
-
-    # --- Step 2: Build flattened arrays from full data ---
-    _r30_pts_list: list[np.ndarray] = []
-    _r30_ts_list: list[float] = []
-    _r30_obj_ids: list[int] = []
-    _r30_local_idx: list[int] = []
-    _r30_is_fixed: list[bool] = []
-    for _oid in _r30_sorted_oids_gen:
-        for _li in range(_r30_full_points[_oid].shape[0]):
-            _r30_pts_list.append(_r30_full_points[_oid][_li])
-            _r30_ts_list.append(float(_r30_full_vals[_oid][_li]))
-            _r30_obj_ids.append(_oid)
-            _r30_local_idx.append(_li)
-            _r30_is_fixed.append(False)
-    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _r30_pts_list.append(_ext_pt)
-        _r30_ts_list.append(float(_ext_t))
-        _r30_obj_ids.append(-1)
-        _r30_local_idx.append(len(_r30_pts_list) - 1)
-        _r30_is_fixed.append(True)
-    _r30_pts_flat = np.array(_r30_pts_list) if _r30_pts_list else np.array([]).reshape(0, 2)
-    _r30_ts_flat = np.array(_r30_ts_list) if _r30_ts_list else np.array([])
-
-    # --- Step 3: Temporarily swap global variables ---
-    _r30_saved = (
-        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    _run_full_ts_generation(
+        request_key="_generate_ext30_rough_requested",
+        results_key="_generate_ext30_rough_results",
+        title="Generating 100 Configurations (2500 iter, rough d1=d2=0.30m)...",
+        caption="Using ALL timestamps — rough d1=d2=0.30m geforceerd (ongeacht sidebar).",
+        status_prefix="Rough d1=d2=0.30m",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        pdp_variant_override="fundamental",
+        buffer_x_override=0.0,
+        buffer_y_override=0.0,
+        rough_x_override=0.30,
+        rough_y_override=0.30,
+        full_points_key="_ext30_rough_full_points_plot",
+        full_vals_key="_ext30_rough_full_vals_plot",
     )
-    all_pts_flat = _r30_pts_flat
-    all_ts_flat = _r30_ts_flat
-    all_obj_ids_flat = _r30_obj_ids
-    all_local_idx_flat = _r30_local_idx
-    all_is_fixed_flat = _r30_is_fixed
-    n_total_points = _r30_pts_flat.shape[0]
-    all_points_plot = _r30_full_points
-    all_vals_plot = _r30_full_vals
-
-    try:
-        # Hardcoded rough parameters — the ONLY difference from ext30
-        pdp_variant = "fundamental"
-        buffer_x = 0.0
-        buffer_y = 0.0
-        rough_x = 0.30
-        rough_y = 0.30
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _r30_iterations = 2500
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        # --- Create incremental PDP checker for O(k·N) checks ---
-        _thresh_ck, _max_mm_ck = get_threshold_params()
-        _r30_checker = IncrementalPDPChecker(
-            all_pts_flat, pdp_variant,
-            buffer_x=buffer_x, buffer_y=buffer_y,
-            rough_x=rough_x, rough_y=rough_y,
-            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
-        )
-        _t_gen_start = time.perf_counter()
-        _total_iters = 0
-        _early_stops = 0
-
-        for config_idx in range(MAX_FILTER_CONFIGS):
-            _r30_checker.reset_to_original()
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            _stagnant = 0
-            _iters_used = _r30_iterations
-
-            for iteration in range(_r30_iterations):
-                status_text.text(f"Rough d1=d2=0.30m — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_r30_iterations}...")
-                _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_r30_checker,
-                )
-                _n_added = len(successful_points) - _sp_before
-                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                    _stagnant += 1
-                else:
-                    _stagnant = 0
-                if _stagnant >= EARLY_STOP_PATIENCE:
-                    _iters_used = iteration + 1
-                    _early_stops += 1
-                    break
-
-            _total_iters += _iters_used
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _iters_used,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                })
-
-            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-        progress_bar.empty()
-        status_text.empty()
-        _t_gen_elapsed = time.perf_counter() - _t_gen_start
-        _max_possible = MAX_FILTER_CONFIGS * _r30_iterations
-        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-        st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-        )
-
-        if not all_generated_configs:
-            st.error("No configurations were successfully generated.")
-            st.session_state["_generate_ext30_rough_requested"] = False
-        else:
-            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-            deviations: list[tuple[int, float, dict[str, Any]]] = []
-            for config in all_generated_configs:
-                successful_points = config.get("successful_points", [])
-                pv = _perpendicular_variance(all_points_plot, successful_points)
-                config_num = config.get("config_number", 0)
-                deviations.append((config_num, pv, config))
-
-            deviations.sort(key=lambda x: x[1], reverse=True)
-            top_3 = deviations[:3]
-
-            # Store full-timestamp data alongside results for display
-            st.session_state["_generate_ext30_rough_results"] = top_3
-            st.session_state["_ext30_rough_full_points_plot"] = _r30_full_points
-            st.session_state["_ext30_rough_full_vals_plot"] = _r30_full_vals
-            st.rerun()
-    finally:
-        # --- Restore original globals ---
-        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _r30_saved
 
 # ============= Generate 100 configs × 2500 iter — BUFFERROUGH + CONSECUTIVE TS (br_consec) ============
+_BRC_OVERRIDE_KEYS = [
+    "_override_point_selection_mode", "_override_movement_direction",
+    "_override_consecutive_object_id", "_override_consecutive_first_timestamp",
+    "_override_group_num_timestamps",
+]
+
+def _br_consec_per_config(config_idx: int, sorted_oids: list[int], hook_state: dict[str, Any]) -> None:
+    """Per-config hook for br_consec: random group size (2-3), cycle objects."""
+    grp = int(np.random.choice([2, 3]))
+    obj_id = sorted_oids[config_idx % len(sorted_oids)]
+    st.session_state["_override_group_num_timestamps"] = grp
+    st.session_state["_override_consecutive_object_id"] = obj_id
+    hook_state["status_suffix"] = f"(obj {obj_id}, grp {grp})"
+    hook_state["group_size"] = grp
+    hook_state["object_id"] = obj_id
+
 if st.session_state.get("_generate_br_consec_requested", False) and not st.session_state.get("_generate_br_consec_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configs (2500 iter, bufferrough, consecutive ts)...")
-    st.caption("bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) same direction | ALL timestamps")
-
-    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
-    _brc_sorted_oids_gen = sorted(all_objects_points.keys())
-    _brc_full_points: dict[int, np.ndarray] = {}
-    _brc_full_vals: dict[int, np.ndarray] = {}
-    for _oid in _brc_sorted_oids_gen:
-        _pts, _ts = all_objects_points[_oid]
-        _brc_full_points[_oid] = _pts
-        _brc_full_vals[_oid] = _ts
-
-    _brc_n_ts_per_obj = {oid: _brc_full_points[oid].shape[0] for oid in _brc_sorted_oids_gen}
-    _brc_n_ts_total = sum(_brc_n_ts_per_obj.values())
-    _brc_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _brc_n_ts_per_obj.items())
-    st.info(f"Full timestamp data: {_brc_n_ts_total} total points ({_brc_ts_info_gen})")
-
-    # --- Step 2: Build flattened arrays from full data ---
-    _brc_pts_list: list[np.ndarray] = []
-    _brc_ts_list: list[float] = []
-    _brc_obj_ids: list[int] = []
-    _brc_local_idx: list[int] = []
-    _brc_is_fixed: list[bool] = []
-    for _oid in _brc_sorted_oids_gen:
-        for _li in range(_brc_full_points[_oid].shape[0]):
-            _brc_pts_list.append(_brc_full_points[_oid][_li])
-            _brc_ts_list.append(float(_brc_full_vals[_oid][_li]))
-            _brc_obj_ids.append(_oid)
-            _brc_local_idx.append(_li)
-            _brc_is_fixed.append(False)
-    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _brc_pts_list.append(_ext_pt)
-        _brc_ts_list.append(float(_ext_t))
-        _brc_obj_ids.append(-1)
-        _brc_local_idx.append(len(_brc_pts_list) - 1)
-        _brc_is_fixed.append(True)
-    _brc_pts_flat = np.array(_brc_pts_list) if _brc_pts_list else np.array([]).reshape(0, 2)
-    _brc_ts_flat = np.array(_brc_ts_list) if _brc_ts_list else np.array([])
-
-    # --- Step 3: Temporarily swap global variables AND point selection settings ---
-    _brc_saved = (
-        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    _run_full_ts_generation(
+        request_key="_generate_br_consec_requested",
+        results_key="_generate_br_consec_results",
+        title="Generating 100 Configs (2500 iter, bufferrough, consecutive ts)...",
+        caption="bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) same direction | ALL timestamps",
+        status_prefix="bufferrough consec",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        pdp_variant_override="bufferrough",
+        buffer_x_override=1.0,
+        buffer_y_override=1.0,
+        rough_x_override=0.30,
+        rough_y_override=0.30,
+        session_overrides={
+            "_override_point_selection_mode": "Consecutive time stamps",
+            "_override_movement_direction": "Same direction",
+            "_override_consecutive_object_id": sorted(all_objects_points.keys())[0] if all_objects_points else 0,
+            "_override_consecutive_first_timestamp": 0,
+        },
+        per_config_hook=_br_consec_per_config,
+        cleanup_session_keys=_BRC_OVERRIDE_KEYS,
+        full_points_key="_br_consec_full_points_plot",
+        full_vals_key="_br_consec_full_vals_plot",
     )
-    all_pts_flat = _brc_pts_flat
-    all_ts_flat = _brc_ts_flat
-    all_obj_ids_flat = _brc_obj_ids
-    all_local_idx_flat = _brc_local_idx
-    all_is_fixed_flat = _brc_is_fixed
-    n_total_points = _brc_pts_flat.shape[0]
-    all_points_plot = _brc_full_points
-    all_vals_plot = _brc_full_vals
-
-    # Override point selection using non-widget keys (avoids StreamlitAPIException)
-    st.session_state["_override_point_selection_mode"] = "Consecutive time stamps"
-    st.session_state["_override_movement_direction"] = "Same direction"
-    st.session_state["_override_consecutive_object_id"] = _brc_sorted_oids_gen[0] if _brc_sorted_oids_gen else 0
-    st.session_state["_override_consecutive_first_timestamp"] = 0
-
-    try:
-        # Hardcoded bufferrough parameters
-        pdp_variant = "bufferrough"
-        buffer_x = 1.0
-        buffer_y = 1.0
-        rough_x = 0.30
-        rough_y = 0.30
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _brc_iterations = 2500
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        # --- Create incremental PDP checker for O(k·N) checks ---
-        _thresh_ck, _max_mm_ck = get_threshold_params()
-        _brc_checker = IncrementalPDPChecker(
-            all_pts_flat, pdp_variant,
-            buffer_x=buffer_x, buffer_y=buffer_y,
-            rough_x=rough_x, rough_y=rough_y,
-            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
-        )
-        _t_gen_start = time.perf_counter()
-        _total_iters = 0
-        _early_stops = 0
-
-        for config_idx in range(MAX_FILTER_CONFIGS):
-            _brc_checker.reset_to_original()
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            _stagnant = 0
-            _iters_used = _brc_iterations
-
-            # Randomly pick group size (2 or 3) per config
-            _brc_group_size = int(np.random.choice([2, 3]))
-            st.session_state["_override_group_num_timestamps"] = _brc_group_size
-
-            # Randomly pick which object to move (cycle through objects)
-            _brc_obj_id = _brc_sorted_oids_gen[config_idx % len(_brc_sorted_oids_gen)]
-            st.session_state["_override_consecutive_object_id"] = _brc_obj_id
-
-            for iteration in range(_brc_iterations):
-                status_text.text(f"bufferrough consec — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_brc_iterations} (obj {_brc_obj_id}, grp {_brc_group_size})...")
-                _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_brc_checker,
-                )
-                _n_added = len(successful_points) - _sp_before
-                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                    _stagnant += 1
-                else:
-                    _stagnant = 0
-                if _stagnant >= EARLY_STOP_PATIENCE:
-                    _iters_used = iteration + 1
-                    _early_stops += 1
-                    break
-
-            _total_iters += _iters_used
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _iters_used,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                    "group_size": _brc_group_size,
-                    "object_id": _brc_obj_id,
-                })
-
-            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-        progress_bar.empty()
-        status_text.empty()
-        _t_gen_elapsed = time.perf_counter() - _t_gen_start
-        _max_possible = MAX_FILTER_CONFIGS * _brc_iterations
-        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-        st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-        )
-
-        if not all_generated_configs:
-            st.error("No configurations were successfully generated.")
-            st.session_state["_generate_br_consec_requested"] = False
-        else:
-            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-            deviations: list[tuple[int, float, dict[str, Any]]] = []
-            for config in all_generated_configs:
-                successful_points = config.get("successful_points", [])
-                pv = _perpendicular_variance(all_points_plot, successful_points)
-                config_num = config.get("config_number", 0)
-                deviations.append((config_num, pv, config))
-
-            deviations.sort(key=lambda x: x[1], reverse=True)
-            top_3 = deviations[:3]
-
-            # Store full-timestamp data alongside results for display
-            st.session_state["_generate_br_consec_results"] = top_3
-            st.session_state["_br_consec_full_points_plot"] = _brc_full_points
-            st.session_state["_br_consec_full_vals_plot"] = _brc_full_vals
-            st.rerun()
-    finally:
-        # --- Restore original globals ---
-        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _brc_saved
-        # --- Remove override keys (they shadow the widget keys) ---
-        for _k in ["_override_point_selection_mode", "_override_movement_direction",
-                   "_override_consecutive_object_id", "_override_consecutive_first_timestamp",
-                   "_override_group_num_timestamps"]:
-            st.session_state.pop(_k, None)
 
 # ============= Generate 100 configs × 2500 iter — BUFFERROUGH + CONSECUTIVE TS + RANDOM DIRS (br_consec_rd) ============
 if st.session_state.get("_generate_br_consec_rd_requested", False) and not st.session_state.get("_generate_br_consec_rd_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configs (2500 iter, bufferrough, consec ts, random dirs)...")
-    st.caption("bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) RANDOM directions | ALL timestamps")
-
-    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
-    _brcrd_sorted_oids_gen = sorted(all_objects_points.keys())
-    _brcrd_full_points: dict[int, np.ndarray] = {}
-    _brcrd_full_vals: dict[int, np.ndarray] = {}
-    for _oid in _brcrd_sorted_oids_gen:
-        _pts, _ts = all_objects_points[_oid]
-        _brcrd_full_points[_oid] = _pts
-        _brcrd_full_vals[_oid] = _ts
-
-    _brcrd_n_ts_per_obj = {oid: _brcrd_full_points[oid].shape[0] for oid in _brcrd_sorted_oids_gen}
-    _brcrd_n_ts_total = sum(_brcrd_n_ts_per_obj.values())
-    _brcrd_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _brcrd_n_ts_per_obj.items())
-    st.info(f"Full timestamp data: {_brcrd_n_ts_total} total points ({_brcrd_ts_info_gen})")
-
-    # --- Step 2: Build flattened arrays from full data ---
-    _brcrd_pts_list: list[np.ndarray] = []
-    _brcrd_ts_list: list[float] = []
-    _brcrd_obj_ids: list[int] = []
-    _brcrd_local_idx: list[int] = []
-    _brcrd_is_fixed: list[bool] = []
-    for _oid in _brcrd_sorted_oids_gen:
-        for _li in range(_brcrd_full_points[_oid].shape[0]):
-            _brcrd_pts_list.append(_brcrd_full_points[_oid][_li])
-            _brcrd_ts_list.append(float(_brcrd_full_vals[_oid][_li]))
-            _brcrd_obj_ids.append(_oid)
-            _brcrd_local_idx.append(_li)
-            _brcrd_is_fixed.append(False)
-    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _brcrd_pts_list.append(_ext_pt)
-        _brcrd_ts_list.append(float(_ext_t))
-        _brcrd_obj_ids.append(-1)
-        _brcrd_local_idx.append(len(_brcrd_pts_list) - 1)
-        _brcrd_is_fixed.append(True)
-    _brcrd_pts_flat = np.array(_brcrd_pts_list) if _brcrd_pts_list else np.array([]).reshape(0, 2)
-    _brcrd_ts_flat = np.array(_brcrd_ts_list) if _brcrd_ts_list else np.array([])
-
-    # --- Step 3: Temporarily swap global variables AND point selection settings ---
-    _brcrd_saved = (
-        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+    _run_full_ts_generation(
+        request_key="_generate_br_consec_rd_requested",
+        results_key="_generate_br_consec_rd_results",
+        title="Generating 100 Configs (2500 iter, bufferrough, consec ts, random dirs)...",
+        caption="bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2–3) RANDOM directions | ALL timestamps",
+        status_prefix="bufferrough consec random dirs",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        pdp_variant_override="bufferrough",
+        buffer_x_override=1.0,
+        buffer_y_override=1.0,
+        rough_x_override=0.30,
+        rough_y_override=0.30,
+        session_overrides={
+            "_override_point_selection_mode": "Consecutive time stamps",
+            "_override_movement_direction": "Random directions",
+            "_override_consecutive_object_id": sorted(all_objects_points.keys())[0] if all_objects_points else 0,
+            "_override_consecutive_first_timestamp": 0,
+        },
+        per_config_hook=_br_consec_per_config,
+        cleanup_session_keys=_BRC_OVERRIDE_KEYS,
+        full_points_key="_br_consec_rd_full_points_plot",
+        full_vals_key="_br_consec_rd_full_vals_plot",
     )
-    all_pts_flat = _brcrd_pts_flat
-    all_ts_flat = _brcrd_ts_flat
-    all_obj_ids_flat = _brcrd_obj_ids
-    all_local_idx_flat = _brcrd_local_idx
-    all_is_fixed_flat = _brcrd_is_fixed
-    n_total_points = _brcrd_pts_flat.shape[0]
-    all_points_plot = _brcrd_full_points
-    all_vals_plot = _brcrd_full_vals
-
-    # Override point selection using non-widget keys (avoids StreamlitAPIException)
-    st.session_state["_override_point_selection_mode"] = "Consecutive time stamps"
-    st.session_state["_override_movement_direction"] = "Random directions"
-    st.session_state["_override_consecutive_object_id"] = _brcrd_sorted_oids_gen[0] if _brcrd_sorted_oids_gen else 0
-    st.session_state["_override_consecutive_first_timestamp"] = 0
-
-    try:
-        # Hardcoded bufferrough parameters
-        pdp_variant = "bufferrough"
-        buffer_x = 1.0
-        buffer_y = 1.0
-        rough_x = 0.30
-        rough_y = 0.30
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _brcrd_iterations = 2500
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        # --- Create incremental PDP checker for O(k·N) checks ---
-        _thresh_ck, _max_mm_ck = get_threshold_params()
-        _brcrd_checker = IncrementalPDPChecker(
-            all_pts_flat, pdp_variant,
-            buffer_x=buffer_x, buffer_y=buffer_y,
-            rough_x=rough_x, rough_y=rough_y,
-            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
-        )
-        _t_gen_start = time.perf_counter()
-        _total_iters = 0
-        _early_stops = 0
-
-        for config_idx in range(MAX_FILTER_CONFIGS):
-            _brcrd_checker.reset_to_original()
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            _stagnant = 0
-            _iters_used = _brcrd_iterations
-
-            # Randomly pick group size (2 or 3) per config
-            _brcrd_group_size = int(np.random.choice([2, 3]))
-            st.session_state["_override_group_num_timestamps"] = _brcrd_group_size
-
-            # Randomly pick which object to move (cycle through objects)
-            _brcrd_obj_id = _brcrd_sorted_oids_gen[config_idx % len(_brcrd_sorted_oids_gen)]
-            st.session_state["_override_consecutive_object_id"] = _brcrd_obj_id
-
-            for iteration in range(_brcrd_iterations):
-                status_text.text(f"bufferrough consec random dirs — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_brcrd_iterations} (obj {_brcrd_obj_id}, grp {_brcrd_group_size})...")
-                _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_brcrd_checker,
-                )
-                _n_added = len(successful_points) - _sp_before
-                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                    _stagnant += 1
-                else:
-                    _stagnant = 0
-                if _stagnant >= EARLY_STOP_PATIENCE:
-                    _iters_used = iteration + 1
-                    _early_stops += 1
-                    break
-
-            _total_iters += _iters_used
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _iters_used,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                    "group_size": _brcrd_group_size,
-                    "object_id": _brcrd_obj_id,
-                })
-
-            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-        progress_bar.empty()
-        status_text.empty()
-        _t_gen_elapsed = time.perf_counter() - _t_gen_start
-        _max_possible = MAX_FILTER_CONFIGS * _brcrd_iterations
-        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-        st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-        )
-
-        if not all_generated_configs:
-            st.error("No configurations were successfully generated.")
-            st.session_state["_generate_br_consec_rd_requested"] = False
-        else:
-            st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-            deviations: list[tuple[int, float, dict[str, Any]]] = []
-            for config in all_generated_configs:
-                successful_points = config.get("successful_points", [])
-                pv = _perpendicular_variance(all_points_plot, successful_points)
-                config_num = config.get("config_number", 0)
-                deviations.append((config_num, pv, config))
-
-            deviations.sort(key=lambda x: x[1], reverse=True)
-            top_3 = deviations[:3]
-
-            # Store full-timestamp data alongside results for display
-            st.session_state["_generate_br_consec_rd_results"] = top_3
-            st.session_state["_br_consec_rd_full_points_plot"] = _brcrd_full_points
-            st.session_state["_br_consec_rd_full_vals_plot"] = _brcrd_full_vals
-            st.rerun()
-    finally:
-        # --- Restore original globals ---
-        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _brcrd_saved
-        # --- Remove override keys (they shadow the widget keys) ---
-        for _k in ["_override_point_selection_mode", "_override_movement_direction",
-                   "_override_consecutive_object_id", "_override_consecutive_first_timestamp",
-                   "_override_group_num_timestamps"]:
-            st.session_state.pop(_k, None)
 
 # ============= Generate 100 configs × 2500 iterations — FIXED ENDPOINTS (ext30_fe) ============
 if st.session_state.get("_generate_ext30_fe_requested", False) and not st.session_state.get("_generate_ext30_fe_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (2500 iter, fixed endpoints)...")
-    st.caption("Eerste en laatste timestamp per object worden NIET verplaatst — ze fungeren als ankerpunten.")
-
-    # --- Step 1: Build full-timestamp data from all_objects_points (unfiltered) ---
-    _fe_sorted_oids = sorted(all_objects_points.keys())
-    _fe_full_points: dict[int, np.ndarray] = {}
-    _fe_full_vals: dict[int, np.ndarray] = {}
-    for _oid in _fe_sorted_oids:
-        _pts, _ts = all_objects_points[_oid]
-        _fe_full_points[_oid] = _pts
-        _fe_full_vals[_oid] = _ts
-
-    _fe_n_ts_per_obj = {oid: _fe_full_points[oid].shape[0] for oid in _fe_sorted_oids}
-    _fe_n_ts_total = sum(_fe_n_ts_per_obj.values())
-    _fe_ts_info_gen = ", ".join(f"obj {oid}: {n} ts" for oid, n in _fe_n_ts_per_obj.items())
-    _fe_n_fixed_per_obj = {oid: 2 if n > 1 else 1 for oid, n in _fe_n_ts_per_obj.items()}
-    _fe_n_fixed_total = sum(_fe_n_fixed_per_obj.values())
-    st.info(
-        f"Full timestamp data: {_fe_n_ts_total} total points ({_fe_ts_info_gen}). "
-        f"**{_fe_n_fixed_total} endpoints fixed** (first + last per object)."
+    _run_full_ts_generation(
+        request_key="_generate_ext30_fe_requested",
+        results_key="_generate_ext30_fe_results",
+        title="Generating 100 Configurations (2500 iter, fixed endpoints)...",
+        caption="Eerste en laatste timestamp per object worden NIET verplaatst — ze fungeren als ankerpunten.",
+        status_prefix="Fixed-EP",
+        all_objects_points=all_objects_points,
+        external_pts_for_window=external_pts_for_window,
+        external_ts_for_window=external_ts_for_window,
+        is_fixed_fn=lambda _oid, _li, _n: (_li == 0 or _li == _n - 1),
+        full_points_key="_ext30_fe_full_points_plot",
+        full_vals_key="_ext30_fe_full_vals_plot",
+        success_msg=None,  # uses default; original had custom text but functionally equivalent
     )
-
-    # --- Step 2: Build flattened arrays — first & last per object are FIXED ---
-    _fe_pts_list: list[np.ndarray] = []
-    _fe_ts_list: list[float] = []
-    _fe_obj_ids: list[int] = []
-    _fe_local_idx: list[int] = []
-    _fe_is_fixed: list[bool] = []
-    for _oid in _fe_sorted_oids:
-        _n_pts_obj = _fe_full_points[_oid].shape[0]
-        for _li in range(_n_pts_obj):
-            _fe_pts_list.append(_fe_full_points[_oid][_li])
-            _fe_ts_list.append(float(_fe_full_vals[_oid][_li]))
-            _fe_obj_ids.append(_oid)
-            _fe_local_idx.append(_li)
-            # Mark first and last timestamp as fixed (anchor points)
-            _fe_is_fixed.append(_li == 0 or _li == _n_pts_obj - 1)
-    for _ext_pt, _ext_t in zip(external_pts_for_window, external_ts_for_window):
-        _fe_pts_list.append(_ext_pt)
-        _fe_ts_list.append(float(_ext_t))
-        _fe_obj_ids.append(-1)
-        _fe_local_idx.append(len(_fe_pts_list) - 1)
-        _fe_is_fixed.append(True)
-    _fe_pts_flat = np.array(_fe_pts_list) if _fe_pts_list else np.array([]).reshape(0, 2)
-    _fe_ts_flat = np.array(_fe_ts_list) if _fe_ts_list else np.array([])
-
-    # --- Step 3: Temporarily swap global variables ---
-    _fe_saved = (
-        all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-        all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
-    )
-    all_pts_flat = _fe_pts_flat
-    all_ts_flat = _fe_ts_flat
-    all_obj_ids_flat = _fe_obj_ids
-    all_local_idx_flat = _fe_local_idx
-    all_is_fixed_flat = _fe_is_fixed
-    n_total_points = _fe_pts_flat.shape[0]
-    all_points_plot = _fe_full_points
-    all_vals_plot = _fe_full_vals
-
-    try:
-        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-        _fe_iterations = 2500
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        all_generated_configs: list[dict[str, Any]] = []
-
-        # --- Create incremental PDP checker for O(k·N) checks ---
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        _thresh_ck, _max_mm_ck = get_threshold_params()
-        _fe_checker = IncrementalPDPChecker(
-            all_pts_flat, pdp_variant,
-            buffer_x=buffer_x, buffer_y=buffer_y,
-            rough_x=rough_x, rough_y=rough_y,
-            match_threshold=_thresh_ck, max_mismatches=_max_mm_ck,
-        )
-        _t_gen_start = time.perf_counter()
-        _total_iters = 0
-        _early_stops = 0
-
-        for config_idx in range(MAX_FILTER_CONFIGS):
-            _fe_checker.reset_to_original()
-            current_points = all_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
-            _stagnant = 0
-            _iters_used = _fe_iterations
-
-            for iteration in range(_fe_iterations):
-                status_text.text(f"Fixed-EP config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_fe_iterations}...")
-                _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=successful_points,
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_fe_checker,
-                )
-                _n_added = len(successful_points) - _sp_before
-                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                    _stagnant += 1
-                else:
-                    _stagnant = 0
-                if _stagnant >= EARLY_STOP_PATIENCE:
-                    _iters_used = iteration + 1
-                    _early_stops += 1
-                    break
-
-            _total_iters += _iters_used
-            if successful_points:
-                all_generated_configs.append({
-                    "successful_points": successful_points,
-                    "config_number": config_idx + 1,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _iters_used,
-                    "buffer_x": buffer_x,
-                    "buffer_y": buffer_y,
-                    "rough_x": rough_x,
-                    "rough_y": rough_y,
-                    "threshold_mode": mode,
-                    "max_threshold": max_threshold,
-                })
-
-            progress_bar.progress((config_idx + 1) / MAX_FILTER_CONFIGS)
-
-        progress_bar.empty()
-        status_text.empty()
-        _t_gen_elapsed = time.perf_counter() - _t_gen_start
-        _max_possible = MAX_FILTER_CONFIGS * _fe_iterations
-        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-        st.info(
-            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-            f"({_t_gen_elapsed / max(1, MAX_FILTER_CONFIGS):.2f}s/config, "
-            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-            f"Early stopped {_early_stops}/{MAX_FILTER_CONFIGS} configs — "
-            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
-        )
-
-        if not all_generated_configs:
-            st.error("No configurations were successfully generated.")
-            st.session_state["_generate_ext30_fe_requested"] = False
-        else:
-            st.success(f"Successfully generated {len(all_generated_configs)} configurations (fixed endpoints)!")
-
-            deviations: list[tuple[int, float, dict[str, Any]]] = []
-            for config in all_generated_configs:
-                successful_points = config.get("successful_points", [])
-                pv = _perpendicular_variance(all_points_plot, successful_points)
-                config_num = config.get("config_number", 0)
-                deviations.append((config_num, pv, config))
-
-            deviations.sort(key=lambda x: x[1], reverse=True)
-            top_3 = deviations[:3]
-
-            st.session_state["_generate_ext30_fe_results"] = top_3
-            st.session_state["_ext30_fe_full_points_plot"] = _fe_full_points
-            st.session_state["_ext30_fe_full_vals_plot"] = _fe_full_vals
-            st.rerun()
-    finally:
-        (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
-         all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _fe_saved
 
 # ============= Generate 100 configs × 2500 iterations — half timestamps (ext30_half) ============
 if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
