@@ -1,9 +1,11 @@
-#alles wat ik al kan meerdere keren erop
-#visualisaties duidelijker maken: grootte...
-#andere drie configuraties op een volgende pagina toevoegen, ... toevoegen tot zoveel configuraties er zijn.
-#*kan ik zo een template maken met kolommen en grootte van figuren en dat dan bij de verschillende gebruiken?!
+# REPORT GENERATION MODULE
+# Purpose: Build comprehensive PDF report of PDP analysis results
+# TODO: 
+# - Enhance visualization clarity (sizing, positioning)
+# - Add multi-page configuration views (extend as dataset grows)
+# - Create reusable page templates for consistent layout and figure sizing
+# - Fine-tune layout parameters based on different analysis types
 
-#not yet perfect, but ok so far... finetune lay-out based on other pages...
 from PIL import Image as PILImage
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
@@ -17,32 +19,35 @@ import time
 # Start time
 t_start = time.time()
 
-# Create the "dir" subdirectory if it doesn't exist
-# subdir = os.path.join(os.getcwd(), "dir")
-# os.makedirs(av.dir, exist_ok=True)
-# Define custom page size
+# Set up output directory for this module
+output_dir = av.get_output_dir('Report')
+
+# Define custom page size (A4 landscape: 29.7cm x 21cm)
 width_cm = 29.7
 height_cm = 21
 custom_page_size = (width_cm * cm, height_cm * cm)
-# Define styles for the document
+
+# Define document styles
 styles = getSampleStyleSheet()
 title_style = styles['Title']
 body_style = styles['Normal']
 
-# Create filename
+# Generate filename based on active analysis type
 if av.PDPg_fundamental_active == 1:
-    filename = os.path.join(os.getcwd(), "report_moving_objects_PDP_fundamental.pdf")
+    filename = os.path.join(output_dir, "report_moving_objects_PDP_fundamental.pdf")
 elif av.PDPg_buffer_active == 1:
-    filename = os.path.join(os.getcwd(), "report_moving_objects_PDP_buffer.pdf")
+    filename = os.path.join(output_dir, "report_moving_objects_PDP_buffer.pdf")
 elif av.PDPg_rough_active == 1:
-    filename = os.path.join(os.getcwd(), "report_moving_objects._PDP_rough.pdf")
+    filename = os.path.join(output_dir, "report_moving_objects_PDP_rough.pdf")
 elif av.PDPg_bufferrough_active == 1:
-    filename = os.path.join(os.getcwd(), "report_moving_objects_PDP_bufferrough.pdf")
+    filename = os.path.join(output_dir, "report_moving_objects_PDP_bufferrough.pdf")
 else:
-    print("Variable a does not hold an appropriate value.")
+    print("ERROR: No active analysis type selected for report generation")
 
+# Initialize PDF document with custom settings
 doc = SimpleDocTemplate(filename, pagesize=custom_page_size, rightMargin=0.5*cm, leftMargin=0.5*cm, topMargin=0.5*cm, bottomMargin=0.5*cm)
-# Create the story for the document
+
+# Create the story (content list) for the document
 story = []
 
 if av.N_VA_DynamicAbsolute == 1:
@@ -65,17 +70,44 @@ if av.N_VA_DynamicAbsolute == 1:
     story.append(PageBreak())
 
 if av.N_VA_StaticAbsolute == 1:
-    # PAGE WITH STATIC VISUALISATIONS(ABSOLUTE)
-    # Create a title paragraph using the predefined style 'title_style'
+    # Add original absolute static visualizations page
     title = Paragraph("Static Visualizations (absolute)", title_style)
-    # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
     story.append(title)
-    # Add a subtitle
     subtitle_text = "Absolute visualizations of the static data"
     subtitle_style = ParagraphStyle(name='Subtitle', parent=title_style,fontname="monospace", fontsize=10)
     subtitle = Paragraph(subtitle_text, subtitle_style)
     story.append(subtitle)
-    file_paths = [os.path.join(os.getcwd(), 'N_C_Csa' + str(i) + '.png') for i in range(av.con)]
+    # Load images from StaticAbsolute output folder
+    file_paths = [av.get_output_file('N_C_Csa' + str(i) + '.png', 'StaticAbsolute') for i in range(av.con)]
+    # Create a list of Image objects from the file paths
+    #images = [Image(fp, width=250, height=166) for fp in file_paths]
+    images = [Image(fp, width=240, height=240) for fp in file_paths]
+    # Split the images list into sublists of 3 images each
+    image_rows = [images[i:i+3] for i in range(0, len(images), 3)]
+    # Calculate the width of each column
+    page_width = custom_page_size[0]
+    margin = 0.5 * cm  # total margin is 1 cm (0.5 cm on each side)
+    table_width = page_width - 2 * margin
+    col_width = table_width / 3
+    # Create a table with rows using the list of image rows
+    table = Table(image_rows)
+    # Specify the width of each column
+    table = Table(image_rows, colWidths=[col_width]*3)
+    # Append the table to the 'story' list
+    story.append(table)
+    # Add a page break to start a new page
+    story.append(PageBreak())
+
+if av.N_VA_StaticAbsolute_color == 1:
+    # Add colored absolute static visualizations page (alternative version)
+    title = Paragraph("Static Visualizations (absolute - colored)", title_style)
+    story.append(title)
+    subtitle_text = "Colored absolute visualizations of the static data"
+    subtitle_style = ParagraphStyle(name='Subtitle', parent=title_style,fontname="monospace", fontsize=10)
+    subtitle = Paragraph(subtitle_text, subtitle_style)
+    story.append(subtitle)
+    # Load images from StaticAbsolute_color output folder
+    file_paths = [av.get_output_file('N_C_Csa' + str(i) + '.png', 'StaticAbsolute_color') for i in range(av.con)]
     # Create a list of Image objects from the file paths
     #images = [Image(fp, width=250, height=166) for fp in file_paths]
     images = [Image(fp, width=240, height=240) for fp in file_paths]
@@ -108,7 +140,7 @@ if av.N_VA_StaticRelative == 1:
     story.append(subtitle)
     # Create a list of file paths for the images
     #file_paths = [os.path.join(av.dir, 'N_C_Csr' + str(i) + '.png') for i in range(av.con)] 
-    file_paths = [os.path.join(os.getcwd(), 'N_C_Csr' + str(i) + '.png') for i in range(av.con)]
+    file_paths = [av.get_output_file('N_C_Csr' + str(i) + '.png', 'StaticRelative') for i in range(av.con)]
     # Create a list of Image objects from the file paths
     #images = [Image(fp, width=250, height=166) for fp in file_paths]
     images = [Image(fp, width=240, height=240) for fp in file_paths]
@@ -141,7 +173,7 @@ if av.N_VA_StaticFinetuned == 1:
     story.append(subtitle)
     # Create a list of file paths for the images
     #file_paths = [os.path.join(av.dir, 'N_C_Csr' + str(i) + '.png') for i in range(av.con)] 
-    file_paths = [os.path.join(os.getcwd(), 'N_C_Csf' + str(i) + '.png') for i in range(av.con)]
+    file_paths = [av.get_output_file('N_C_Csf' + str(i) + '.png', 'StaticFinetuned') for i in range(av.con)]
     # Create a list of Image objects from the file paths
     #images = [Image(fp, width=250, height=166) for fp in file_paths]
     images = [Image(fp, width=105, height=270) for fp in file_paths]
@@ -176,7 +208,7 @@ if av.N_VA_InequalityMatrices == 1:
             for w in range(av.tst-(av.window_length_tst-1)):
                 for d in range(av.DD):
                     # Create the file path using the working directory
-                    file_path = os.path.join(os.getcwd(), 'N_C_PDPg_fundamental_InequalityMatrix' + '_c' + str(i) + '_t' + str(w) + '_d' + str(d)  +  '.png')        
+                    file_path = av.get_output_file('N_C_PDPg_fundamental_InequalityMatrix' + '_c' + str(i) + '_t' + str(w) + '_d' + str(d)  +  '.png', 'PDP')        
                     # Append the file path to the list
                     file_paths.append(file_path)
         # Create a list of Image objects from the file paths
@@ -213,7 +245,7 @@ if av.N_VA_InequalityMatrices == 1:
             for d in range(av.DD):
                 # Create the file path using the working directory
                 #file_path = os.path.join(os.getcwd(), 'N_C_Inequality_matrix' + '_c' + str(i) + '_d' + str(d+1) + "N_C_Dataset_g_buffer" + '.png')
-                file_path = os.path.join(os.getcwd(), 'N_C_PDPg_buffer_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png')  
+                file_path = av.get_output_file('N_C_PDPg_buffer_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png', 'PDP')
                 
                 # Append the file path to the list
                 file_paths.append(file_path)
@@ -244,7 +276,7 @@ if av.N_VA_InequalityMatrices == 1:
         for i in range(av.con):
             for d in range(av.DD):
                 # Create the file path using the working directory
-                file_path = os.path.join(os.getcwd(), 'N_C_PDPg_rough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png')        
+                file_path = av.get_output_file('N_C_PDPg_rough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png', 'PDP')        
                 # Append the file path to the list
                 file_paths.append(file_path)
         # Create a list of Image objects from the file paths
@@ -274,7 +306,7 @@ if av.N_VA_InequalityMatrices == 1:
         for i in range(av.con):
             for d in range(av.DD):
                 # Create the file path using the working directory
-                file_path = os.path.join(os.getcwd(), 'N_C_PDPg_bufferrough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png')        
+                file_path = av.get_output_file('N_C_PDPg_bufferrough_InequalityMatrix' + '_c' + str(i) + '_t0' + '_d' + str(d)  +  '.png', 'PDP')        
                 # Append the file path to the list
                 file_paths.append(file_path)
         # Create a list of Image objects from the file paths
@@ -300,7 +332,7 @@ if av.N_VA_HeatMap == 1:
         title = Paragraph("Heat Map (fundamental)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_HeatMap.png")
+        file_path = av.get_output_file("N_C_PDPg_fundamental_HeatMap.png", 'HeatMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -314,7 +346,7 @@ if av.N_VA_HeatMap == 1:
         title = Paragraph("Heat Map (buffer)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_HeatMap.png")
+        file_path = av.get_output_file("N_C_PDPg_buffer_HeatMap.png", 'HeatMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -328,7 +360,7 @@ if av.N_VA_HeatMap == 1:
         title = Paragraph("Heat Map (rough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_HeatMap.png")
+        file_path = av.get_output_file("N_C_PDPg_rough_HeatMap.png", 'HeatMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -342,7 +374,7 @@ if av.N_VA_HeatMap == 1:
         title = Paragraph("Heat Map (bufferrough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_HeatMap.png")
+        file_path = av.get_output_file("N_C_PDPg_bufferrough_HeatMap.png", 'HeatMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -358,7 +390,7 @@ if av.N_VA_ClusterMap == 1:
         title = Paragraph("Cluster Map (fundamental)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_ClusterMap.png")
+        file_path = av.get_output_file("N_C_PDPg_fundamental_ClusterMap.png", 'ClusterMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -372,7 +404,7 @@ if av.N_VA_ClusterMap == 1:
         title = Paragraph("Cluster Map (buffer)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_ClusterMapN_C_Dataset_g_buffer.png")
+        file_path = av.get_output_file("N_C_PDPg_buffer_ClusterMap.png", 'ClusterMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -383,10 +415,10 @@ if av.N_VA_ClusterMap == 1:
     # PAGE WITH CLUSTER MAP PDPG_rough
     elif av.PDPg_rough_active == 1:
         # Add the title
-        title = Paragraph("Cluster Map (rough: " + str(av.rough) + "m)", title_style)
+        title = Paragraph("Cluster Map (rough_x: " + str(av.rough_x) + "m, rough_y: " + str(av.rough_y) + "m)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPPg_rough_ClusterMap.png")
+        file_path = av.get_output_file("N_C_PDPg_rough_ClusterMap.png", 'ClusterMap')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -402,7 +434,7 @@ if av.N_VA_HClust == 1:
         title = Paragraph("Hierarchical Clustering (fundamental)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_HClust.png")
+        file_path = av.get_output_file("N_C_PDPg_fundamental_HClust.png", 'HClust')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -416,7 +448,7 @@ if av.N_VA_HClust == 1:
         title = Paragraph("Hierarchical Clustering (buffer)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_HClust.png")
+        file_path = av.get_output_file("N_C_PDPg_buffer_HClust.png", 'HClust')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -430,7 +462,7 @@ if av.N_VA_HClust == 1:
         title = Paragraph("Hierarchical Clustering (rough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_HClust.png")
+        file_path = av.get_output_file("N_C_PDPg_rough_HClust.png", 'HClust')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -444,7 +476,7 @@ if av.N_VA_HClust == 1:
         title = Paragraph("Hierarchical Clustering (bufferrough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_HClust.png")
+        file_path = av.get_output_file("N_C_PDPg_bufferrough_HClust.png", 'HClust')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -460,7 +492,7 @@ if av.N_VA_Mds == 1:
         title = Paragraph("Dimensionality Reduction (MDS) (fundamental)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_fundamental_Mds.png")
+        file_path = av.get_output_file("N_C_PDPg_fundamental_Mds.png", 'Mds')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -474,7 +506,7 @@ if av.N_VA_Mds == 1:
         title = Paragraph("Dimensionality Reduction (MDS) (buffer)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_buffer_Mds.png")
+        file_path = av.get_output_file("N_C_PDPg_buffer_Mds.png", 'Mds')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -488,7 +520,7 @@ if av.N_VA_Mds == 1:
         title = Paragraph("Dimensionality Reduction (MDS) (rough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_rough_Mds.png")
+        file_path = av.get_output_file("N_C_PDPg_rough_Mds.png", 'Mds')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -502,7 +534,7 @@ if av.N_VA_Mds == 1:
         title = Paragraph("Dimensionality Reduction (MDS) (bufferrough)", title_style)
         story.append(title)
         # Create the file path using the working directory
-        file_path = os.path.join(os.getcwd(), "N_C_PDPg_bufferrough_Mds.png")
+        file_path = av.get_output_file("N_C_PDPg_bufferrough_Mds.png", 'Mds')
         # Open the image using PIL
         pil_image = PILImage.open(file_path)
         # Add the image
@@ -519,7 +551,7 @@ if av.N_VA_TopK == 1:
         # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
         story.append(title)
         # Create a list of file paths for the images in the working directory
-        file_paths = [os.path.join(os.getcwd(), 'N_C_PDPg_fundamental_TopK_c' + str(i) + '.png') for i in range(av.con)]
+        file_paths = [av.get_output_file('N_C_PDPg_fundamental_TopK_c' + str(i) + '.png', 'TopK') for i in range(av.con)]
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
         # Split the images list into sublists of 5 images each
@@ -542,7 +574,7 @@ if av.N_VA_TopK == 1:
         # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
         story.append(title)
         # Create a list of file paths for the images in the working directory
-        file_paths = [os.path.join(os.getcwd(), 'N_C_PDPg_buffer_TopK_c' + str(i) + '.png') for i in range(av.con)]
+        file_paths = [av.get_output_file('N_C_PDPg_buffer_TopK_c' + str(i) + '.png', 'TopK') for i in range(av.con)]
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
         # Split the images list into sublists of 5 images each
@@ -565,7 +597,7 @@ if av.N_VA_TopK == 1:
         # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
         story.append(title)
         # Create a list of file paths for the images in the working directory
-        file_paths = [os.path.join(os.getcwd(), 'N_C_PDPg_rough_TopK_c' + str(i) + '.png') for i in range(av.con)]
+        file_paths = [av.get_output_file('N_C_PDPg_rough_TopK_c' + str(i) + '.png', 'TopK') for i in range(av.con)]
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
         # Split the images list into sublists of 5 images each
@@ -588,7 +620,7 @@ if av.N_VA_TopK == 1:
         # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
         story.append(title)
         # Create a list of file paths for the images in the working directory
-        file_paths = [os.path.join(os.getcwd(), 'N_C_PDPg_bufferrough_TopK_c' + str(i) + '.png') for i in range(av.con)]
+        file_paths = [av.get_output_file('N_C_PDPg_bufferrough_TopK_c' + str(i) + '.png', 'TopK') for i in range(av.con)]
         # Create a list of Image objects from the file paths
         images = [Image(fp, width=250, height=166) for fp in file_paths]
         # Split the images list into sublists of 5 images each
@@ -633,7 +665,7 @@ if av.PDPg_buffer == 1:
 # PAGE WITH TOPK VISUALISATIONS PDPG_rough
 if av.PDPg_rough == 1:
     # Create a title paragraph using the predefined style 'title_style'
-    title = Paragraph("Top-K (rough): " + str(av.rough) + "m)", title_style)
+    title = Paragraph("Top-K (rough_x: " + str(av.rough_x) + "m, rough_y: " + str(av.rough_y) + "m)", title_style)
     # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
     story.append(title)
     # Create a list of file paths for the images in the working directory

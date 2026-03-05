@@ -14,30 +14,58 @@ from tkinter import ttk  # For creating a graphical user interface
 # Record the start time of the script
 t_start = time.time()
 
+# Set the working directory to the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+
 # Function to update GUI settings and close the window
 def update_settings():   
     """
     Updates global settings based on GUI input and closes the GUI.
     """
     global PDPg_fundamental, PDPg_buffer, PDPg_rough, PDPg_bufferrough
+    global buffer_x, buffer_y, rough_x, rough_y
     PDPg_fundamental = fundamental_var.get()
     PDPg_buffer = buffer_var.get()
     PDPg_rough = rough_var.get()  
-    PDPg_bufferrough = bufferrough_var.get()   
+    PDPg_bufferrough = bufferrough_var.get()
+    buffer_x = buffer_x_var.get()
+    buffer_y = buffer_y_var.get()
+    rough_x = rough_x_var.get()
+    rough_y = rough_y_var.get()
     root.destroy()  # Close the window
 
 # Activation of GUI
 graphical_user_interface = 0 
 
-# !!! Default setting for PDP types; this has to be changed to say which PDP to calculate.
-PDPg_fundamental = 1 # !!!must always be 1 , so this always has to be calculated.
-PDPg_buffer = 0  
-PDPg_rough = 0 
+# ==================================================================================
+# IMPORTANT CONFIGURATION: INPUT AND OUTPUT PATHS
+# ==================================================================================
+# Modify the paths below to specify input dataset location and output folder location
+# All result folders (PDP, Report, HeatMap, etc.) will be generated under the output path
+
+# Input dataset full file path
+# Set this to the complete path of your input dataset file
+# Example: input_dataset_path = r'D:\Data\N_C_Dataset.csv'
+input_dataset_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv')
+
+# Output base folder path
+# All module output folders will be created as subdirectories under this path
+# Example: output_base_path = r'D:\Results\Test'
+output_base_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\Test5')
+
+# ==================================================================================
+
+# Default setting for PDP types; this has to be changed to specify which PDP to calculate
+PDPg_fundamental = 1  # Must always be 1; this is always calculated
+PDPg_buffer = 0 
+PDPg_rough = 0
 PDPg_bufferrough = 0
 
 # Set the parameters for the calculations to be included in the report
 N_VA_Report = 1
 N_VA_StaticAbsolute = 1
+N_VA_StaticAbsolute_color = 1
 N_VA_StaticRelative = 0
 N_VA_StaticFinetuned = 0
 N_VA_DynamicAbsolute = 0  #have to doublecheck this code
@@ -55,8 +83,12 @@ N_VA_Inverse = 0
 window_length_tst = 137
 
 # Distance details for different PDP types
-buffer = 0.05  # The distance that is taken for buffer if buffer is active; original point is extended with two points in each dimension at a buffer distance of the original point; if two points are less than double the buffer distance from each other then this makes already a difference with the fundamental
-rough = 0.25  # The distance that is taken for rough if rough is active; two points that are originally different but have a distance less than this rough-distance will be 'the same' after transformation
+# Buffer distances for x and y directions
+buffer_x = 0  # Buffer distance in x-direction
+buffer_y = 0  # Buffer distance in y-direction
+# Rough distances for x and y directions
+rough_x = 5  # Rough distance in x-direction
+rough_y = 0  # Rough distance in y-direction
 
 # Dimensions and/or descriptors
 DD = 2  # If dimension and descriptor is the same
@@ -89,6 +121,12 @@ if graphical_user_interface == 1:
     rough_var = tk.IntVar(value=PDPg_rough)
     bufferrough_var = tk.IntVar(value=PDPg_bufferrough)
     
+    # Create DoubleVar for float input value
+    buffer_x_var = tk.DoubleVar(value=buffer_x)
+    buffer_y_var = tk.DoubleVar(value=buffer_y)
+    rough_x_var = tk.DoubleVar(value=rough_x)
+    rough_y_var = tk.DoubleVar(value=rough_y)
+    
     # Create Checkbuttons (Checkboxes)
     fundamental_check = ttk.Checkbutton(root, text="PDPg_fundamental", variable=fundamental_var)
     fundamental_check.pack(pady=10)
@@ -98,6 +136,31 @@ if graphical_user_interface == 1:
     rough_check.pack(pady=10)
     bufferrough_check = ttk.Checkbutton(root, text="PDPg_bufferrough", variable=bufferrough_var)
     bufferrough_check.pack(pady=10)
+    
+    # Add labels and input fields for buffer_x, buffer_y, rough_x, rough_y
+    # Buffer X
+    buffer_x_label = ttk.Label(root, text="Buffer X Distance:")
+    buffer_x_label.pack(pady=5)
+    buffer_x_entry = ttk.Entry(root, textvariable=buffer_x_var, width=20)
+    buffer_x_entry.pack(pady=5)
+    
+    # Buffer Y
+    buffer_y_label = ttk.Label(root, text="Buffer Y Distance:")
+    buffer_y_label.pack(pady=5)
+    buffer_y_entry = ttk.Entry(root, textvariable=buffer_y_var, width=20)
+    buffer_y_entry.pack(pady=5)
+    
+    # Rough X
+    rough_x_label = ttk.Label(root, text="Rough X Distance:")
+    rough_x_label.pack(pady=5)
+    rough_x_entry = ttk.Entry(root, textvariable=rough_x_var, width=20)
+    rough_x_entry.pack(pady=5)
+    
+    # Rough Y
+    rough_y_label = ttk.Label(root, text="Rough Y Distance:")
+    rough_y_label.pack(pady=5)
+    rough_y_entry = ttk.Entry(root, textvariable=rough_y_var, width=20)
+    rough_y_entry.pack(pady=5)
     
     # Submit button to update the settings and close the window
     submit_btn = ttk.Button(root, text="Update Settings", command=update_settings)
@@ -109,12 +172,18 @@ dataset_name = 'N_C_Dataset.csv'  # The name of the dataset file
 dataset_name_exclusive = dataset_name [:-4]  # The name of the dataset file without the extension
 
 # Read and process the dataset
-Df_dataset = pd.read_csv("N_C_Dataset.csv", header=None)  # Read the dataset
+# Use the input_dataset_path configured above
+if not os.path.exists(input_dataset_path):
+    raise FileNotFoundError(f"Dataset file not found at: {input_dataset_path}\nPlease check the input_dataset_path setting in av.py")
+
+dataset_path = input_dataset_path
+
+Df_dataset = pd.read_csv(dataset_path, header=None)  # Read the dataset
 Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']  # Set the column names
 
 # Load the dataset into a list for further processing
 L_dataset = []  # Initialize an empty list for dataset entries
-with open(dataset_name) as csv_file:
+with open(dataset_path) as csv_file:
     csv_reader = csv.reader(csv_file, delimiter=',')
     
     # Read each row from the CSV file
@@ -134,8 +203,10 @@ with open(dataset_name) as csv_file:
 # Convert list to a numpy array for efficient numerical processing
 A_dataset = np.array(L_dataset, dtype=np.float32)
 
-# Save the processed dataset back to a CSV file
-Df_dataset.to_csv("Df_dataset.csv", index=False)
+# Save the processed dataset back to a CSV file in the Init output directory
+init_output_dir = os.path.join(output_base_path, 'Init')
+os.makedirs(init_output_dir, exist_ok=True)
+Df_dataset.to_csv(os.path.join(init_output_dir, "Df_dataset.csv"), index=False)
 
 # Detect variables
 con = Df_dataset['conID'].max() + 1  # The number of configurations
@@ -151,6 +222,84 @@ PDPg_bufferrough_active = 0
 # Check if the window length exceeds the number of timestamps
 if window_length_tst > tst: 
     print("ERROR IN VALUE OF VARIABLE: window_length_tst > tst")
+
+# Function to create and return an output directory for a specific module
+def get_output_dir(module_name):
+    """
+    Create an output directory for a specific module and return its path.
+    Uses the global output_base_path variable to determine the base output directory.
+    
+    Args:
+        module_name: The name of the module (e.g., 'PDP', 'HeatMap', 'Report')
+    
+    Returns:
+        The path to the output directory
+    """
+    output_dir = os.path.join(output_base_path, module_name)
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+# Function to get input file path from another module's output
+def get_input_file(filename, module_names=None):
+    """
+    Get the path to a file generated by another module.
+    Searches multiple module directories in order within the output_base_path.
+    
+    Args:
+        filename: The name of the file to read
+        module_names: List of module names to search in order (e.g., ['Moving_Objects', 'OB', 'D'])
+                     If None, searches all common locations in a default order.
+    
+    Returns:
+        The full path to the input file if found, otherwise the root directory path as fallback
+    """
+    if module_names is None:
+        # Default search order for dataset files
+        module_names = ['Moving_Objects', 'OB', 'D', 'PDP', 'HeatMap', 'HClust', 'Mds', 'TopK']
+    
+    # Try to find the file in the specified module directories within output_base_path
+    for module_name in module_names:
+        file_path = os.path.join(output_base_path, module_name, filename)
+        if os.path.exists(file_path):
+            return file_path
+    
+    # Check root directory for backward compatibility
+    root_path = os.path.join(os.getcwd(), filename)
+    if os.path.exists(root_path):
+        return root_path
+    
+    # If file not found anywhere, return the first module location as default
+    if module_names:
+        return os.path.join(output_base_path, module_names[0], filename)
+    else:
+        return os.path.join(output_base_path, filename)
+
+# Function to get output file path from another module
+def get_output_file(filename, module_name):
+    """
+    Get the path to a file generated by another module for reading purposes.
+    Uses the global output_base_path variable.
+    
+    Args:
+        filename: The name of the file (e.g., 'N_C_PDPg_fundamental_HeatMap.png')
+        module_name: The name of the module that generated the file (e.g., 'HeatMap', 'PDP')
+    
+    Returns:
+        The full path to the output file
+    """
+    file_path = os.path.join(output_base_path, module_name, filename)
+    
+    # Check if file exists in the specified module directory
+    if os.path.exists(file_path):
+        return file_path
+    
+    # Try root directory for backward compatibility
+    root_path = os.path.join(os.getcwd(), filename)
+    if os.path.exists(root_path):
+        return root_path
+    
+    # Return the expected path in output_base_path even if file doesn't exist yet
+    return file_path
 
 # Final output to indicate the duration the script has run
 print('Time elapsed for running module "av": {:.3f} sec.'.format(time.time() - t_start))

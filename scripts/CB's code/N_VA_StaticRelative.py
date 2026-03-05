@@ -9,12 +9,14 @@ import time
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('StaticRelative')
 
 # Set the default unit of length to centimeters
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-df = pd.read_csv(av.dataset_name, header=None)
+dataset_path = av.get_input_file(av.dataset_name, ['Moving_Objects', 'D', 'OB'])
+df = pd.read_csv(dataset_path, header=None)
 
 # Define your custom colors
 if av.poi == 3:
@@ -96,7 +98,7 @@ for config in configurations:
 
     plt.title('Configuration ' + str(config),fontname="monospace", fontsize=40)  # increment the configuration by 1
     file_name = 'N_C_Csr' + str(config) + '.png'  # increment the filename by 1
-    plt.savefig(file_name, dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, file_name), dpi=300, bbox_inches='tight')
     plt.close()  # close the figure to release memory
 
 # End and print time

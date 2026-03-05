@@ -29,6 +29,7 @@ import time
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('HeatMap')
 
 L_dataset = []
 D_poi_mapping = {}
@@ -52,7 +53,9 @@ else:
 
 av.L_dataset = []
 if file_name is not None:
-    with open(file_name) as csv_file:
+    # Get the DistanceMatrix file from PDP output folder
+    file_path = av.get_input_file(file_name, ['PDP'])
+    with open(file_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             # Add a delay after reading each row
@@ -110,7 +113,7 @@ elif av.PDPg_rough_active == 1:
 elif av.PDPg_bufferrough_active == 1:
     filename = 'N_C_PDPg_bufferrough_HeatMap.png'
 
-plt.savefig(filename, dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
 #plt.savefig(filename, dpi=300, bbox_inches='tight')
 #plt.show()
 plt.clf()  # clear the figure to start with a new blank figure

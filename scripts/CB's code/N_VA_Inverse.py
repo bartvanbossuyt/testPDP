@@ -190,6 +190,7 @@ pd.set_option('display.max_columns', 500)  # Display up to 500 columns
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('Inverse')
 
 # Define the threshold T as a range between T_min and T_max
 T_min, T_max = av.min_boundary_x, av.max_boundary_x  # Example values, adjust according to your needs
@@ -253,8 +254,8 @@ for configuration in range(av.num_similar_configurations*av.new_configuration_st
         print()
 
         result = inequalities(A_new_configuration)
-        N_PDP.Df_con_tst_xineq_yineq.to_csv("basic_inequalities_representation.csv", index=False)
-        result.to_csv("new_inequalities_representation.csv", index=False)
+        N_PDP.Df_con_tst_xineq_yineq.to_csv(os.path.join(output_dir, "basic_inequalities_representation.csv"), index=False)
+        result.to_csv(os.path.join(output_dir, "new_inequalities_representation.csv"), index=False)
         Df_new_xineq_yineq=result
 
         #add a similar configuration
@@ -279,7 +280,7 @@ for configuration in range(av.num_similar_configurations*av.new_configuration_st
                 shutil.copy(source_file_path, destination_file_path)
                 # Load the existing dataset from N_C_similar_configurations.csv
                 #df_ataset = pd.read_csv("N_C_similar_configurations.csv")
-                with open("N_C_similar_configurations.csv", 'r') as csv_file:
+                with open(os.path.join(output_dir, "N_C_similar_configurations.csv"), 'r') as csv_file:
                     reader = csv.reader(csv_file)
                     data = list(reader)
                 df_dataset = pd.DataFrame(data[1:], columns=data[0])
@@ -295,7 +296,7 @@ for configuration in range(av.num_similar_configurations*av.new_configuration_st
             #print(df_dataset)
             # Save the updated dataset back to N_C_Dataset.csv
             #the following line has to be done only after the step length
-                df_dataset.to_csv("N_C_similar_configurations.csv", index=False)
+                df_dataset.to_csv(os.path.join(output_dir, "N_C_similar_configurations.csv"), index=False)
             #print("Added similar configurations to the dataset")
 
             break  # Exit the loop
@@ -322,7 +323,7 @@ for configuration in range(av.num_similar_configurations*av.new_configuration_st
     print()
 
 # Change the datatypes of the filevalues.
-file_name = 'N_C_similar_configurations.csv' #load current configuration
+file_name = os.path.join(output_dir, 'N_C_similar_configurations.csv') #load current configuration
 # Temporarily store the modified rows
 modified_rows = []
 loop_counter = 0

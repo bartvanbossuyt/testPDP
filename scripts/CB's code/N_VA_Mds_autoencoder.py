@@ -2,6 +2,7 @@ import av
 import csv
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 import seaborn as sns; sns.set_theme()
 import tensorflow as tf
@@ -11,6 +12,7 @@ from tensorflow.keras.models import Model
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('Mds_autoencoder')
 
 A_dataset = av.A_dataset
 
@@ -74,7 +76,7 @@ for i in range(len(A_dataset)):
 
 # Opslaan van de visualisatie
 filename = 'Autoencoder_Reduction.png'  # Wijzig de bestandsnaam indien nodig
-plt.savefig(filename, dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
 plt.clf()
 
 # Print de "stressfactor" (MSE)
