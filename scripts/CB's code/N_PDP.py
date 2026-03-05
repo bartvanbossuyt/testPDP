@@ -58,13 +58,17 @@ Df_con_tst_xineq_yineq = pd.DataFrame(columns=['conID' , 'tstID', 'xineqID', 'yi
 D_inequality = {}  # Initialize an empty dictionary to store DataFrames
 new_index = 0
 
-rough = 0
+# Define roughness values for x and y dimensions
+rough_x = 0
+rough_y = 0
 
 if av.PDPg_rough_active == 1: 
-    rough = av.rough
+    rough_x = av.rough_x
+    rough_y = av.rough_y
 
 if av.PDPg_bufferrough_active == 1: 
-    rough = av.rough
+    rough_x = av.rough_x
+    rough_y = av.rough_y
 
 group_by_con_id = av.Df_dataset.groupby('conID') #pre-group your DataFrame by 'conID' so that you can quickly access all rows for a given con_id without having to filter the DataFrame over and over in each iteration of the loop
 for con_id in range(av.con):  # Loop over all configurations con_id
@@ -84,7 +88,10 @@ for con_id in range(av.con):  # Loop over all configurations con_id
         j = 0
 
         L_tst_id_dfs = []  # Create a list to hold the dataframes for each dimension
-        for dim_id in ['x', 'y']:  # Loop over all dimensions (x and y)            
+        for dim_id in ['x', 'y']:  # Loop over all dimensions (x and y)
+            # Choose appropriate roughness based on the dimension
+            rough = rough_x if dim_id == 'x' else rough_y
+            
             A_inequality_matrix = np.zeros((int(av.poi*av.window_length_tst), int(av.poi*av.window_length_tst))) # Create an empty matrix of appropriate size
             #for i in range(av.poi*av.window_length_tst):  
             for i in range(int(av.poi*av.window_length_tst)): # Loop over all points, dependant of the window length

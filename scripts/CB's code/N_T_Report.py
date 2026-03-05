@@ -383,7 +383,7 @@ if av.N_VA_ClusterMap == 1:
     # PAGE WITH CLUSTER MAP PDPG_rough
     elif av.PDPg_rough_active == 1:
         # Add the title
-        title = Paragraph("Cluster Map (rough: " + str(av.rough) + "m)", title_style)
+        title = Paragraph("Cluster Map (rough_x: " + str(av.rough_x) + "m, rough_y: " + str(av.rough_y) + "m)", title_style)
         story.append(title)
         # Create the file path using the working directory
         file_path = os.path.join(os.getcwd(), "N_C_PDPPg_rough_ClusterMap.png")
@@ -633,7 +633,7 @@ if av.PDPg_buffer == 1:
 # PAGE WITH TOPK VISUALISATIONS PDPG_rough
 if av.PDPg_rough == 1:
     # Create a title paragraph using the predefined style 'title_style'
-    title = Paragraph("Top-K (rough): " + str(av.rough) + "m)", title_style)
+    title = Paragraph("Top-K (rough_x: " + str(av.rough_x) + "m, rough_y: " + str(av.rough_y) + "m)", title_style)
     # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
     story.append(title)
     # Create a list of file paths for the images in the working directory

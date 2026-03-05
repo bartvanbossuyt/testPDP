@@ -34,11 +34,11 @@ with open('N_C_Dataset.csv', 'r') as csv_file:
   #add a new line
   lines = []
   for line in csv_reader:  # One new buffer point (at distance 3) for each DD (if descriptor and dimension is the same)
-    lines.append([line[0],line[1],round((float(line[2])*5+0), 2),round((float(line[3])-av.buffer), 2),line[4]])
-    lines.append([line[0],line[1],round((float(line[2])*5+1), 2),round((float(line[3])+av.buffer), 2),line[4]])
+    lines.append([line[0],line[1],round((float(line[2])*5+0), 2),round((float(line[3])-av.buffer_x), 2),line[4]])
+    lines.append([line[0],line[1],round((float(line[2])*5+1), 2),round((float(line[3])+av.buffer_x), 2),line[4]])
     lines.append([line[0],line[1],round((float(line[2])*5+2), 2),line[3],line[4]])
-    lines.append([line[0],line[1],round((float(line[2])*5+3), 2),line[3],round((float(line[4])-av.buffer), 2)])
-    lines.append([line[0],line[1],round((float(line[2])*5+4), 2),line[3],round((float(line[4])+av.buffer), 2)])
+    lines.append([line[0],line[1],round((float(line[2])*5+3), 2),line[3],round((float(line[4])-av.buffer_y), 2)])
+    lines.append([line[0],line[1],round((float(line[2])*5+4), 2),line[3],round((float(line[4])+av.buffer_y), 2))]
 
 #save the new csv-file
 with open('N_C_PDPg_buffer_Dataset.csv', 'w', newline='') as new_csv_file:

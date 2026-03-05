@@ -14,16 +14,25 @@ from tkinter import ttk  # For creating a graphical user interface
 # Record the start time of the script
 t_start = time.time()
 
+# Set the working directory to the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+
 # Function to update GUI settings and close the window
 def update_settings():   
     """
     Updates global settings based on GUI input and closes the GUI.
     """
     global PDPg_fundamental, PDPg_buffer, PDPg_rough, PDPg_bufferrough
+    global buffer_x, buffer_y, rough_x, rough_y
     PDPg_fundamental = fundamental_var.get()
     PDPg_buffer = buffer_var.get()
     PDPg_rough = rough_var.get()  
-    PDPg_bufferrough = bufferrough_var.get()   
+    PDPg_bufferrough = bufferrough_var.get()
+    buffer_x = buffer_x_var.get()
+    buffer_y = buffer_y_var.get()
+    rough_x = rough_x_var.get()
+    rough_y = rough_y_var.get()
     root.destroy()  # Close the window
 
 # Activation of GUI
@@ -31,8 +40,8 @@ graphical_user_interface = 0
 
 # !!! Default setting for PDP types; this has to be changed to say which PDP to calculate.
 PDPg_fundamental = 1 # !!!must always be 1 , so this always has to be calculated.
-PDPg_buffer = 0  
-PDPg_rough = 0 
+PDPg_buffer = 0 
+PDPg_rough = 1 
 PDPg_bufferrough = 0
 
 # Set the parameters for the calculations to be included in the report
@@ -55,8 +64,12 @@ N_VA_Inverse = 0
 window_length_tst = 137
 
 # Distance details for different PDP types
-buffer = 0.05  # The distance that is taken for buffer if buffer is active; original point is extended with two points in each dimension at a buffer distance of the original point; if two points are less than double the buffer distance from each other then this makes already a difference with the fundamental
-rough = 0.25  # The distance that is taken for rough if rough is active; two points that are originally different but have a distance less than this rough-distance will be 'the same' after transformation
+# Buffer distances for x and y directions
+buffer_x = 0  # Buffer distance in x-direction
+buffer_y = 0  # Buffer distance in y-direction
+# Rough distances for x and y directions
+rough_x = 5  # Rough distance in x-direction
+rough_y = 0  # Rough distance in y-direction
 
 # Dimensions and/or descriptors
 DD = 2  # If dimension and descriptor is the same
@@ -89,6 +102,12 @@ if graphical_user_interface == 1:
     rough_var = tk.IntVar(value=PDPg_rough)
     bufferrough_var = tk.IntVar(value=PDPg_bufferrough)
     
+    # Create DoubleVar for float input value
+    buffer_x_var = tk.DoubleVar(value=buffer_x)
+    buffer_y_var = tk.DoubleVar(value=buffer_y)
+    rough_x_var = tk.DoubleVar(value=rough_x)
+    rough_y_var = tk.DoubleVar(value=rough_y)
+    
     # Create Checkbuttons (Checkboxes)
     fundamental_check = ttk.Checkbutton(root, text="PDPg_fundamental", variable=fundamental_var)
     fundamental_check.pack(pady=10)
@@ -98,6 +117,31 @@ if graphical_user_interface == 1:
     rough_check.pack(pady=10)
     bufferrough_check = ttk.Checkbutton(root, text="PDPg_bufferrough", variable=bufferrough_var)
     bufferrough_check.pack(pady=10)
+    
+    # Add labels and input fields for buffer_x, buffer_y, rough_x, rough_y
+    # Buffer X
+    buffer_x_label = ttk.Label(root, text="Buffer X Distance:")
+    buffer_x_label.pack(pady=5)
+    buffer_x_entry = ttk.Entry(root, textvariable=buffer_x_var, width=20)
+    buffer_x_entry.pack(pady=5)
+    
+    # Buffer Y
+    buffer_y_label = ttk.Label(root, text="Buffer Y Distance:")
+    buffer_y_label.pack(pady=5)
+    buffer_y_entry = ttk.Entry(root, textvariable=buffer_y_var, width=20)
+    buffer_y_entry.pack(pady=5)
+    
+    # Rough X
+    rough_x_label = ttk.Label(root, text="Rough X Distance:")
+    rough_x_label.pack(pady=5)
+    rough_x_entry = ttk.Entry(root, textvariable=rough_x_var, width=20)
+    rough_x_entry.pack(pady=5)
+    
+    # Rough Y
+    rough_y_label = ttk.Label(root, text="Rough Y Distance:")
+    rough_y_label.pack(pady=5)
+    rough_y_entry = ttk.Entry(root, textvariable=rough_y_var, width=20)
+    rough_y_entry.pack(pady=5)
     
     # Submit button to update the settings and close the window
     submit_btn = ttk.Button(root, text="Update Settings", command=update_settings)
