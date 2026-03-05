@@ -20,8 +20,7 @@ output_dir = av.get_output_dir('StaticAbsolute_color')
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-dataset_path = av.get_input_file(av.dataset_name, ['Moving_Objects', 'D', 'OB'])
-df = pd.read_csv(dataset_path, header=None)
+df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
 
 # Get the unique values of the first column
 configurations = df[0].unique()

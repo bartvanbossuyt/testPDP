@@ -73,11 +73,8 @@ t_start = time.time()
 # Set up output directory for PDP module results
 output_dir = av.get_output_dir('PDP')
 
-# Get dataset path: may be from Moving_Objects, OB (buffer), or D (original) folder
-dataset_path = av.get_input_file(av.dataset_name)
-
 # Load dataset with standard column structure
-Df_dataset = pd.read_csv(dataset_path, header=None)
+Df_dataset = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
 Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
 
 # Initialize data structures for inequality matrices
