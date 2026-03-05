@@ -34,8 +34,8 @@ t_start = time.time()
 # Set up output directory for this module
 output_dir = av.get_output_dir('OB')
 
-# Load original dataset from D or root directory
-dataset_path = av.get_input_file('N_C_Dataset.csv', ['D'])
+# Load original dataset from root output directory
+dataset_path = os.path.join(av.output_base_path, 'N_C_Dataset.csv')
 
 # Read and process dataset
 with open(dataset_path, 'r') as csv_file:
@@ -56,7 +56,7 @@ with open(dataset_path, 'r') as csv_file:
     # Below buffer point
     lines.append([line[0], line[1], round((float(line[2])*5+3), 2), line[3], round((float(line[4])-av.buffer_y), 2)])
     # Above buffer point
-    lines.append([line[0], line[1], round((float(line[2])*5+4), 2), line[3], round((float(line[4])+av.buffer_y), 2))]
+    lines.append([line[0], line[1], round((float(line[2])*5+4), 2), line[3], round((float(line[4])+av.buffer_y), 2)])
 
 # Save buffered dataset
 with open(os.path.join(output_dir, 'N_C_PDPg_buffer_Dataset.csv'), 'w', newline='') as new_csv_file:

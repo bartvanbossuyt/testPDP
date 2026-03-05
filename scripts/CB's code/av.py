@@ -47,20 +47,20 @@ graphical_user_interface = 0
 # Input dataset full file path
 # Set this to the complete path of your input dataset file
 # Example: input_dataset_path = r'D:\Data\N_C_Dataset.csv'
-input_dataset_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv')
+input_dataset_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv')
 
 # Output base folder path
 # All module output folders will be created as subdirectories under this path
 # Example: output_base_path = r'D:\Results\Test'
-output_base_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\Test5')
+output_base_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\Test7')
 
 # ==================================================================================
 
 # Default setting for PDP types; this has to be changed to specify which PDP to calculate
 PDPg_fundamental = 1  # Must always be 1; this is always calculated
-PDPg_buffer = 0 
-PDPg_rough = 0
-PDPg_bufferrough = 0
+PDPg_buffer = 1 
+PDPg_rough = 1
+PDPg_bufferrough = 1
 
 # Set the parameters for the calculations to be included in the report
 N_VA_Report = 1
@@ -85,7 +85,7 @@ window_length_tst = 137
 # Distance details for different PDP types
 # Buffer distances for x and y directions
 buffer_x = 0  # Buffer distance in x-direction
-buffer_y = 0  # Buffer distance in y-direction
+buffer_y = 2  # Buffer distance in y-direction
 # Rough distances for x and y directions
 rough_x = 5  # Rough distance in x-direction
 rough_y = 0  # Rough distance in y-direction
@@ -96,10 +96,10 @@ des	= 2  # Number of descriptors
 dim	= 2  # Number of dimensions
 
 # Min/max x/y values
-min_boundary_x = 18
-max_boundary_x = 67
-min_boundary_y = 0
-max_boundary_y = 40
+min_boundary_x = 0
+max_boundary_x = 75
+min_boundary_y = -17
+max_boundary_y = 3
 
 # Number of frames for interpolation if there is an interpolation
 num_frames = 20  
@@ -203,10 +203,11 @@ with open(dataset_path) as csv_file:
 # Convert list to a numpy array for efficient numerical processing
 A_dataset = np.array(L_dataset, dtype=np.float32)
 
-# Save the processed dataset back to a CSV file in the Init output directory
-init_output_dir = os.path.join(output_base_path, 'Init')
-os.makedirs(init_output_dir, exist_ok=True)
-Df_dataset.to_csv(os.path.join(init_output_dir, "Df_dataset.csv"), index=False)
+# Ensure output directory exists before saving
+os.makedirs(output_base_path, exist_ok=True)
+
+# Save the processed dataset (without header) to the root output directory
+Df_dataset.to_csv(os.path.join(output_base_path, 'N_C_Dataset.csv'), index=False, header=False)
 
 # Detect variables
 con = Df_dataset['conID'].max() + 1  # The number of configurations

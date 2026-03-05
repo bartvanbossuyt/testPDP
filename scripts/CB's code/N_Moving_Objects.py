@@ -90,7 +90,7 @@ if av.PDPg_fundamental == 1:
     av.PDPg_fundamental_active = 1
     
     # Copy dataset file to output directory
-    source_file = av.get_input_file(av.dataset_name)
+    source_file = av.input_dataset_path
     target_file = os.path.join(output_dir, "N_C_PDPg_fundamental_Dataset.csv")
     shutil.copyfile(source_file, target_file) 
     av.dataset_name = 'N_C_PDPg_fundamental_Dataset.csv'
