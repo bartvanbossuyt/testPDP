@@ -1,9 +1,11 @@
-#alles wat ik al kan meerdere keren erop
-#visualisaties duidelijker maken: grootte...
-#andere drie configuraties op een volgende pagina toevoegen, ... toevoegen tot zoveel configuraties er zijn.
-#*kan ik zo een template maken met kolommen en grootte van figuren en dat dan bij de verschillende gebruiken?!
+# REPORT GENERATION MODULE
+# Purpose: Build comprehensive PDF report of PDP analysis results
+# TODO: 
+# - Enhance visualization clarity (sizing, positioning)
+# - Add multi-page configuration views (extend as dataset grows)
+# - Create reusable page templates for consistent layout and figure sizing
+# - Fine-tune layout parameters based on different analysis types
 
-#not yet perfect, but ok so far... finetune lay-out based on other pages...
 from PIL import Image as PILImage
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
@@ -20,32 +22,32 @@ t_start = time.time()
 # Set up output directory for this module
 output_dir = av.get_output_dir('Report')
 
-# Create the "dir" subdirectory if it doesn't exist
-# subdir = os.path.join(os.getcwd(), "dir")
-# os.makedirs(av.dir, exist_ok=True)
-# Define custom page size
+# Define custom page size (A4 landscape: 29.7cm x 21cm)
 width_cm = 29.7
 height_cm = 21
 custom_page_size = (width_cm * cm, height_cm * cm)
-# Define styles for the document
+
+# Define document styles
 styles = getSampleStyleSheet()
 title_style = styles['Title']
 body_style = styles['Normal']
 
-# Create filename
+# Generate filename based on active analysis type
 if av.PDPg_fundamental_active == 1:
     filename = os.path.join(output_dir, "report_moving_objects_PDP_fundamental.pdf")
 elif av.PDPg_buffer_active == 1:
     filename = os.path.join(output_dir, "report_moving_objects_PDP_buffer.pdf")
 elif av.PDPg_rough_active == 1:
-    filename = os.path.join(output_dir, "report_moving_objects._PDP_rough.pdf")
+    filename = os.path.join(output_dir, "report_moving_objects_PDP_rough.pdf")
 elif av.PDPg_bufferrough_active == 1:
     filename = os.path.join(output_dir, "report_moving_objects_PDP_bufferrough.pdf")
 else:
-    print("Variable a does not hold an appropriate value.")
+    print("ERROR: No active analysis type selected for report generation")
 
+# Initialize PDF document with custom settings
 doc = SimpleDocTemplate(filename, pagesize=custom_page_size, rightMargin=0.5*cm, leftMargin=0.5*cm, topMargin=0.5*cm, bottomMargin=0.5*cm)
-# Create the story for the document
+
+# Create the story (content list) for the document
 story = []
 
 if av.N_VA_DynamicAbsolute == 1:
@@ -68,17 +70,14 @@ if av.N_VA_DynamicAbsolute == 1:
     story.append(PageBreak())
 
 if av.N_VA_StaticAbsolute == 1:
-    # PAGE WITH STATIC VISUALISATIONS(ABSOLUTE)
-    # Create a title paragraph using the predefined style 'title_style'
+    # Add original absolute static visualizations page
     title = Paragraph("Static Visualizations (absolute)", title_style)
-    # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
     story.append(title)
-    # Add a subtitle
     subtitle_text = "Absolute visualizations of the static data"
     subtitle_style = ParagraphStyle(name='Subtitle', parent=title_style,fontname="monospace", fontsize=10)
     subtitle = Paragraph(subtitle_text, subtitle_style)
     story.append(subtitle)
-    # Read from VA_StaticAbsolute folder
+    # Load images from StaticAbsolute output folder
     file_paths = [av.get_output_file('N_C_Csa' + str(i) + '.png', 'StaticAbsolute') for i in range(av.con)]
     # Create a list of Image objects from the file paths
     #images = [Image(fp, width=250, height=166) for fp in file_paths]
@@ -100,17 +99,14 @@ if av.N_VA_StaticAbsolute == 1:
     story.append(PageBreak())
 
 if av.N_VA_StaticAbsolute_color == 1:
-    # PAGE WITH STATIC VISUALISATIONS(ABSOLUTE - COLOR)
-    # Create a title paragraph using the predefined style 'title_style'
+    # Add colored absolute static visualizations page (alternative version)
     title = Paragraph("Static Visualizations (absolute - colored)", title_style)
-    # Append the title to the 'story' list. This list will contain all the elements to be added to the final document
     story.append(title)
-    # Add a subtitle
     subtitle_text = "Colored absolute visualizations of the static data"
     subtitle_style = ParagraphStyle(name='Subtitle', parent=title_style,fontname="monospace", fontsize=10)
     subtitle = Paragraph(subtitle_text, subtitle_style)
     story.append(subtitle)
-    # Read from VA_StaticAbsolute_color folder
+    # Load images from StaticAbsolute_color output folder
     file_paths = [av.get_output_file('N_C_Csa' + str(i) + '.png', 'StaticAbsolute_color') for i in range(av.con)]
     # Create a list of Image objects from the file paths
     #images = [Image(fp, width=250, height=166) for fp in file_paths]
