@@ -192,8 +192,10 @@ with open(dataset_path) as csv_file:
 # Convert list to a numpy array for efficient numerical processing
 A_dataset = np.array(L_dataset, dtype=np.float32)
 
-# Save the processed dataset back to a CSV file
-Df_dataset.to_csv("Df_dataset.csv", index=False)
+# Save the processed dataset back to a CSV file in the Init output directory
+init_output_dir = os.path.join(os.getcwd(), 'outputs', 'Init')
+os.makedirs(init_output_dir, exist_ok=True)
+Df_dataset.to_csv(os.path.join(init_output_dir, "Df_dataset.csv"), index=False)
 
 # Detect variables
 con = Df_dataset['conID'].max() + 1  # The number of configurations
