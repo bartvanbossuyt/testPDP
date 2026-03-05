@@ -24,6 +24,7 @@ import csv
 import os
 import random
 import time
+import av
 
 # Read parameters from environment variables
 con = int(os.environ.get('CON', 12))   # number of configurations
@@ -33,6 +34,9 @@ dim = int(os.environ.get('DIM', 2))   # number of descriptors/dimensions
 
 # Start time
 t_start = time.time()
+
+# Set up output directory for this module
+output_dir = av.get_output_dir('D')
 
 # Generate random dataset
 L_rows = []   # create empty row
@@ -52,7 +56,7 @@ for c in range(con):   # for each configuration
 file_name = f"N_C_Dataset_{con}_con_{tst}_tst_{poi}_poi_{dim}_dim.csv"
 
 # Write generated dataset in file
-with open(file_name, 'w', newline='') as myfile:
+with open(os.path.join(output_dir, file_name), 'w', newline='') as myfile:
     wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
     for L_row in L_rows:
         wr.writerow(L_row)
@@ -61,7 +65,7 @@ with open(file_name, 'w', newline='') as myfile:
 file_name = "N_C_Dataset.csv"
 
 # Write generated dataset in file
-with open(file_name, 'w', newline='') as myfile:
+with open(os.path.join(output_dir, file_name), 'w', newline='') as myfile:
     wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
     for L_row in L_rows:
         wr.writerow(L_row)

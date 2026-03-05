@@ -50,7 +50,13 @@ def union(disjoint_sets, set1, set2):
 # Start time
 t_start = time.time()
 
-Df_dataset = pd.read_csv(av.dataset_name, header=None)
+# Set up output directory for this module
+output_dir = av.get_output_dir('PDP')
+
+# Get the dataset file path (it might be in outputs/Moving_Objects, outputs/OB, or outputs/D)
+dataset_path = av.get_input_file(av.dataset_name)
+
+Df_dataset = pd.read_csv(dataset_path, header=None)
 Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
 
 # Create data structures to store information
@@ -208,7 +214,8 @@ for con_id in range(av.con):  # Loop over all configurations con_id
                 elif av.PDPg_bufferrough_active == 1:
                     filename = "N_C_PDPg_bufferrough_InequalityMatrix_c" + str(con_id) + "_t" + str(tst_id) + "_d" + str(dim) + ".png"
 
-                plt.savefig(filename, dpi=300, bbox_inches='tight')
+                filepath = os.path.join(output_dir, filename)
+                plt.savefig(filepath, dpi=300, bbox_inches='tight')
                 plt.close()  # close the figure to release memory
             
         new_index = len(Df_con_tst_xineq_yineq)  # Add the index +1 that stores the line in the dataframe
@@ -217,7 +224,7 @@ for con_id in range(av.con):  # Loop over all configurations con_id
         D_inequality[(con_id, tst_id)] = tuple(L_tst_id_dfs)
         
 # Save dataframe "Df_con_tst_xineq_yineq"
-Df_con_tst_xineq_yineq.to_csv("Df_con_tst_xineq_yineq.csv", index=False)
+Df_con_tst_xineq_yineq.to_csv(os.path.join(output_dir, "Df_con_tst_xineq_yineq.csv"), index=False)
 
 #CALCULATE INEQUALITY MATRICES
 if av.N_VA_InequalityMatrices == 1:
@@ -424,7 +431,7 @@ for idx, unique_set in enumerate(unique_sets):
 
 # Create a conversion CSV file
 conversion_df = pd.DataFrame(conversion_mappings)
-conversion_df.to_csv("Conversion_Mapping.csv", index=False)
+conversion_df.to_csv(os.path.join(output_dir, "Conversion_Mapping.csv"), index=False)
 
 if av.N_VA_Inverse == 1:
     filename = 'N_C_PDPg_DistanceMatrix.csv'
@@ -437,7 +444,7 @@ elif av.PDPg_rough_active == 1:
 elif av.PDPg_bufferrough_active == 1:
     filename = 'N_C_PDPg_bufferrough_DistanceMatrix.csv'
     
-with open(filename, 'w', newline='') as myfile:
+with open(os.path.join(output_dir, filename), 'w', newline='') as myfile:
     wr = csv.writer(myfile, quoting=csv.QUOTE_ALL)
     for L_row in A_rel_distance_matrix:
         wr.writerow(L_row.tolist())

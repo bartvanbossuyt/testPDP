@@ -29,6 +29,7 @@ import time
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('TopK')
 
 #dataset_name = 'N_C_DistanceMatrix.csv'  # filename of csv file
 av.L_dataset = []
@@ -72,7 +73,8 @@ else:
     file_name = None
 
 if file_name is not None:
-    with open(file_name) as csv_file:
+    file_path = av.get_input_file(file_name, ['PDP'])
+    with open(file_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -126,7 +128,7 @@ for i in range(av.con):
     elif av.PDPg_bufferrough_active == 1:
         filename = 'N_C_PDPg_bufferrough_TopK_c' + str(i) + '.png'
         
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
     plt.clf()  # Clear the figure to start with a new blank figure
 
 # End and print time

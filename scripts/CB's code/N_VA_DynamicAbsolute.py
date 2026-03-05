@@ -13,6 +13,7 @@ import time
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('DynamicAbsolute')
 
 # Create a list of DataFrame subsets. Each subset contains av.con rows from Df_dataset
 # The subsets are created by slicing Df_dataset at intervals of av.con rows
@@ -136,11 +137,11 @@ button.on_clicked(restart_animation)
 ani = setup_animation()
 
 # Save the animation as an mp4 file
-video_name = "animation.mp4"
+video_name = os.path.join(output_dir, "animation.mp4")
 ani.save(video_name, writer='ffmpeg' , dpi = 50)
 
 # Save the animation as an HTML file
-html_name = "animation.html"
+html_name = os.path.join(output_dir, "animation.html")
 ani.save(html_name, writer='html', dpi = 100)
 
 # Create a PowerPoint presentation
@@ -171,11 +172,11 @@ title_paragraph.space_before = Pt(0)
 title_paragraph.space_after = Pt(0)
 
 # Add the video to the slide
-video_path = "animation.mp4"
+video_path = os.path.join(output_dir, "animation.mp4")
 slide.shapes.add_movie(video_path, left, top, width, height)
 
 # Save the PowerPoint presentation
-pptx_name = "dynamics.pptx"
+pptx_name = os.path.join(output_dir, "dynamics.pptx")
 presentation.save(pptx_name)
 
 plt.clf()  # Clear the figure to start with a new blank figure

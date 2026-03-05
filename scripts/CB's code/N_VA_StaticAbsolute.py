@@ -12,12 +12,14 @@ import av
 
 # Start time
 t_start = time.time()
+output_dir = av.get_output_dir('StaticAbsolute')
 
 # Set the default unit of length to centimeters
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-df = pd.read_csv(av.dataset_name, header=None)  
+dataset_path = av.get_input_file(av.dataset_name, ['Moving_Objects', 'D', 'OB'])
+df = pd.read_csv(dataset_path, header=None)  
 
 # Get the unique values of the first column
 configurations = df[0].unique() 
@@ -95,7 +97,7 @@ for config in configurations:
 
     plt.title("Configuration {}".format(config),fontname="monospace", fontsize=40)
     file_name = "N_C_Csa{}.png".format(config) # csa from configuration static absolute    
-    plt.savefig(file_name, dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, file_name), dpi=300, bbox_inches='tight')
     plt.close()  # close the figure to release memory
 
 

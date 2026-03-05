@@ -19,16 +19,21 @@ import av  # Import all variables
 import csv  # For reading and writing csv files
 import importlib  # For reloading modules
 import numpy as np  # For numerical calculations
+import os  # For file handling
 import pandas as pd  # For data manipulation
 import shutil  # For file handling
 import time  # For timing the code
 
 t_start = time.time()
 
+# Set up output directory for this module
+output_dir = av.get_output_dir('Moving_Objects')
+
 # Import modules for static and dynamic visualizations based on configuration settings
-if av.N_VA_StaticAbsolute == 1: 
-    # import N_VA_StaticAbsolute  # Creates the absolute (vectors wrt whole region) static visualizations
-    import N_VA_StaticAbsolute_color
+if av.N_VA_StaticAbsolute == 1:
+    import N_VA_StaticAbsolute  # Creates the absolute (vectors wrt whole region) static visualizations
+if av.N_VA_StaticAbsolute_color == 1:
+    import N_VA_StaticAbsolute_color  # Creates the colored version of absolute (vectors wrt whole region) static visualizations
 if av.N_VA_StaticRelative == 1: 
     import N_VA_StaticRelative  # Creates the relative (vectors wrt to 'local maximum') static visualizations
 if av.N_VA_StaticFinetuned == 1: 
@@ -58,7 +63,7 @@ def SetDataForPDPType(data_filename, D_point_mapping, curr_point_id, window_leng
     # Transform list to array
     A_dataset = np.array(L_dataset, dtype=np.float32)
     # Save dataframe "Df_dataset"
-    Df_dataset.to_csv("Df_dataset.csv", index=False)
+    Df_dataset.to_csv(os.path.join(output_dir, "Df_dataset.csv"), index=False)
     # Automatically detected variables
     # Detect the number of configurations in the dataset
     con = Df_dataset['conID'].max() + 1
@@ -73,15 +78,18 @@ def SetDataForPDPType(data_filename, D_point_mapping, curr_point_id, window_leng
 
 if av.PDPg_fundamental == 1:
     av.PDPg_fundamental_active = 1
-    shutil.copyfile(av.dataset_name, "N_C_PDPg_fundamental_Dataset.csv") 
+    source_file = av.get_input_file(av.dataset_name)
+    target_file = os.path.join(output_dir, "N_C_PDPg_fundamental_Dataset.csv")
+    shutil.copyfile(source_file, target_file) 
     av.dataset_name = 'N_C_PDPg_fundamental_Dataset.csv'
     av.dataset_name_exclusive = av.dataset_name [:-4]
     # Open the original file as a dataframe with a header in the current working directory
-    av.Df_dataset = pd.read_csv("N_C_PDPg_fundamental_Dataset.csv", header=None)
+    dataset_path = av.get_input_file(av.dataset_name, ['Moving_Objects'])
+    av.Df_dataset = pd.read_csv(dataset_path, header=None)
     av.Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
     # Open the file as a list in the current working directory
     av.L_dataset = []  # Create an empty list
-    with open(av.dataset_name) as csv_file:
+    with open(dataset_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -91,7 +99,7 @@ if av.PDPg_fundamental == 1:
     # Transform list to array
     av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
     # Save dataframe "Df_dataset"
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(os.path.join(output_dir, "Df_dataset.csv"), index=False)
     # Automatically detected variables
     # Detect the number of configurations in the dataset
     av.con = av.Df_dataset['conID'].max() + 1
@@ -126,11 +134,12 @@ if av.PDPg_buffer == 1:
     av.dataset_name = 'N_C_PDPg_buffer_Dataset.csv'  # Filename of csv file when buffer and fine borders
     av.dataset_name_exclusive = av.dataset_name [:-4] #The dataset without the last four characters ".csv"    
     # Open the buffer file as a dataframe with a header in the current working directory
-    av.Df_dataset = pd.read_csv("N_C_PDPg_buffer_Dataset.csv", header=None)
+    dataset_path = av.get_input_file(av.dataset_name, ['OB', 'Moving_Objects'])
+    av.Df_dataset = pd.read_csv(dataset_path, header=None)
     av.Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
     # Open the file as a list in the current working directory
     av.L_dataset = []  # Create an empty list
-    with open(av.dataset_name) as csv_file:
+    with open(dataset_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -139,7 +148,7 @@ if av.PDPg_buffer == 1:
     # Transform list to array
     av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
     # Save dataframe "Df_dataset"
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(os.path.join(output_dir, "Df_dataset.csv"), index=False)
     # Automatically detected variables
     # Detect the number of configurations in the dataset
     av.con = av.Df_dataset['conID'].max() + 1
@@ -177,12 +186,13 @@ if av.PDPg_rough == 1:
     av.dataset_name_exclusive = av.dataset_name [:-4] # The dataset without the last four characters ".csv"
     
     # Open the original file as a dataframe with a header in the current working directory
-    av.Df_dataset = pd.read_csv("N_C_PDPg_fundamental_Dataset.csv", header=None)
+    dataset_path = av.get_input_file(av.dataset_name, ['Moving_Objects'])
+    av.Df_dataset = pd.read_csv(dataset_path, header=None)
     #av.Df_dataset = pd.read_csv("N_C_Dataset.csv", header=None)
     av.Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
     # Open the file as a list in the current working directory
     av.L_dataset = []  # Create an empty list
-    with open(av.dataset_name) as csv_file:
+    with open(dataset_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -191,7 +201,7 @@ if av.PDPg_rough == 1:
     # Transform list to array
     av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
     # Save dataframe "Df_dataset"
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(os.path.join(output_dir, "Df_dataset.csv"), index=False)
     # Automatically detected variables
     # Detect the number of configurations in the dataset
     av.con = av.Df_dataset['conID'].max() + 1
@@ -226,11 +236,12 @@ if av.PDPg_bufferrough == 1:
     av.dataset_name_exclusive = av.dataset_name [:-4] #The dataset without the last four characters ".csv"
     
     # Open the rough file as a dataframe with a header in the current working directory
-    av.Df_dataset = pd.read_csv("N_C_PDPg_buffer_Dataset.csv", header=None)
+    dataset_path = av.get_input_file(av.dataset_name, ['OB', 'Moving_Objects'])
+    av.Df_dataset = pd.read_csv(dataset_path, header=None)
     av.Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
     # Open the file as a list in the current working directory
     av.L_dataset = []  # Create an empty list
-    with open(av.dataset_name) as csv_file:
+    with open(dataset_path) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for L_row in csv_reader:
             poi_id = L_row[0]
@@ -239,7 +250,7 @@ if av.PDPg_bufferrough == 1:
     # Transform list to array
     av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
     # Save dataframe "Df_dataset"
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(os.path.join(output_dir, "Df_dataset.csv"), index=False)
     # Automatically detected variables
     # Detect the number of configurations in the dataset
     av.con = av.Df_dataset['conID'].max() + 1

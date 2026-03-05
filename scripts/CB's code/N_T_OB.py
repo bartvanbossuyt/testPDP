@@ -21,13 +21,20 @@ INPUT PARAMETERS: buffer distance buf
 #import the necessary modules
 import av
 import csv
+import os
 import time
 
 #start time
 t_start = time.time()
 
+# Set up output directory for this module
+output_dir = av.get_output_dir('OB')
+
+# Get the dataset file path from D or root directory
+dataset_path = av.get_input_file('N_C_Dataset.csv', ['D'])
+
 #open the csv
-with open('N_C_Dataset.csv', 'r') as csv_file:
+with open(dataset_path, 'r') as csv_file:
   #read the csv
   csv_reader = csv.reader(csv_file)
 
@@ -41,7 +48,7 @@ with open('N_C_Dataset.csv', 'r') as csv_file:
     lines.append([line[0],line[1],round((float(line[2])*5+4), 2),line[3],round((float(line[4])+av.buffer_y), 2))]
 
 #save the new csv-file
-with open('N_C_PDPg_buffer_Dataset.csv', 'w', newline='') as new_csv_file:
+with open(os.path.join(output_dir, 'N_C_PDPg_buffer_Dataset.csv'), 'w', newline='') as new_csv_file:
   csv_writer = csv.writer(new_csv_file)
 
   #write the new lines
