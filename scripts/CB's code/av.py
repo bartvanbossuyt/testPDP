@@ -47,20 +47,20 @@ graphical_user_interface = 0
 # Input dataset full file path
 # Set this to the complete path of your input dataset file
 # Example: input_dataset_path = r'D:\Data\N_C_Dataset.csv'
-input_dataset_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv')
+input_dataset_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv')
 
 # Output base folder path
 # All module output folders will be created as subdirectories under this path
 # Example: output_base_path = r'D:\Results\Test'
-output_base_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\Test7')
+output_base_path = os.path.join(os.getcwd(), 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB')
 
 # ==================================================================================
 
 # Default setting for PDP types; this has to be changed to specify which PDP to calculate
 PDPg_fundamental = 1  # Must always be 1; this is always calculated
-PDPg_buffer = 1 
-PDPg_rough = 1
-PDPg_bufferrough = 1
+PDPg_buffer = 0 
+PDPg_rough = 0
+PDPg_bufferrough = 0
 
 # Set the parameters for the calculations to be included in the report
 N_VA_Report = 1
@@ -85,9 +85,9 @@ window_length_tst = 137
 # Distance details for different PDP types
 # Buffer distances for x and y directions
 buffer_x = 0  # Buffer distance in x-direction
-buffer_y = 2  # Buffer distance in y-direction
+buffer_y = 0  # Buffer distance in y-direction
 # Rough distances for x and y directions
-rough_x = 5  # Rough distance in x-direction
+rough_x = 0  # Rough distance in x-direction
 rough_y = 0  # Rough distance in y-direction
 
 # Dimensions and/or descriptors

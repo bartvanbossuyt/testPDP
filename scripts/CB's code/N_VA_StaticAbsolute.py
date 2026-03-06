@@ -18,7 +18,7 @@ output_dir = av.get_output_dir('StaticAbsolute')
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
+df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'), header=None)  # Assuming no header in the CSV file
 
 # Get the unique values of the first column
 configurations = df[0].unique() 
