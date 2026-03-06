@@ -15,7 +15,7 @@ output_dir = av.get_output_dir('StaticFinetuned')
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
+df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'), header=None)
 
 # Define your custom colors
 if av.poi == 3:

@@ -20,7 +20,7 @@ output_dir = av.get_output_dir('StaticAbsolute_color')
 mpl.rcParams['figure.dpi'] = 2.54
 
 # Load the dataset
-df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
+df = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'), header=None)  # Assuming no header in the CSV file
 
 # Get the unique values of the first column
 configurations = df[0].unique()
@@ -131,4 +131,4 @@ for config in configurations:
     plt.close(fig)
 
 # End and print time
-print(f"Time elapsed for running module \"N_VA_StaticAbsolute\": {time.time() - t_start:.3f} sec.")
+print(f"Time elapsed for running module \"N_VA_StaticAbsolute_color\": {time.time() - t_start:.3f} sec.")

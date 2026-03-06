@@ -74,7 +74,7 @@ t_start = time.time()
 output_dir = av.get_output_dir('PDP')
 
 # Load dataset with standard column structure
-Df_dataset = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'))
+Df_dataset = pd.read_csv(os.path.join(av.output_base_path, 'N_C_Dataset.csv'), header=None)
 Df_dataset.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
 
 # Initialize data structures for inequality matrices
@@ -307,7 +307,8 @@ A_rel_distance_matrix_y = np.empty((av.con, av.con))
 # Compare all pairs of configurations
 for k in range(av.con):  # First configuration index
     if k % 100 == 0:
-        print(f"Processing configuration {k}/{av.con}")
+        # print(f"Processing configuration {k}/{av.con}")
+        pass
     
     for l in range(av.con):  # Second configuration index
         # Initialize distance accumulators for this configuration pair
