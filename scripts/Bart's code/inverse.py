@@ -11229,112 +11229,292 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with st.expander("⚙️ Chosen settings", expanded=False):
         st.json(_6evs_settings_display)
 
-    for _6evs_rank, (_6evs_cnum, _6evs_dev, _6evs_cfg) in enumerate(_6evs_results, 1):
-        st.markdown(f"#### Configuration #{_6evs_cnum} (PV={_6evs_dev:.6f} m²)")
+    # ---- Quick-browse navigation ----
+    _6evs_n_configs = len(_6evs_results)
+    if "_6evs_browse_idx" not in st.session_state:
+        st.session_state["_6evs_browse_idx"] = 0
+    # Clamp to valid range
+    _6evs_browse_idx = int(st.session_state["_6evs_browse_idx"])
+    if _6evs_browse_idx >= _6evs_n_configs:
+        _6evs_browse_idx = _6evs_n_configs - 1
+    if _6evs_browse_idx < 0:
+        _6evs_browse_idx = 0
 
-        _6evs_sp = _6evs_cfg.get("successful_points", [])
-        _6evs_gen_map: dict[int, np.ndarray] = {}
-        for sp in _6evs_sp:
-            _6evs_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+    nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 3, 1, 1])
+    with nav_col1:
+        if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
+            st.session_state["_6evs_browse_idx"] = 0
+            st.rerun()
+    with nav_col2:
+        if st.button("◀ Prev", key="_6evs_nav_prev", disabled=(_6evs_browse_idx == 0)):
+            st.session_state["_6evs_browse_idx"] = _6evs_browse_idx - 1
+            st.rerun()
+    with nav_col3:
+        _6evs_new_idx = st.number_input(
+            "Config", min_value=1, max_value=_6evs_n_configs,
+            value=_6evs_browse_idx + 1, step=1, key="_6evs_nav_num_input",
+            label_visibility="collapsed",
+        )
+        if int(_6evs_new_idx) - 1 != _6evs_browse_idx:
+            st.session_state["_6evs_browse_idx"] = int(_6evs_new_idx) - 1
+            st.rerun()
+        st.caption(f"Config {_6evs_browse_idx + 1} / {_6evs_n_configs}")
+    with nav_col4:
+        if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
+            st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
+            st.rerun()
+    with nav_col5:
+        if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
+            st.session_state["_6evs_browse_idx"] = _6evs_n_configs - 1
+            st.rerun()
 
-        _6evs_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        _6evs_gi = 0
+    # ---- Display the selected config ----
+    _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
+    st.markdown(f"#### Configuration #{_6evs_cnum} (PV={_6evs_dev:.6f} m²)")
+
+    _6evs_sp = _6evs_cfg.get("successful_points", [])
+    _6evs_gen_map: dict[int, np.ndarray] = {}
+    for sp in _6evs_sp:
+        _6evs_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+    _6evs_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    _6evs_gi = 0
+    for oid in _6evs_sorted_oids:
+        n_pts = _6evs_pp[oid].shape[0]
+        orig = _6evs_pp[oid]
+        ts = _6evs_vp[oid]
+        gen = orig.copy()
+        for li in range(n_pts):
+            gi = _6evs_gi + li
+            if gi in _6evs_gen_map:
+                gen[li] = _6evs_gen_map[gi]
+        _6evs_plot_data.append((orig, gen, ts))
+        _6evs_gi += n_pts
+
+    # ---- Compute axis ranges ----
+    _6evs_all_x: list[float] = []
+    _6evs_all_y: list[float] = []
+    for orig, gen, ts in _6evs_plot_data:
+        _6evs_all_x.extend(orig[:, 0].tolist())
+        _6evs_all_x.extend(gen[:, 0].tolist())
+        _6evs_all_y.extend(orig[:, 1].tolist())
+        _6evs_all_y.extend(gen[:, 1].tolist())
+
+    # X-axis: data range + 20% margin on each side
+    _6evs_x_data_min = min(_6evs_all_x) if _6evs_all_x else 0
+    _6evs_x_data_max = max(_6evs_all_x) if _6evs_all_x else 1
+    _6evs_x_range = _6evs_x_data_max - _6evs_x_data_min
+    _6evs_x_margin = max(_6evs_x_range * 0.20, 5.0)
+    _6evs_xlo = _6evs_x_data_min - _6evs_x_margin
+    _6evs_xhi = _6evs_x_data_max + _6evs_x_margin
+    # Y-axis: fixed at [-10, +10]
+    _6evs_ylo = -10.0
+    _6evs_yhi = 10.0
+
+    # ---- Matplotlib static plot (NO equal aspect) ----
+    _6evs_fw = 14.0
+    _6evs_fh = 5.0
+    fig_s = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+    ax_s = fig_s.add_subplot(111)
+    # Deliberately NOT setting equal aspect
+    for idx_o, oid in enumerate(_6evs_sorted_oids):
+        orig, gen, ts = _6evs_plot_data[idx_o]
+        lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
+        clr = f"C{int(oid)}"
+        # Original: dashed + point labels
+        ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.4, ls='--', label=f"{lbl} orig")
+        for li in range(orig.shape[0]):
+            ax_s.plot(orig[li, 0], orig[li, 1], 'x', color=clr, markersize=5, alpha=0.4)
+            ax_s.annotate(f"t={int(ts[li])}", xy=(orig[li, 0], orig[li, 1]),
+                          fontsize=5, color=clr, alpha=0.5,
+                          xytext=(3, 3), textcoords='offset points')
+        # Generated: solid + markers
+        ax_s.plot(gen[:, 0], gen[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+        for li in range(gen.shape[0]):
+            ax_s.plot(gen[li, 0], gen[li, 1], 'o', color=clr, markersize=6, zorder=5)
+            ax_s.annotate(f"t={int(ts[li])}", xy=(gen[li, 0], gen[li, 1]),
+                          fontsize=5, color=clr, alpha=0.9,
+                          xytext=(3, -8), textcoords='offset points')
+    ax_s.set_xlim(_6evs_xlo, _6evs_xhi)
+    ax_s.set_ylim(_6evs_ylo, _6evs_yhi)
+    ax_s.legend(fontsize=7, loc='upper left')
+    ax_s.set_xlabel("d1 / x-as (m)")
+    ax_s.set_ylabel("d2 / y-as (m)")
+    ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}  (PV={_6evs_dev:.6f} m²)")
+    ax_s.grid(True, alpha=0.3)
+    fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+    buf_s = io.BytesIO()
+    fig_s.savefig(buf_s, format='png', dpi=150)
+    buf_s.seek(0)
+    st.image(buf_s, use_container_width=True)
+    plt.close(fig_s)
+
+    # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
+    # Build flat original and generated point arrays for this config
+    _6evs_orig_flat_list: list[np.ndarray] = []
+    _6evs_gen_flat_list: list[np.ndarray] = []
+    for orig, gen, ts in _6evs_plot_data:
+        for li in range(orig.shape[0]):
+            _6evs_orig_flat_list.append(orig[li])
+            _6evs_gen_flat_list.append(gen[li])
+    _6evs_orig_flat = np.array(_6evs_orig_flat_list) if _6evs_orig_flat_list else np.array([]).reshape(0, 2)
+    _6evs_gen_flat = np.array(_6evs_gen_flat_list) if _6evs_gen_flat_list else np.array([]).reshape(0, 2)
+
+    if _6evs_orig_flat.shape[0] > 0:
+        _6evs_pdp_detail = check_pdp_match_detailed(
+            _6evs_orig_flat, _6evs_gen_flat,
+            pdp_variant="fundamental",
+        )
+
+        _6evs_d1_pct = _6evs_pdp_detail.get("d1_percentage", 0.0) * 100
+        _6evs_d2_pct = _6evs_pdp_detail.get("d2_percentage", 0.0) * 100
+        _6evs_d1_mm = _6evs_pdp_detail.get("d1_mismatches", 0)
+        _6evs_d2_mm = _6evs_pdp_detail.get("d2_mismatches", 0)
+        st.markdown(
+            f"**PDP fundamental** | d1: {_6evs_d1_pct:.1f}% ({_6evs_d1_mm} mismatches) | "
+            f"d2: {_6evs_d2_pct:.1f}% ({_6evs_d2_mm} mismatches)"
+        )
+
+        from matplotlib.colors import ListedColormap as _6evs_LCM
+        _6evs_hm_cmap = _6evs_LCM(['#00AA00', '#FFFF00', '#FF0000'])
+
+        # Build point labels: k0, l0, k1, l1, ... (by timestamp, then object)
+        _6evs_timestamps_used: list[float] = []
+        for _, _, ts in _6evs_plot_data:
+            for t in ts:
+                if float(t) not in _6evs_timestamps_used:
+                    _6evs_timestamps_used.append(float(t))
+        _6evs_timestamps_used.sort()
+
+        _6evs_obj_labels_short = []
         for oid in _6evs_sorted_oids:
-            n_pts = _6evs_pp[oid].shape[0]
-            orig = _6evs_pp[oid]
-            ts = _6evs_vp[oid]
-            gen = orig.copy()
-            for li in range(n_pts):
-                gi = _6evs_gi + li
-                if gi in _6evs_gen_map:
-                    gen[li] = _6evs_gen_map[gi]
-            _6evs_plot_data.append((orig, gen, ts))
-            _6evs_gi += n_pts
+            _6evs_obj_labels_short.append(OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)])
 
-        # ---- Compute axis ranges ----
-        _6evs_all_x: list[float] = []
-        _6evs_all_y: list[float] = []
-        for orig, gen, ts in _6evs_plot_data:
-            _6evs_all_x.extend(orig[:, 0].tolist())
-            _6evs_all_x.extend(gen[:, 0].tolist())
-            _6evs_all_y.extend(orig[:, 1].tolist())
-            _6evs_all_y.extend(gen[:, 1].tolist())
+        # Build label list matching flat order (obj-first: k0 k1 k2 ... l0 l1 l2 ...)
+        _6evs_flat_labels: list[str] = []
+        for idx_o, oid in enumerate(_6evs_sorted_oids):
+            lbl = _6evs_obj_labels_short[idx_o]
+            ts_arr = _6evs_vp[oid]
+            for li in range(len(ts_arr)):
+                t_val = int(ts_arr[li])
+                _6evs_flat_labels.append(f"{lbl} t={t_val}")
 
-        # X-axis: data range + 20% margin on each side
-        _6evs_x_data_min = min(_6evs_all_x) if _6evs_all_x else 0
-        _6evs_x_data_max = max(_6evs_all_x) if _6evs_all_x else 1
-        _6evs_x_range = _6evs_x_data_max - _6evs_x_data_min
-        _6evs_x_margin = max(_6evs_x_range * 0.20, 5.0)
-        _6evs_xlo = _6evs_x_data_min - _6evs_x_margin
-        _6evs_xhi = _6evs_x_data_max + _6evs_x_margin
-        # Y-axis: fixed at [-10, +10]
-        _6evs_ylo = -10.0
-        _6evs_yhi = 10.0
+        # Reorder to interleaved by timestamp: (k_t0, l_t0, k_t1, l_t1, ...)
+        _6evs_n_obj = len(_6evs_sorted_oids)
+        _6evs_n_ts = len(_6evs_timestamps_used)
+        # Build mapping: for each (timestamp_idx, obj_idx) -> flat_idx
+        _6evs_reorder_idx: list[int] = []
+        _6evs_reorder_labels: list[str] = []
+        _6evs_offset = 0
+        _6evs_obj_offsets: list[int] = []
+        for oid in _6evs_sorted_oids:
+            _6evs_obj_offsets.append(_6evs_offset)
+            _6evs_offset += _6evs_pp[oid].shape[0]
+        for ti, t_val in enumerate(_6evs_timestamps_used):
+            for oi, oid in enumerate(_6evs_sorted_oids):
+                ts_arr = _6evs_vp[oid]
+                for li in range(len(ts_arr)):
+                    if abs(float(ts_arr[li]) - t_val) < 0.5:
+                        flat_idx = _6evs_obj_offsets[oi] + li
+                        _6evs_reorder_idx.append(flat_idx)
+                        _6evs_reorder_labels.append(_6evs_flat_labels[flat_idx])
+                        break
 
-        # ---- Matplotlib static plot (NO equal aspect) ----
-        _6evs_fw = 14.0
-        _6evs_fh = 5.0
-        fig_s = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
-        ax_s = fig_s.add_subplot(111)
-        # Deliberately NOT setting equal aspect
+        def _6evs_reorder_matrix(m: np.ndarray) -> np.ndarray:
+            idx = _6evs_reorder_idx
+            if len(idx) != m.shape[0]:
+                return m
+            return m[np.ix_(idx, idx)]
+
+        def _6evs_create_heatmap(matrix: np.ndarray, title: str,
+                                  comp_matrix: np.ndarray | None = None) -> Figure:
+            n = matrix.shape[0]
+            display = _6evs_reorder_matrix(matrix)
+            fig_hm, ax_hm = plt.subplots(figsize=(3.5, 3.5))
+            ax_hm.imshow(display, cmap=_6evs_hm_cmap, vmin=0, vmax=2, aspect='equal')
+            # Highlight differences
+            if comp_matrix is not None:
+                comp_display = _6evs_reorder_matrix(comp_matrix)
+                for i in range(n):
+                    for j in range(n):
+                        if display[i, j] != comp_display[i, j]:
+                            rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                                  fill=False, edgecolor='black', linewidth=1.5)
+                            ax_hm.add_patch(rect)
+            if len(_6evs_reorder_labels) == n and n <= 16:
+                ax_hm.set_xticks(range(n))
+                ax_hm.set_yticks(range(n))
+                ax_hm.set_xticklabels(_6evs_reorder_labels, fontsize=5, rotation=90)
+                ax_hm.set_yticklabels(_6evs_reorder_labels, fontsize=5)
+            else:
+                ax_hm.set_xticks([])
+                ax_hm.set_yticks([])
+            ax_hm.set_title(title, fontsize=9, fontweight='bold')
+            fig_hm.tight_layout()
+            return fig_hm
+
+        _6evs_orig_d1 = _6evs_pdp_detail.get("original_d1_matrix")
+        _6evs_orig_d2 = _6evs_pdp_detail.get("original_d2_matrix")
+        _6evs_gen_d1 = _6evs_pdp_detail.get("generated_d1_matrix")
+        _6evs_gen_d2 = _6evs_pdp_detail.get("generated_d2_matrix")
+
+        hmc1, hmc2, hmc3, hmc4 = st.columns(4, gap="small")
+        with hmc1:
+            st.markdown("**Original d1**")
+            if _6evs_orig_d1 is not None:
+                _fig1 = _6evs_create_heatmap(_6evs_orig_d1, "Original d1 (x)")
+                st.pyplot(_fig1)
+                plt.close(_fig1)
+        with hmc2:
+            st.markdown("**Original d2**")
+            if _6evs_orig_d2 is not None:
+                _fig2 = _6evs_create_heatmap(_6evs_orig_d2, "Original d2 (y)")
+                st.pyplot(_fig2)
+                plt.close(_fig2)
+        with hmc3:
+            st.markdown("**Generated d1**")
+            if _6evs_gen_d1 is not None:
+                _fig3 = _6evs_create_heatmap(_6evs_gen_d1, "Generated d1 (x)",
+                                              comp_matrix=_6evs_orig_d1)
+                st.pyplot(_fig3)
+                plt.close(_fig3)
+        with hmc4:
+            st.markdown("**Generated d2**")
+            if _6evs_gen_d2 is not None:
+                _fig4 = _6evs_create_heatmap(_6evs_gen_d2, "Generated d2 (y)",
+                                              comp_matrix=_6evs_orig_d2)
+                st.pyplot(_fig4)
+                plt.close(_fig4)
+
+        st.caption("Legend: 🟩 Green (0) = j > i | 🟨 Yellow (1) = j ≈ i | 🟥 Red (2) = j < i | ▪ Border = differs from original")
+
+    # ---- Data table ----
+    with st.expander("📊 Point coordinates", expanded=False):
+        _6evs_table_rows = []
         for idx_o, oid in enumerate(_6evs_sorted_oids):
             orig, gen, ts = _6evs_plot_data[idx_o]
             lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
-            clr = f"C{int(oid)}"
-            # Original: dashed + point labels
-            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.4, ls='--', label=f"{lbl} orig")
             for li in range(orig.shape[0]):
-                ax_s.plot(orig[li, 0], orig[li, 1], 'x', color=clr, markersize=5, alpha=0.4)
-                ax_s.annotate(f"t={int(ts[li])}", xy=(orig[li, 0], orig[li, 1]),
-                              fontsize=5, color=clr, alpha=0.5,
-                              xytext=(3, 3), textcoords='offset points')
-            # Generated: solid + markers
-            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
-            for li in range(gen.shape[0]):
-                ax_s.plot(gen[li, 0], gen[li, 1], 'o', color=clr, markersize=6, zorder=5)
-                ax_s.annotate(f"t={int(ts[li])}", xy=(gen[li, 0], gen[li, 1]),
-                              fontsize=5, color=clr, alpha=0.9,
-                              xytext=(3, -8), textcoords='offset points')
-        ax_s.set_xlim(_6evs_xlo, _6evs_xhi)
-        ax_s.set_ylim(_6evs_ylo, _6evs_yhi)
-        ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d1 / x-as (m)")
-        ax_s.set_ylabel("d2 / y-as (m)")
-        ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}  (PV={_6evs_dev:.6f} m²)")
-        ax_s.grid(True, alpha=0.3)
-        fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
-        buf_s = io.BytesIO()
-        fig_s.savefig(buf_s, format='png', dpi=150)
-        buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
-        plt.close(fig_s)
+                _6evs_table_rows.append({
+                    "Object": lbl,
+                    "t": int(ts[li]),
+                    "orig_d1": round(float(orig[li, 0]), 4),
+                    "orig_d2": round(float(orig[li, 1]), 4),
+                    "gen_d1": round(float(gen[li, 0]), 4),
+                    "gen_d2": round(float(gen[li, 1]), 4),
+                    "Δd1": round(float(gen[li, 0] - orig[li, 0]), 4),
+                    "Δd2": round(float(gen[li, 1] - orig[li, 1]), 4),
+                })
+        st.dataframe(pd.DataFrame(_6evs_table_rows), use_container_width=True)
 
-        # ---- Data table ----
-        with st.expander("📊 Point coordinates", expanded=False):
-            _6evs_table_rows = []
-            for idx_o, oid in enumerate(_6evs_sorted_oids):
-                orig, gen, ts = _6evs_plot_data[idx_o]
-                lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
-                for li in range(orig.shape[0]):
-                    _6evs_table_rows.append({
-                        "Object": lbl,
-                        "t": int(ts[li]),
-                        "orig_d1": round(float(orig[li, 0]), 4),
-                        "orig_d2": round(float(orig[li, 1]), 4),
-                        "gen_d1": round(float(gen[li, 0]), 4),
-                        "gen_d2": round(float(gen[li, 1]), 4),
-                        "Δd1": round(float(gen[li, 0] - orig[li, 0]), 4),
-                        "Δd2": round(float(gen[li, 1] - orig[li, 1]), 4),
-                    })
-            st.dataframe(pd.DataFrame(_6evs_table_rows), use_container_width=True)
-
-        st.markdown("---")
+    st.markdown("---")
 
     if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
         st.session_state["_generate_6ev_single_requested"] = False
         st.session_state["_generate_6ev_single_results"] = None
         st.session_state.pop("_6evs_points_plot", None)
         st.session_state.pop("_6evs_vals_plot", None)
+        st.session_state.pop("_6evs_browse_idx", None)
         st.cache_data.clear()
         st.rerun()
 
