@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 # inverse.py
 # Streamlit app - PDP Inverse Analysis
+import sys
 from pathlib import Path
+
+# Ensure the script's own directory is on sys.path so local packages
+# (pdp_utils, etc.) are importable even when run from a temp/remote dir.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 from typing import Tuple, Callable, IO, Optional, Any
 import io
 import logging
