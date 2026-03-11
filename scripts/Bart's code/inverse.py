@@ -1572,7 +1572,7 @@ with sc2:
         default_window
     except NameError:
         halved_timepoints = max(1, n_timepoints // 2)
-        default_window = halved_timepoints
+        default_window = n_timepoints
     if n_timepoints > 1:
         # Allow selecting up to all timestamps for any data source
         max_selectable = n_timepoints
@@ -1593,7 +1593,7 @@ with sc2:
 
 with sc3:
     # Starting t value of the window (dropdown instead of slider)
-    valid_start_count = max(1, halved_timepoints - num_timestamps + 1)
+    valid_start_count = max(1, n_timepoints - num_timestamps + 1)
     valid_starts = _t_common[:valid_start_count]
     # Utility for halved timestamp titles
     def _halved_ts_title(base, count):
@@ -2444,6 +2444,21 @@ with advanced_col2:
         key="btn_generate_br_consec_rd",
         help="100 configs × 2500 iter | early stopping | bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2-3) RANDOM directions | ALL timestamps"
     )
+    generate_recursive_6event_btn = st.button(
+        "🔄 Recursive 6-Event Generation",
+        key="btn_generate_recursive_6event",
+        help="Detects 6 overtake events (start, lane-change start/end, return start/end, last). "
+             "Generates recursively in batches of 100 configs — each batch starts from the best "
+             "result of the previous batch. Only the 6 event timestamps are used for generation and PDP comparison."
+    )
+    generate_6ev_single_btn = st.button(
+        "🎯 6-Event Single Iteration",
+        key="btn_generate_6ev_single",
+        type="primary",
+        help="Selects 6 event timestamps (0, 34, 67, 183, 213, 249). "
+             "Generates 1 config × 1 iteration using exponential strategy + fundamental PDP variant. "
+             "Moves a single random point per iteration. Y-axis fixed at [-10, +10]."
+    )
 
 # Handle Reset button click for both modes
 # This resets all animation state variables to their initial values
@@ -2833,22 +2848,174 @@ def _build_d2_change_weights(movable_indices: list[int]) -> dict[int, float]:
         o_id = all_obj_ids_flat[flat_idx]
         local_idx = all_local_idx_flat[flat_idx]
         pts = all_points_plot.get(o_id)
-        if pts is None or pts.shape[0] <= 1:
+        if pts is None or pts.ndim < 2 or pts.shape[0] < 2:
+            # Need at least 2 points to compute any d2 difference.
             weights[flat_idx] = 1.0
             continue
 
         y_vals = pts[:, 1]
         n_pts = y_vals.shape[0]
-        if local_idx <= 0:
+        # Clamp local_idx to valid range so every access is in-bounds.
+        li = max(0, min(local_idx, n_pts - 1))
+        if li == 0:
+            # First point → forward difference (index 1 guaranteed by n_pts >= 2)
             strength = abs(float(y_vals[1] - y_vals[0]))
-        elif local_idx >= n_pts - 1:
-            strength = abs(float(y_vals[-1] - y_vals[-2]))
+        elif li >= n_pts - 1:
+            # Last point → backward difference
+            strength = abs(float(y_vals[n_pts - 1] - y_vals[n_pts - 2]))
         else:
-            prev_jump = abs(float(y_vals[local_idx] - y_vals[local_idx - 1]))
-            next_jump = abs(float(y_vals[local_idx + 1] - y_vals[local_idx]))
+            # Interior point → average of backward and forward differences
+            prev_jump = abs(float(y_vals[li] - y_vals[li - 1]))
+            next_jump = abs(float(y_vals[li + 1] - y_vals[li]))
             strength = 0.5 * (prev_jump + next_jump)
         weights[flat_idx] = strength + eps
     return weights
+
+def detect_overtake_events(
+    objects_points: dict[int, tuple[np.ndarray, np.ndarray]],
+) -> tuple[int, list[float]] | None:
+    """Detect 6 key events in an overtake manoeuvre.
+
+    Identifies the overtaking vehicle (largest lateral / d2 range) and finds
+    six characteristic timestamps using **raw consecutive d2 differences**
+    (no smoothing, so no temporal bleed):
+
+    1. First timestamp
+    2. Start of first lane change (first t where d2 visibly moves)
+    3. Arrival at second lane (d2 stabilises at new position)
+    4. Departure from second lane (d2 begins returning)
+    5. Arrival back in original lane (d2 stabilises)
+    6. Last timestamp
+
+    Parameters
+    ----------
+    objects_points : dict mapping object-id → (pts (N,2), ts (N,))
+    change_threshold_frac : fraction of the max |Δd2| step used as threshold
+        to distinguish "changing" from "stable" timestamps.
+
+    Returns
+    -------
+    (overtaking_oid, event_timestamps) with 6 timestamps, or *None* when
+    detection is not feasible (e.g. no clear lane change).
+    """
+    # --- 1. Identify the overtaking vehicle (largest d2 range) ---
+    best_oid: int | None = None
+    best_range = 0.0
+    for oid, (pts, _ts) in objects_points.items():
+        d2_range = float(np.ptp(pts[:, 1]))
+        if d2_range > best_range:
+            best_range = d2_range
+            best_oid = oid
+    if best_oid is None or best_range < 0.5:
+        return None
+
+    pts, ts = objects_points[best_oid]
+    d2 = pts[:, 1].astype(float)
+    n = len(d2)
+    if n < 10:
+        return None
+
+    # --- 2. Raw absolute d2 step sizes (no smoothing!) ---
+    # delta[i] = |d2[i+1] - d2[i]|   (length n-1)
+    delta = np.abs(np.diff(d2))
+    max_delta = float(np.max(delta))
+    if max_delta < 1e-9:
+        return None
+
+    # Adaptive threshold based on the noise floor of the stable regions.
+    # The lower quartile of delta values represents the "noise" during
+    # stable portions of the trajectory.  A multiplier well above the noise
+    # guarantees we don't confuse jitter for a lane change, while still
+    # catching the very first (smaller) step of a lane change.
+    sorted_delta = np.sort(delta)
+    q25 = float(sorted_delta[max(0, len(sorted_delta) // 4)])
+    if q25 < 1e-12:
+        # Almost-zero noise → fall back to a small fraction of max
+        threshold = max_delta * 0.03
+    else:
+        threshold = q25 * 10.0
+        # Cap so we never exceed half the max step
+        threshold = min(threshold, max_delta * 0.50)
+
+    # --- 3. Mark each timestamp as "changing" or "stable" ---
+    # Timestamp i is "changing" when the step *arriving* at i is large,
+    # i.e. |d2[i] - d2[i-1]| > threshold.  This means the event index
+    # directly corresponds to the first data point that has visibly moved.
+    is_changing = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if delta[i - 1] > threshold:
+            is_changing[i] = True
+
+    # --- 3b. Bridge small stable gaps (≤ 2 timestamps) between changing
+    #     regions so that a single step dipping below threshold mid-lane-
+    #     change doesn't fragment the detection into extra regions. ---
+    _gap_limit = 2
+    _i = 0
+    while _i < n:
+        if is_changing[_i]:
+            _j = _i
+            while _j < n and is_changing[_j]:
+                _j += 1
+            # _j = first stable index after the run
+            _k = _j
+            while _k < n and not is_changing[_k] and (_k - _j) <= _gap_limit:
+                _k += 1
+            if _k < n and is_changing[_k] and (_k - _j) <= _gap_limit:
+                for _m in range(_j, _k):
+                    is_changing[_m] = True
+                _i = _k
+            else:
+                _i = _j
+        else:
+            _i += 1
+
+    # Find transition indices (start / end of each changing region)
+    transitions = np.diff(is_changing.astype(np.int8))
+    starts = list(np.where(transitions == 1)[0] + 1)   # first "changing"
+    ends   = list(np.where(transitions == -1)[0] + 1)   # first "stable" after
+
+    if is_changing[0]:
+        starts.insert(0, 0)
+    if is_changing[-1]:
+        ends.append(n - 1)
+
+    if len(starts) < 2 or len(ends) < 2:
+        return None
+
+    # --- 4. Build event indices ---
+    # For E2/E4 (start of lane change): starts[] = first index where d2
+    #   has visibly moved → correct as-is.
+    # For E3/E5 (arrival / stabilisation): ends[] gives the first STABLE
+    #   index after the changing region, but the arrival point is one
+    #   earlier — the last index where d2 was still changing, i.e. the
+    #   timestamp where d2 reached its new value.  Hence ends[] - 1.
+    idx_event = [
+        0,               # event 1: first timestamp
+        starts[0],       # event 2: first t where d2 visibly moves
+        ends[0] - 1,     # event 3: last t of first lane-change (arrival)
+        starts[1],       # event 4: first t where d2 starts returning
+        ends[1] - 1,     # event 5: last t of return lane-change (arrival back)
+        n - 1,           # event 6: last timestamp
+    ]
+    # Ensure strict ordering and clamp
+    for i in range(1, len(idx_event)):
+        if idx_event[i] <= idx_event[i - 1]:
+            idx_event[i] = min(idx_event[i - 1] + 1, n - 1)
+
+    event_timestamps = [float(ts[i]) for i in idx_event]
+    return best_oid, event_timestamps
+
+
+# ============= 6-Event Overtake Detection (for visualisation) ============
+# Run once and store so draw_original can mark the events on the plot.
+_6ev_vis_result = detect_overtake_events(all_objects_points)
+if _6ev_vis_result is not None:
+    _6ev_vis_oid, _6ev_vis_timestamps = _6ev_vis_result
+    _6ev_vis_map: dict[float, int] = {t: i + 1 for i, t in enumerate(_6ev_vis_timestamps)}
+else:
+    _6ev_vis_oid = None
+    _6ev_vis_map = {}
+
 
 def _weighted_pick(indices: list[int], count: int, weights_map: dict[int, float]) -> list[int]:
     """Weighted sampling without replacement over candidate flat indices."""
@@ -5504,6 +5671,16 @@ if generate_br_consec_rd_btn:
     if _needs_rerun:
         st.rerun()
 
+if generate_recursive_6event_btn:
+    st.session_state["_generate_recursive_6event_requested"] = True
+    st.session_state["_generate_recursive_6event_results"] = None
+
+if generate_6ev_single_btn:
+    st.session_state["_generate_6ev_single_requested"] = True
+    st.session_state["_generate_6ev_single_results"] = None
+    st.session_state.pop("_6evs_points_plot", None)
+    st.session_state.pop("_6evs_vals_plot", None)
+
 if generate_half_ts_btn:
     st.session_state["_generate_half_ts_requested"] = True
     st.session_state["_generate_half_ts_results"] = None
@@ -6318,6 +6495,249 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
         st.rerun()
 
 
+# ============= Recursive 6-Event Overtake Generation ============
+if st.session_state.get("_generate_recursive_6event_requested", False) and not st.session_state.get("_generate_recursive_6event_results", None):
+    _6ev_detection = detect_overtake_events(all_objects_points)
+    if _6ev_detection is None:
+        st.error(
+            "⚠️ Could not detect 6 overtake events — the trajectory data does not "
+            "show a clear lane-change + return pattern. Make sure you are viewing "
+            "an overtake scenario with at least 2 objects."
+        )
+        st.session_state["_generate_recursive_6event_requested"] = False
+    else:
+        _6ev_oid, _6ev_timestamps = _6ev_detection
+
+        # --- Build 6-event filtered data for every object ---
+        _6ev_ts_set = set(_6ev_timestamps)
+        _6ev_sorted_oids = sorted(all_objects_points.keys())
+        _6ev_points: dict[int, np.ndarray] = {}
+        _6ev_vals: dict[int, np.ndarray] = {}
+        for _oid in _6ev_sorted_oids:
+            _pts, _ts = all_objects_points[_oid]
+            # For each event timestamp find the closest available timestamp
+            _keep_indices: list[int] = []
+            for _evt_t in _6ev_timestamps:
+                _closest_idx = int(np.argmin(np.abs(_ts - _evt_t)))
+                if _closest_idx not in _keep_indices:
+                    _keep_indices.append(_closest_idx)
+            _keep_indices.sort()
+            _6ev_points[_oid] = _pts[_keep_indices]
+            _6ev_vals[_oid] = _ts[_keep_indices]
+
+        # --- Show detection info ---
+        st.markdown("---")
+        st.markdown("### 🔄 Recursive 6-Event Overtake Generation")
+        _ts_nice = ", ".join(f"{t:.0f}" for t in _6ev_timestamps)
+        st.info(
+            f"Overtaking vehicle: **object {_6ev_oid}** | "
+            f"6 event timestamps: [{_ts_nice}]"
+        )
+        _n6_per = {_oid: _6ev_points[_oid].shape[0] for _oid in _6ev_sorted_oids}
+        _n6_total = sum(_n6_per.values())
+        st.caption(
+            f"Points per object: {_n6_per} | total {_n6_total} points | "
+            "Generating 1 config per round × 2500 iter, up to 20 recursive rounds"
+        )
+
+        # --- Save + swap globals (module-level: no `global` keyword needed) ---
+        _6ev_saved = (
+            all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+            all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot,
+        )
+
+        # Build flattened from the 6-event data
+        def _build_6ev_flat(pts_dict: dict[int, np.ndarray], vals_dict: dict[int, np.ndarray]):
+            _pl: list[np.ndarray] = []
+            _tl: list[float] = []
+            _oi: list[int] = []
+            _li: list[int] = []
+            _fi: list[bool] = []
+            for _oid in _6ev_sorted_oids:
+                _pts_d = pts_dict[_oid]
+                for _idx in range(_pts_d.shape[0]):
+                    _pl.append(_pts_d[_idx])
+                    _tl.append(float(vals_dict[_oid][_idx]))
+                    _oi.append(_oid)
+                    _li.append(_idx)
+                    _fi.append(False)
+            # External points
+            for _ep, _et in zip(external_pts_for_window, external_ts_for_window):
+                _pl.append(_ep)
+                _tl.append(float(_et))
+                _oi.append(-1)
+                _li.append(len(_pl) - 1)
+                _fi.append(True)
+            _pf = np.array(_pl) if _pl else np.array([]).reshape(0, 2)
+            _tf = np.array(_tl) if _tl else np.array([])
+            return _pf, _tf, _oi, _li, _fi
+
+        # Resolve PDP parameters once
+        _6ev_variants = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        _6ev_pdp = _6ev_variants[0] if _6ev_variants else "fundamental"
+        _6ev_bx = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        _6ev_by = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        _6ev_rx = st.session_state.get("cfg_rough_x", 0.0)
+        _6ev_ry = st.session_state.get("cfg_rough_y", 0.0)
+        _6ev_mode, _6ev_pct, _6ev_maxmm = get_threshold_settings()
+
+        # --- Recursive loop ---
+        MAX_RECURSIVE_ROUNDS = 20
+        NUM_CONFIGS_PER_ROUND = 1
+        NUM_ITER_PER_CONFIG = MAX_FILTER_ITERATIONS
+
+        _round_results: list[dict[str, Any]] = []
+        _cur_points = {_oid: _6ev_points[_oid].copy() for _oid in _6ev_sorted_oids}
+        _cur_vals = {_oid: _6ev_vals[_oid].copy() for _oid in _6ev_sorted_oids}
+
+        # The ORIGINAL 6-event flat is needed to build the PDP checker reference
+        _orig_flat, _orig_ts_flat, _, _, _ = _build_6ev_flat(_6ev_points, _6ev_vals)
+
+        _progress = st.progress(0)
+        _status = st.empty()
+        _t_rec_start = time.perf_counter()
+        _total_rec_iters = 0
+
+        try:
+          for _round_idx in range(MAX_RECURSIVE_ROUNDS):
+            _status.text(f"Recursive round {_round_idx + 1}/{MAX_RECURSIVE_ROUNDS}...")
+            # Build flat arrays from current positions
+            _pf, _tf, _oi, _li, _fi = _build_6ev_flat(_cur_points, _cur_vals)
+
+            # Swap globals
+            all_pts_flat = _pf
+            all_ts_flat = _tf
+            all_obj_ids_flat = _oi
+            all_local_idx_flat = _li
+            all_is_fixed_flat = _fi
+            n_total_points = _pf.shape[0]
+            all_points_plot = _cur_points
+            all_vals_plot = _cur_vals
+
+            # PDP checker: compare generated configs against the ORIGINAL ordering
+            _thresh_ck, _maxmm_ck = get_threshold_params()
+            _checker = IncrementalPDPChecker(
+                _orig_flat, _6ev_pdp,
+                buffer_x=_6ev_bx, buffer_y=_6ev_by,
+                rough_x=_6ev_rx, rough_y=_6ev_ry,
+                match_threshold=_thresh_ck, max_mismatches=_maxmm_ck,
+            )
+
+            # Run a batch of configs starting from _cur_points
+            _round_configs: list[dict[str, Any]] = []
+            _round_early = 0
+            for _ci in range(NUM_CONFIGS_PER_ROUND):
+                _checker.reset_to_original()
+                _cur_pts_copy = _pf.copy()
+                _sp: list[SuccessfulPoint] = []
+                _stag = 0
+                _used = NUM_ITER_PER_CONFIG
+                for _it in range(NUM_ITER_PER_CONFIG):
+                    _status.text(
+                        f"Round {_round_idx + 1}/{MAX_RECURSIVE_ROUNDS} — "
+                        f"iter {_it + 1}/{NUM_ITER_PER_CONFIG}"
+                    )
+                    _sp_before = len(_sp)
+                    _sp, _ok = run_multipoint_iteration(
+                        current_points=_cur_pts_copy,
+                        successful_points=_sp,
+                        pdp_variant=_6ev_pdp,
+                        buffer_x=_6ev_bx,
+                        buffer_y=_6ev_by,
+                        rough_x=_6ev_rx,
+                        rough_y=_6ev_ry,
+                        pdp_checker=_checker,
+                    )
+                    _na = len(_sp) - _sp_before
+                    if _na > 0 and _check_stagnation(_sp, _na):
+                        _stag += 1
+                    else:
+                        _stag = 0
+                    if _stag >= EARLY_STOP_PATIENCE:
+                        _used = _it + 1
+                        _round_early += 1
+                        break
+                _total_rec_iters += _used
+                if _sp:
+                    _round_configs.append({
+                        "successful_points": _sp,
+                        "config_number": _ci + 1,
+                        "iterations": _used,
+                    })
+                _progress.progress(
+                    (_round_idx * NUM_CONFIGS_PER_ROUND + _ci + 1)
+                    / (MAX_RECURSIVE_ROUNDS * NUM_CONFIGS_PER_ROUND)
+                )
+
+            if not _round_configs:
+                st.warning(f"Round {_round_idx + 1}: no valid configs generated — stopping recursion.")
+                break
+
+            # Rank by perpendicular variance against the 6-event original
+            _devs: list[tuple[int, float, dict[str, Any]]] = []
+            for _cfg in _round_configs:
+                _pv = _perpendicular_variance(_6ev_points, _cfg["successful_points"])
+                _devs.append((_cfg["config_number"], _pv, _cfg))
+            _devs.sort(key=lambda x: x[1], reverse=True)
+            _best = _devs[0]
+            _round_results.append({
+                "round": _round_idx + 1,
+                "best_config": _best[0],
+                "best_variance": _best[1],
+                "n_configs": len(_round_configs),
+                "early_stopped": _round_early,
+                "top3": _devs[:5],
+            })
+
+            # Reconstruct best config's final positions → new starting data
+            _best_sp = _best[2]["successful_points"]
+            _latest: dict[int, np.ndarray] = {}
+            for _sp_entry in _best_sp:
+                _latest[int(_sp_entry["original_parent_idx"])] = _sp_entry["point"]
+            # Rebuild _cur_points from flat mapping
+            _gi = 0
+            for _oid in _6ev_sorted_oids:
+                _n_obj = _cur_points[_oid].shape[0]
+                for _idx_local in range(_n_obj):
+                    if _gi in _latest:
+                        _cur_points[_oid][_idx_local] = _latest[_gi]
+                    _gi += 1
+
+            st.info(
+                f"Round {_round_idx + 1}: best variance = {_best[1]:.6f} "
+                f"(config #{_best[0]}, {len(_round_configs)} valid configs, "
+                f"{_round_early} early-stopped)"
+            )
+
+          # --- After all rounds ---
+          _progress.empty()
+          _status.empty()
+          _t_rec_elapsed = time.perf_counter() - _t_rec_start
+          st.success(
+              f"✅ Recursive generation complete — {len(_round_results)} rounds in {_t_rec_elapsed:.1f}s "
+              f"({_total_rec_iters:,} total iterations)"
+          )
+
+          # Store results: list of round summaries + final top 3 from last round
+          if _round_results:
+              _final_top3 = _round_results[-1]["top3"]
+              st.session_state["_generate_recursive_6event_results"] = _final_top3
+              st.session_state["_recursive_6event_rounds"] = _round_results
+              st.session_state["_recursive_6event_points_plot"] = _6ev_points
+              st.session_state["_recursive_6event_vals_plot"] = _6ev_vals
+              st.session_state["_recursive_6event_timestamps"] = _6ev_timestamps
+              st.session_state["_recursive_6event_overtaker"] = _6ev_oid
+          else:
+              st.session_state["_generate_recursive_6event_requested"] = False
+        finally:
+          # Restore globals no matter what
+          (all_pts_flat, all_ts_flat, all_obj_ids_flat, all_local_idx_flat,
+           all_is_fixed_flat, n_total_points, all_points_plot, all_vals_plot) = _6ev_saved
+
+        if _round_results:
+            st.rerun()
+
+
 # ---------------------------------------------------------------------------
 # Helper: run filtered-timestamp generation (deduplicates ½/¼/⅛/1∕16 blocks)
 # ---------------------------------------------------------------------------
@@ -6540,6 +6960,144 @@ if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.se
         external_pts_for_window=external_pts_for_window,
         external_ts_for_window=external_ts_for_window,
     )
+
+# ============= 6-Event Single Iteration (ts 0, 34, 67, 183, 213, 249) ============
+if st.session_state.get("_generate_6ev_single_requested", False) and not st.session_state.get("_generate_6ev_single_results", None):
+    st.markdown("---")
+    _6evs_sorted_oids = sorted(all_objects_points.keys())
+    _6evs_points_plot: dict[int, np.ndarray] = {}
+    _6evs_vals_plot: dict[int, np.ndarray] = {}
+    _6evs_keep_set = {0.0, 34.0, 67.0, 183.0, 213.0, 249.0}
+
+    for _6evs_oid in _6evs_sorted_oids:
+        _6evs_orig_pts, _6evs_orig_ts = all_objects_points[_6evs_oid]
+        _6evs_keep_mask = np.isin(_6evs_orig_ts, list(_6evs_keep_set))
+        _6evs_points_plot[_6evs_oid] = _6evs_orig_pts[_6evs_keep_mask]
+        _6evs_vals_plot[_6evs_oid] = _6evs_orig_ts[_6evs_keep_mask]
+
+    st.markdown("### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
+
+    _6evs_n_ts_per_obj = {oid: _6evs_points_plot[oid].shape[0] for oid in _6evs_sorted_oids}
+    _6evs_n_ts_total = sum(_6evs_n_ts_per_obj.values())
+    _6evs_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _6evs_n_ts_per_obj.items())
+
+    # ------ Settings summary ------
+    _6evs_settings = {
+        "PDP variant": "fundamental",
+        "Strategy": "exponential",
+        "Timestamps": [0, 34, 67, 183, 213, 249],
+        "Iterations": 1,
+        "Configs": 1,
+        "Point selection": "Single point (random)",
+        "Y-axis range": "[-10, +10]",
+        "X-axis": "data range + 20% margin",
+        "Equal aspect": False,
+        "External points": [list(p) for p in external_points_list] if external_points_list else "none",
+    }
+    st.caption(
+        f"1 config × 1 iter | exponential | PDP fundamental | {_6evs_ts_info}"
+    )
+    with st.expander("⚙️ Chosen settings", expanded=False):
+        st.json(_6evs_settings)
+
+    # ------ Build flat arrays ------
+    _6evs_pts_list: list[np.ndarray] = []
+    _6evs_ts_list: list[float] = []
+    for _6evs_oid in _6evs_sorted_oids:
+        for _6evs_li in range(_6evs_points_plot[_6evs_oid].shape[0]):
+            _6evs_pts_list.append(_6evs_points_plot[_6evs_oid][_6evs_li])
+            _6evs_ts_list.append(float(_6evs_vals_plot[_6evs_oid][_6evs_li]))
+    for _6evs_ext_pt, _6evs_ext_t in zip(external_pts_for_window, external_ts_for_window):
+        _6evs_pts_list.append(_6evs_ext_pt)
+        _6evs_ts_list.append(float(_6evs_ext_t))
+    _6evs_pts_flat = np.array(_6evs_pts_list) if _6evs_pts_list else np.array([]).reshape(0, 2)
+    _6evs_ts_flat = np.array(_6evs_ts_list) if _6evs_ts_list else np.array([])
+
+    _6evs_obj_ids_flat: list[int] = []
+    _6evs_local_idx_flat: list[int] = []
+    _6evs_is_fixed_flat: list[bool] = []
+    for _6evs_oid in _6evs_sorted_oids:
+        for _6evs_li in range(_6evs_points_plot[_6evs_oid].shape[0]):
+            _6evs_obj_ids_flat.append(_6evs_oid)
+            _6evs_local_idx_flat.append(_6evs_li)
+            _6evs_is_fixed_flat.append(False)
+    for _6evs_ei in range(len(external_pts_for_window)):
+        _6evs_obj_ids_flat.append(-1)
+        _6evs_local_idx_flat.append(_6evs_ei)
+        _6evs_is_fixed_flat.append(True)
+
+    # ------ Swap globals ------
+    _save_all_pts_flat = all_pts_flat
+    _save_all_ts_flat = all_ts_flat
+    _save_all_obj_ids_flat = all_obj_ids_flat
+    _save_all_local_idx_flat = all_local_idx_flat
+    _save_all_is_fixed_flat = all_is_fixed_flat
+    _save_n_total_points = n_total_points
+    _save_all_points_plot = all_points_plot
+    _save_all_vals_plot = all_vals_plot
+
+    all_pts_flat = _6evs_pts_flat
+    all_ts_flat = _6evs_ts_flat
+    all_obj_ids_flat = _6evs_obj_ids_flat
+    all_local_idx_flat = _6evs_local_idx_flat
+    all_is_fixed_flat = _6evs_is_fixed_flat
+    n_total_points = _6evs_pts_flat.shape[0]
+    all_points_plot = _6evs_points_plot
+    all_vals_plot = _6evs_vals_plot
+
+    try:
+        pdp_variant = "fundamental"
+        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+        rough_x = 0.0
+        rough_y = 0.0
+        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+
+        status_text = st.empty()
+        status_text.text("6-event single iteration — generating 1 config × 1 iter...")
+
+        current_points = _6evs_pts_flat.copy()
+        successful_points: list[SuccessfulPoint] = []
+        successful_points, success = run_multipoint_iteration(
+            current_points=current_points,
+            successful_points=successful_points,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y,
+        )
+
+        status_text.empty()
+
+        if successful_points:
+            config_data = {
+                "successful_points": successful_points,
+                "config_number": 1,
+                "pdp_variant": pdp_variant,
+                "iterations": 1,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+            }
+            pv = _perpendicular_variance(_6evs_points_plot, successful_points)
+            st.session_state["_generate_6ev_single_results"] = [(1, pv, config_data)]
+            st.session_state["_6evs_points_plot"] = _6evs_points_plot
+            st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
+            st.rerun()
+        else:
+            st.warning("No successful point was generated in this iteration. Try again.")
+            st.session_state["_generate_6ev_single_requested"] = False
+    finally:
+        all_pts_flat = _save_all_pts_flat
+        all_ts_flat = _save_all_ts_flat
+        all_obj_ids_flat = _save_all_obj_ids_flat
+        all_local_idx_flat = _save_all_local_idx_flat
+        all_is_fixed_flat = _save_all_is_fixed_flat
+        n_total_points = _save_n_total_points
+        all_points_plot = _save_all_points_plot
+        all_vals_plot = _save_all_vals_plot
 
 # ============= Generate 100 configs × 2500 iterations — 4 timestamps (0, 46, 92, 136) ============
 if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
@@ -10632,6 +11190,146 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
         st.cache_data.clear()
         st.rerun()
 
+# ============= Display 6-Event Single Iteration results ============
+if st.session_state.get("_generate_6ev_single_results", None):
+    _6evs_results = st.session_state["_generate_6ev_single_results"]
+    _6evs_pp = st.session_state.get("_6evs_points_plot", all_points_plot)
+    _6evs_vp = st.session_state.get("_6evs_vals_plot", all_vals_plot)
+    _6evs_sorted_oids = sorted(_6evs_pp.keys())
+
+    st.markdown("---")
+    _6evs_n_per_obj = {oid: _6evs_pp[oid].shape[0] for oid in _6evs_sorted_oids}
+    _6evs_n_total = sum(_6evs_n_per_obj.values())
+    st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
+    st.markdown(
+        f"Exponential | PDP fundamental | **{_6evs_n_total} total pts** "
+        f"({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
+    )
+
+    # Settings summary
+    _6evs_settings_display = {
+        "PDP variant": "fundamental",
+        "Strategy": "exponential",
+        "Timestamps": [0, 34, 67, 183, 213, 249],
+        "Iterations": 1,
+        "Configs": 1,
+        "Point selection": "Single point (random)",
+        "Y-axis range": "[-10, +10]",
+        "X-axis": "data range + 20% margin",
+        "Equal aspect": False,
+    }
+    with st.expander("⚙️ Chosen settings", expanded=False):
+        st.json(_6evs_settings_display)
+
+    for _6evs_rank, (_6evs_cnum, _6evs_dev, _6evs_cfg) in enumerate(_6evs_results, 1):
+        st.markdown(f"#### Configuration #{_6evs_cnum} (PV={_6evs_dev:.6f} m²)")
+
+        _6evs_sp = _6evs_cfg.get("successful_points", [])
+        _6evs_gen_map: dict[int, np.ndarray] = {}
+        for sp in _6evs_sp:
+            _6evs_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+
+        _6evs_plot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _6evs_gi = 0
+        for oid in _6evs_sorted_oids:
+            n_pts = _6evs_pp[oid].shape[0]
+            orig = _6evs_pp[oid]
+            ts = _6evs_vp[oid]
+            gen = orig.copy()
+            for li in range(n_pts):
+                gi = _6evs_gi + li
+                if gi in _6evs_gen_map:
+                    gen[li] = _6evs_gen_map[gi]
+            _6evs_plot_data.append((orig, gen, ts))
+            _6evs_gi += n_pts
+
+        # ---- Compute axis ranges ----
+        _6evs_all_x: list[float] = []
+        _6evs_all_y: list[float] = []
+        for orig, gen, ts in _6evs_plot_data:
+            _6evs_all_x.extend(orig[:, 0].tolist())
+            _6evs_all_x.extend(gen[:, 0].tolist())
+            _6evs_all_y.extend(orig[:, 1].tolist())
+            _6evs_all_y.extend(gen[:, 1].tolist())
+
+        # X-axis: data range + 20% margin on each side
+        _6evs_x_data_min = min(_6evs_all_x) if _6evs_all_x else 0
+        _6evs_x_data_max = max(_6evs_all_x) if _6evs_all_x else 1
+        _6evs_x_range = _6evs_x_data_max - _6evs_x_data_min
+        _6evs_x_margin = max(_6evs_x_range * 0.20, 5.0)
+        _6evs_xlo = _6evs_x_data_min - _6evs_x_margin
+        _6evs_xhi = _6evs_x_data_max + _6evs_x_margin
+        # Y-axis: fixed at [-10, +10]
+        _6evs_ylo = -10.0
+        _6evs_yhi = 10.0
+
+        # ---- Matplotlib static plot (NO equal aspect) ----
+        _6evs_fw = 14.0
+        _6evs_fh = 5.0
+        fig_s = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+        ax_s = fig_s.add_subplot(111)
+        # Deliberately NOT setting equal aspect
+        for idx_o, oid in enumerate(_6evs_sorted_oids):
+            orig, gen, ts = _6evs_plot_data[idx_o]
+            lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
+            clr = f"C{int(oid)}"
+            # Original: dashed + point labels
+            ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.4, ls='--', label=f"{lbl} orig")
+            for li in range(orig.shape[0]):
+                ax_s.plot(orig[li, 0], orig[li, 1], 'x', color=clr, markersize=5, alpha=0.4)
+                ax_s.annotate(f"t={int(ts[li])}", xy=(orig[li, 0], orig[li, 1]),
+                              fontsize=5, color=clr, alpha=0.5,
+                              xytext=(3, 3), textcoords='offset points')
+            # Generated: solid + markers
+            ax_s.plot(gen[:, 0], gen[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
+            for li in range(gen.shape[0]):
+                ax_s.plot(gen[li, 0], gen[li, 1], 'o', color=clr, markersize=6, zorder=5)
+                ax_s.annotate(f"t={int(ts[li])}", xy=(gen[li, 0], gen[li, 1]),
+                              fontsize=5, color=clr, alpha=0.9,
+                              xytext=(3, -8), textcoords='offset points')
+        ax_s.set_xlim(_6evs_xlo, _6evs_xhi)
+        ax_s.set_ylim(_6evs_ylo, _6evs_yhi)
+        ax_s.legend(fontsize=7, loc='upper left')
+        ax_s.set_xlabel("d1 / x-as (m)")
+        ax_s.set_ylabel("d2 / y-as (m)")
+        ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}  (PV={_6evs_dev:.6f} m²)")
+        ax_s.grid(True, alpha=0.3)
+        fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+        buf_s = io.BytesIO()
+        fig_s.savefig(buf_s, format='png', dpi=150)
+        buf_s.seek(0)
+        st.image(buf_s, use_container_width=True)
+        plt.close(fig_s)
+
+        # ---- Data table ----
+        with st.expander("📊 Point coordinates", expanded=False):
+            _6evs_table_rows = []
+            for idx_o, oid in enumerate(_6evs_sorted_oids):
+                orig, gen, ts = _6evs_plot_data[idx_o]
+                lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
+                for li in range(orig.shape[0]):
+                    _6evs_table_rows.append({
+                        "Object": lbl,
+                        "t": int(ts[li]),
+                        "orig_d1": round(float(orig[li, 0]), 4),
+                        "orig_d2": round(float(orig[li, 1]), 4),
+                        "gen_d1": round(float(gen[li, 0]), 4),
+                        "gen_d2": round(float(gen[li, 1]), 4),
+                        "Δd1": round(float(gen[li, 0] - orig[li, 0]), 4),
+                        "Δd2": round(float(gen[li, 1] - orig[li, 1]), 4),
+                    })
+            st.dataframe(pd.DataFrame(_6evs_table_rows), use_container_width=True)
+
+        st.markdown("---")
+
+    if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
+        st.session_state["_generate_6ev_single_requested"] = False
+        st.session_state["_generate_6ev_single_results"] = None
+        st.session_state.pop("_6evs_points_plot", None)
+        st.session_state.pop("_6evs_vals_plot", None)
+        st.cache_data.clear()
+        st.rerun()
+
 # Display 4-timestamps filtered results
 if st.session_state.get("_generate_four_ts_results", None):
     _fts_results = st.session_state["_generate_four_ts_results"]
@@ -11036,6 +11734,134 @@ if st.session_state.get("_generate_c68f_results", None):
         results_key="_generate_c68f_results",
     )
 
+# Display Recursive 6-Event results
+if st.session_state.get("_generate_recursive_6event_results", None):
+    _r6_results = st.session_state["_generate_recursive_6event_results"]
+    _r6_rounds = st.session_state.get("_recursive_6event_rounds", [])
+    _r6_pp = st.session_state.get("_recursive_6event_points_plot", all_points_plot)
+    _r6_vp = st.session_state.get("_recursive_6event_vals_plot", all_vals_plot)
+    _r6_ts = st.session_state.get("_recursive_6event_timestamps", [])
+    _r6_oid = st.session_state.get("_recursive_6event_overtaker", None)
+    _r6_sorted = sorted(_r6_pp.keys())
+
+    st.markdown("---")
+    st.markdown("### 🔄 Recursive 6-Event Generation — Results")
+    _r6_ts_nice = ", ".join(f"{t:.0f}" for t in _r6_ts) if _r6_ts else "?"
+    st.markdown(f"Overtaking object: **{_r6_oid}** | Events at t = [{_r6_ts_nice}] | **{len(_r6_rounds)} rounds** completed")
+
+    # Show convergence table
+    if _r6_rounds:
+        _r6_table_data = []
+        for _rnd in _r6_rounds:
+            _r6_table_data.append({
+                "Round": _rnd["round"],
+                "Best Variance": f"{_rnd['best_variance']:.6f}",
+                "Best Config #": _rnd["best_config"],
+                "Valid Configs": _rnd["n_configs"],
+                "Early Stopped": _rnd["early_stopped"],
+            })
+        st.dataframe(_r6_table_data, use_container_width=True)
+
+    # Show top 3 from final round
+    for _r6_rank, (_r6_cnum, _r6_dev, _r6_cfg) in enumerate(_r6_results, 1):
+        st.markdown(f"#### Rank {_r6_rank}: Config #{_r6_cnum} (PV={_r6_dev:.6f} m²)")
+        _r6_sp = _r6_cfg.get("successful_points", [])
+        _r6_gm: dict[int, np.ndarray] = {}
+        for _sp in _r6_sp:
+            _r6_gm[int(_sp["original_parent_idx"])] = _sp["point"]
+        # Plot original vs generated for the 6 event points
+        fig_r6, ax_r6 = plt.subplots(figsize=(10, 5))
+        _r6_gi = 0
+        for _oid in _r6_sorted:
+            _n = _r6_pp[_oid].shape[0]
+            _orig = _r6_pp[_oid]
+            _gen = _orig.copy()
+            for _li in range(_n):
+                _gi = _r6_gi + _li
+                if _gi in _r6_gm:
+                    _gen[_li] = _r6_gm[_gi]
+            _clr = f"C{_oid}"
+            _lbl = OBJECT_LABELS[_oid % len(OBJECT_LABELS)]
+            ax_r6.plot(_orig[:, 0], _orig[:, 1], '--', color=_clr, alpha=0.4, label=f"{_lbl} orig")
+            ax_r6.scatter(_orig[:, 0], _orig[:, 1], color=_clr, alpha=0.4, s=30, zorder=3)
+            ax_r6.plot(_gen[:, 0], _gen[:, 1], '-', color=_clr, lw=2, label=f"{_lbl} gen")
+            ax_r6.scatter(_gen[:, 0], _gen[:, 1], color=_clr, s=50, zorder=4)
+            _r6_gi += _n
+        ax_r6.set_xlabel("d1 / x (m)")
+        ax_r6.set_ylabel("d2 / y (m)")
+        ax_r6.set_ylim(-15, 15)
+        ax_r6.set_title(f"Recursive 6-Event — Rank {_r6_rank} (PV={_r6_dev:.6f})")
+        ax_r6.legend(fontsize=8)
+
+        st.pyplot(fig_r6)
+        plt.close(fig_r6)
+
+        # --- Display d1 and d2 ordering for original vs generated ---
+        # Build labelled point list: (label, orig_coord, gen_coord)
+        _r6_labelled: list[tuple[str, np.ndarray, np.ndarray]] = []
+        _r6_gi2 = 0
+        for _oid in _r6_sorted:
+            _n = _r6_pp[_oid].shape[0]
+            _lbl = OBJECT_LABELS[_oid % len(OBJECT_LABELS)]
+            _orig = _r6_pp[_oid]
+            _gen = _orig.copy()
+            for _li in range(_n):
+                _gi = _r6_gi2 + _li
+                if _gi in _r6_gm:
+                    _gen[_li] = _r6_gm[_gi]
+                _r6_labelled.append((f"{_lbl}{_li}", _orig[_li], _gen[_li]))
+            _r6_gi2 += _n
+
+        def _build_order_str(points_list: list[tuple[str, float]], dim_name: str) -> str:
+            """Build 'dim: a < b < c' string from labelled values."""
+            sorted_pts = sorted(points_list, key=lambda x: x[1])
+            parts = []
+            for i, (lbl, val) in enumerate(sorted_pts):
+                parts.append(f"{lbl}({val:.1f})")
+                if i < len(sorted_pts) - 1:
+                    next_val = sorted_pts[i + 1][1]
+                    parts.append(" < " if val < next_val else " = ")
+            return f"**{dim_name}**: " + "".join(parts)
+
+        _orig_d1 = [(lbl, float(oc[0])) for lbl, oc, _gc in _r6_labelled]
+        _orig_d2 = [(lbl, float(oc[1])) for lbl, oc, _gc in _r6_labelled]
+        _gen_d1 = [(lbl, float(gc[0])) for lbl, _oc, gc in _r6_labelled]
+        _gen_d2 = [(lbl, float(gc[1])) for lbl, _oc, gc in _r6_labelled]
+
+        st.markdown("**Original ordering:**")
+        st.markdown(_build_order_str(_orig_d1, "d1"))
+        st.markdown(_build_order_str(_orig_d2, "d2"))
+        st.markdown("**Generated ordering:**")
+        st.markdown(_build_order_str(_gen_d1, "d1"))
+        st.markdown(_build_order_str(_gen_d2, "d2"))
+
+        # Check for mismatches
+        _orig_d1_order = [lbl for lbl, _ in sorted(_orig_d1, key=lambda x: x[1])]
+        _gen_d1_order = [lbl for lbl, _ in sorted(_gen_d1, key=lambda x: x[1])]
+        _orig_d2_order = [lbl for lbl, _ in sorted(_orig_d2, key=lambda x: x[1])]
+        _gen_d2_order = [lbl for lbl, _ in sorted(_gen_d2, key=lambda x: x[1])]
+        _d1_match = _orig_d1_order == _gen_d1_order
+        _d2_match = _orig_d2_order == _gen_d2_order
+        if _d1_match and _d2_match:
+            st.success("✅ d1 and d2 ordering match")
+        else:
+            _mismatches = []
+            if not _d1_match:
+                _mismatches.append("d1")
+            if not _d2_match:
+                _mismatches.append("d2")
+            st.error(f"❌ Ordering mismatch in: {', '.join(_mismatches)}")
+
+    if st.button("🗑 Clear 6-Event Results", key="clear_r6_results"):
+        st.session_state["_generate_recursive_6event_requested"] = False
+        st.session_state["_generate_recursive_6event_results"] = None
+        st.session_state.pop("_recursive_6event_rounds", None)
+        st.session_state.pop("_recursive_6event_points_plot", None)
+        st.session_state.pop("_recursive_6event_vals_plot", None)
+        st.session_state.pop("_recursive_6event_timestamps", None)
+        st.session_state.pop("_recursive_6event_overtaker", None)
+        st.rerun()
+
 # ============= Drawing (without gridlines) ============
 
 def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
@@ -11175,6 +12001,7 @@ def create_smooth_animation(
     selected_c_int: int,
     xlim: tuple[float, float],
     ylim: tuple[float, float],
+    speed_multiplier: float = 1.0,
 ) -> go.Figure:
     """
     Create a smooth animated trajectory visualization using cubic spline interpolation.
@@ -11287,7 +12114,7 @@ def create_smooth_animation(
             
             # Create cubic spline interpolation for x and y coordinates
             # Use 'natural' boundary condition for smooth ends
-            label = OBJECT_LABELS[obj_id % len(OBJECT_LABELS)]
+            label = OBJECT_LABELS[int(obj_id) % len(OBJECT_LABELS)]
             try:
                 cs_x = CubicSpline(ts, pts[:, 0], bc_type='natural')
                 cs_y = CubicSpline(ts, pts[:, 1], bc_type='natural')
@@ -11455,7 +12282,7 @@ def create_smooth_animation(
                     "label": "▶ Play",
                     "method": "animate",
                     "args": [None, {
-                        "frame": {"duration": 30, "redraw": True},  # Faster frame rate
+                        "frame": {"duration": max(5, int(30 / speed_multiplier)), "redraw": True},
                         "fromcurrent": True,
                         "mode": "immediate",
                         "transition": {"duration": 0}
@@ -11562,7 +12389,7 @@ def draw_original(ax: matplotlib.axes.Axes) -> None:
             label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
             ax.plot(pts[:, 0], pts[:, 1], linewidth=1.2, color=color)  # type: ignore
             annotate_points(ax, pts, vals, label, color)
-    
+
     # Draw lane markings in the original trajectory view (skip for custom uploads)
     current_config = st.session_state.get("anim_current_config", 1)
     if not _is_custom_upload:
@@ -12282,6 +13109,29 @@ with tab_static:
             key="dl_left_png",
         )
 
+        # --- 6-Event table for the original configuration ---
+        if _6ev_vis_map:
+            _ev_rows: list[dict[str, object]] = []
+            _ev_labels = {1: "E1 start", 2: "E2 lane-change", 3: "E3 arrived",
+                          4: "E4 return", 5: "E5 arrived", 6: "E6 end"}
+            _sorted_oids = sorted(all_objects_points.keys())
+            for _ev_t, _ev_num in sorted(_6ev_vis_map.items(), key=lambda x: x[1]):
+                row: dict[str, object] = {"Event": _ev_labels.get(_ev_num, f"E{_ev_num}"), "t": _ev_t}
+                for _i_obj, _oid in enumerate(_sorted_oids):
+                    _lbl = OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]
+                    _pts_o, _ts_o = all_objects_points[_oid]
+                    _tdiffs = np.abs(_ts_o - _ev_t)
+                    _ci = int(np.argmin(_tdiffs))
+                    if _tdiffs[_ci] < 1e-3:
+                        row[f"{_lbl}_x"] = round(float(_pts_o[_ci, 0]), 2)
+                        row[f"{_lbl}_y"] = round(float(_pts_o[_ci, 1]), 2)
+                    else:
+                        row[f"{_lbl}_x"] = "—"
+                        row[f"{_lbl}_y"] = "—"
+                _ev_rows.append(row)
+            st.markdown("**6-Event coordinates (original)**")
+            st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, use_container_width=True)
+
     with col2:
         st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
         _latex_d1 = make_d1_order_latex_generated()
@@ -12365,6 +13215,54 @@ with tab_static:
                 new_cfg = min(max_cfg, current_cfg + 1)
                 _set_display_config(new_cfg)
                 st.rerun()
+
+        # --- 6-Event table for the generated configuration ---
+        if _6ev_vis_map:
+            _gen_sp: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+            # Build generated points array (latest gen point per original index)
+            _gen_latest: dict[int, np.ndarray] = {}
+            for _sp in _gen_sp:
+                _orig_idx = int(_sp["original_parent_idx"])
+                _gen_latest[_orig_idx] = np.array(_sp["point"])
+            _gen_pts_arr = all_pts_flat.copy() if n_total_points > 0 else np.zeros((0, 2))
+            for _fi in range(_gen_pts_arr.shape[0]):
+                if _fi in _gen_latest:
+                    _gen_pts_arr[_fi] = _gen_latest[_fi]
+
+            _ev_rows_g: list[dict[str, object]] = []
+            _ev_labels_g = {1: "E1 start", 2: "E2 lane-change", 3: "E3 arrived",
+                            4: "E4 return", 5: "E5 arrived", 6: "E6 end"}
+            _sorted_oids_g = sorted(all_points_plot.keys())
+            # Map flat indices back: for each object, its points occupy a
+            # contiguous block in all_pts_flat in the order of sorted object ids.
+            _obj_offsets_g: dict[int, int] = {}
+            _off = 0
+            for _oid_g in _sorted_oids_g:
+                _obj_offsets_g[_oid_g] = _off
+                _off += all_points_plot[_oid_g].shape[0]
+
+            for _ev_t, _ev_num in sorted(_6ev_vis_map.items(), key=lambda x: x[1]):
+                row_g: dict[str, object] = {"Event": _ev_labels_g.get(_ev_num, f"E{_ev_num}"), "t": _ev_t}
+                for _i_obj, _oid_g in enumerate(_sorted_oids_g):
+                    _lbl = OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]
+                    _vals_g = all_vals_plot[_oid_g]
+                    _tdiffs_g = np.abs(_vals_g - _ev_t)
+                    _ci_g = int(np.argmin(_tdiffs_g))
+                    if _tdiffs_g[_ci_g] < 1e-3:
+                        _flat_idx = _obj_offsets_g[_oid_g] + _ci_g
+                        if _flat_idx < _gen_pts_arr.shape[0] and _flat_idx in _gen_latest:
+                            row_g[f"{_lbl}_x"] = round(float(_gen_pts_arr[_flat_idx, 0]), 2)
+                            row_g[f"{_lbl}_y"] = round(float(_gen_pts_arr[_flat_idx, 1]), 2)
+                        else:
+                            row_g[f"{_lbl}_x"] = "—"
+                            row_g[f"{_lbl}_y"] = "—"
+                    else:
+                        row_g[f"{_lbl}_x"] = "—"
+                        row_g[f"{_lbl}_y"] = "—"
+                _ev_rows_g.append(row_g)
+            if _gen_sp:
+                st.markdown("**6-Event coordinates (generated)**")
+                st.dataframe(pd.DataFrame(_ev_rows_g), hide_index=True, use_container_width=True)
 
     # ============= Heat Maps for PDP Inequality Matrices ============
     st.markdown("---")
@@ -13966,7 +14864,7 @@ with tab_static:
                 color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
                 label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
                 # Build hover text for each point
-                hover_texts: list[str] = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                hover_texts: list[str] = [f"<b>Original</b><br>Object: {label}<br>Point: {label}_{int(t)}<br>t: {int(t)}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                               for j, t in enumerate(vals)]
                 fig.add_trace(  # type: ignore[call-arg]
                     go.Scatter(
@@ -14037,7 +14935,7 @@ with tab_static:
                     color = OBJECT_COLORS_PLOTLY[i % len(OBJECT_COLORS_PLOTLY)]
                     label = OBJECT_LABELS[i % len(OBJECT_LABELS)]
                     # Build hover text for each point showing config info
-                    hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
+                    hover_texts = [f"<b>{config_label}</b><br>Variant: {variant}<br>Config: C{config_num}<br>Object: {label}<br>Point: {label}_{int(vals[j])}<br>t: {int(vals[j])}<br>d1: {pts[j, 0]:.{COORD_DISPLAY_PRECISION}f}<br>d2: {pts[j, 1]:.{COORD_DISPLAY_PRECISION}f}" 
                                   for j in range(len(pts))]
                     fig.add_trace(  # type: ignore[call-arg]
                         go.Scatter(
@@ -14083,14 +14981,10 @@ with tab_static:
             width=800,
             height=800,
             xaxis=dict(
-                scaleanchor="y",
-                scaleratio=1,
-                constrain="domain",
                 range=[XLIM[0], XLIM[1]],
                 title="d1"
             ),
             yaxis=dict(
-                constrain="domain",
                 range=[YLIM[0], YLIM[1]],
                 title="d2"
             ),
@@ -14134,10 +15028,22 @@ with tab_animation:
         help="Select which configurations to animate. Multiple selections will be shown together in one animation."
     )
 
+    # Animation speed selector
+    _speed_options = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
+    _speed_label = st.select_slider(
+        "Animation speed",
+        options=list(_speed_options.keys()),
+        value="1x",
+        key="anim_speed_selector",
+        help="Controls playback speed. Higher = faster animation.",
+    )
+    _anim_speed = _speed_options[_speed_label]
+
     if st.button("▶ Play Animation", key="btn_smooth_animation", 
                  help="Opens an interactive animation of all selected configurations with smooth trajectories, road boundaries, and lane markings"):
         st.session_state["show_smooth_animation"] = True
         st.session_state["selected_configs_for_anim"] = selected_configs_anim
+        st.session_state["anim_speed_multiplier"] = _anim_speed
 
     # Display the smooth animation if requested
     if st.session_state.get("show_smooth_animation", False):
@@ -14148,6 +15054,7 @@ with tab_animation:
         anim_configs = st.session_state.get("selected_configs_for_anim", ["Original"])
 
         # Create the animation
+        _stored_speed = st.session_state.get("anim_speed_multiplier", 1.0)
         anim_fig = create_smooth_animation(
             all_points_plot=all_points_plot,
             all_vals_plot=all_vals_plot,
@@ -14162,6 +15069,7 @@ with tab_animation:
             selected_c_int=selected_c_int,
             xlim=XLIM,
             ylim=YLIM,
+            speed_multiplier=_stored_speed,
         )
 
         # Display the animation
@@ -14548,8 +15456,6 @@ with tab_slicing:
                     xaxis=dict(
                         title="x",
                         range=[XLIM[0] - 2, XLIM[1] + 2],
-                        scaleanchor="y",
-                        scaleratio=1,
                     ),
                     yaxis=dict(
                         title="y",
