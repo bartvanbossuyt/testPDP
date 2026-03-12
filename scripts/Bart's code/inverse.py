@@ -11783,7 +11783,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _anim_start = st.session_state.get("_6evs_anim_start_idx", 0)
             _anim_frame = _6evs_browse_idx - _anim_start
             _anim_total = _anim_end - _anim_start
-            st.caption(f"Animatie: frame {_anim_frame + 1} / {_anim_total + 1}  |  {'\u23f8 gepauzeerd' if st.session_state.get('_6evs_anim_paused', False) else '\u25b6 speelt'}")
+            _anim_status = "\u23f8 gepauzeerd" if st.session_state.get("_6evs_anim_paused", False) else "\u25b6 speelt"
+            st.caption(f"Animatie: frame {_anim_frame + 1} / {_anim_total + 1}  |  {_anim_status}")
 
     # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
     # Build flat original and generated point arrays for this config
