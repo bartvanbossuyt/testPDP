@@ -7012,6 +7012,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _save_n_total_points = n_total_points
     _save_all_points_plot = all_points_plot
     _save_all_vals_plot = all_vals_plot
+    _save_maxdist = maxdist
 
     all_pts_flat = _6evs_pts_flat
     all_ts_flat = _6evs_ts_flat
@@ -7021,6 +7022,18 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     n_total_points = _6evs_pts_flat.shape[0]
     all_points_plot = _6evs_points_plot
     all_vals_plot = _6evs_vals_plot
+
+    # Recompute maxdist for the 6-event point set (much smaller than full trajectory)
+    _6evs_max_dists = [max_consecutive_dist(pts) for pts in _6evs_points_plot.values()]
+    _6evs_maxdist = max(_6evs_max_dists) if _6evs_max_dists else 0.0
+    if _6evs_maxdist <= 0:
+        # Fallback: use max pairwise distance between all 6-event points
+        if _6evs_pts_flat.shape[0] >= 2:
+            _6evs_pw = pdist(_6evs_pts_flat)
+            _6evs_maxdist = float(_6evs_pw.max()) if _6evs_pw.size > 0 else DEFAULT_MAXDIST_FALLBACK
+        else:
+            _6evs_maxdist = DEFAULT_MAXDIST_FALLBACK
+    maxdist = _6evs_maxdist
 
     try:
         pdp_variant = "fundamental"
@@ -7136,6 +7149,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             "max_retries": _6evs_max_retries,
             "batch_requested": _6evs_batch_count,
             "accumulated_sp": len(successful_points),
+            "maxdist_used": maxdist,
         }
 
         if _6evs_any_success:
@@ -7170,8 +7184,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         n_total_points = _save_n_total_points
         all_points_plot = _save_all_points_plot
         all_vals_plot = _save_all_vals_plot
-
-# ============= Generate 100 configs × 2500 iterations — 4 timestamps (0, 46, 92, 136) ============
+        maxdist = _save_maxdist
 if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
     st.markdown("---")
     _fts_sorted_oids = sorted(all_objects_points.keys())
@@ -11472,13 +11485,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.success(
                 f"✅ Generated **{_6evs_gen_log['configs_created']}** config(s) "
                 f"({_6evs_gen_log['retries_used']} attempts used, "
-                f"{_6evs_gen_log['accumulated_sp']} total successful moves)"
+                f"{_6evs_gen_log['accumulated_sp']} total successful moves, "
+                f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m)"
             )
         else:
             st.error(
                 f"❌ Generation failed after **{_6evs_gen_log['retries_used']}** attempts. "
                 f"No valid PDP-preserving move found. "
                 f"Accumulated moves so far: {_6evs_gen_log['accumulated_sp']}. "
+                f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m. "
                 f"Try clicking again (random selection may succeed)."
             )
 
