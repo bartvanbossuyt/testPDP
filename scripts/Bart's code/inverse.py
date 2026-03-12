@@ -4324,7 +4324,7 @@ def run_multipoint_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
-    max_search_steps: int = 7,
+    max_search_steps: int = 15,
     pdp_checker: Optional[IncrementalPDPChecker] = None,
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
@@ -4470,42 +4470,11 @@ def run_multipoint_iteration(
             dy = new_base_dist * np.sin(new_angle)
             movement_vectors = {idx: (dx, dy) for idx in selected_indices}
     
-    # Max search steps reached without finding PDP match
-    # Fallback: place points EXACTLY at parent position (no movement)
-    # This ensures order preservation when no valid movement exists
-    logger.debug("[DEBUG RUN_MULTIPOINT] Max search steps reached - placing points at parent positions")
-    
-    for idx in selected_indices:
-        # Get parent position, ensuring it's never None
-        parent_pt_candidate: np.ndarray | None = parent_positions.get(idx)
-        if parent_pt_candidate is None:
-            # Fallback: find most recent position from successful_points or use original
-            for sp in reversed(successful_points):
-                if int(sp["original_parent_idx"]) == idx:
-                    parent_pt_candidate = np.array(sp["point"])
-                    break
-            if parent_pt_candidate is None:
-                # Ultimate fallback: use original position from current_points
-                if 0 <= idx < len(current_points):
-                    parent_pt_candidate = np.array(current_points[idx])
-                else:
-                    parent_pt_candidate = np.array([0.0, 0.0])
-        
-        # At this point parent_pt_candidate is guaranteed to be an ndarray
-        parent_pt: np.ndarray = parent_pt_candidate if parent_pt_candidate is not None else np.array([0.0, 0.0])
-        
-        # Place exactly at parent position to preserve all orders
-        iteration_num = len(successful_points) // max(1, len(selected_indices))
-        sp: SuccessfulPoint = {
-            "point": parent_pt.copy(),  # Exact copy of parent position
-            "parent_idx": idx,
-            "parent_point": parent_pt.copy(),
-            "original_parent_idx": idx,
-            "iteration": iteration_num,
-        }
-        successful_points.append(sp)
-    
-    return successful_points, True
+    # Max search steps reached without finding PDP match — report failure.
+    # Do NOT append zero-movement "successful" points; let the caller retry
+    # with a different random point/direction selection.
+    logger.debug("[DEBUG RUN_MULTIPOINT] Max search steps (%d) reached — no PDP-preserving move found", max_search_steps)
+    return successful_points, False
 
 
 def generate_exp_multipoint() -> None:
