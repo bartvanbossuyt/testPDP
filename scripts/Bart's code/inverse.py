@@ -6963,8 +6963,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         "PDP variant": "fundamental",
         "Strategy": "exponential",
         "Timestamps": [0, 34, 67, 183, 213, 249],
-        "Iterations": 1,
-        "Configs": 1,
         "Point selection": "Single point (random)",
         "Y-axis range": "[-10, +10]",
         "X-axis": "data range + 20% margin",
@@ -6972,7 +6970,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         "External points": [list(p) for p in external_points_list] if external_points_list else "none",
     }
     st.caption(
-        f"1 config × 1 iter | exponential | PDP fundamental | {_6evs_ts_info}"
+        f"1 iteration per click | exponential | PDP fundamental | {_6evs_ts_info}"
     )
     with st.expander("⚙️ Chosen settings", expanded=False):
         st.json(_6evs_settings)
@@ -7062,17 +7060,17 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             successful_points: list[SuccessfulPoint] = []
             _next_cnum = 1
 
-        # How many configs to generate in this batch (default 1)
+        # How many iterations to run in this batch (default 1)
         _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
-        _6evs_max_retries = 500  # retry attempts per config
+        _6evs_max_retries = 500  # retry attempts per iteration
 
         _6evs_any_success = False
         _6evs_total_retries_used = 0
-        _6evs_configs_created = 0
+        _6evs_iters_completed = 0
         for _6evs_cfg_i in range(_6evs_batch_count):
             status_text.text(
-                f"6-event — config #{_next_cnum} "
-                f"({'batch ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
+                f"6-event — iteration #{_next_cnum} "
+                f"({'step ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
                 f"trying …"
             )
             progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
@@ -7097,7 +7095,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     break
 
             if _6evs_iter_ok:
-                _6evs_configs_created += 1
+                _6evs_iters_completed += 1
                 config_data = {
                     "successful_points": list(successful_points),
                     "config_number": _next_cnum,
@@ -7111,7 +7109,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 _6evs_existing_results.append((_next_cnum, pv, config_data))
                 _6evs_any_success = True
 
-                # Prepare for next config in the batch: update current_points
+                # Prepare for next iteration in the batch: update current_points
                 _prev_gen_map_batch: dict[int, np.ndarray] = {}
                 for _sp in successful_points:
                     _prev_gen_map_batch[int(_sp["original_parent_idx"])] = _sp["point"]
@@ -7124,8 +7122,8 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 # Could not find a successful move after all retries — stop batch
                 if _6evs_batch_count > 1:
                     status_text.text(
-                        f"Stopped at config #{_next_cnum} after {_6evs_max_retries} failed attempts. "
-                        f"{_6evs_configs_created} configs generated so far."
+                        f"Stopped at iteration #{_next_cnum} after {_6evs_max_retries} failed attempts. "
+                        f"{_6evs_iters_completed} iterations completed so far."
                     )
                 break
 
@@ -7135,7 +7133,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         # Store generation diagnostic log for display near the buttons
         st.session_state["_6evs_gen_log"] = {
             "success": _6evs_any_success,
-            "configs_created": _6evs_configs_created,
+            "iters_completed": _6evs_iters_completed,
             "retries_used": _6evs_total_retries_used,
             "max_retries": _6evs_max_retries,
             "batch_requested": _6evs_batch_count,
@@ -11301,8 +11299,6 @@ if st.session_state.get("_generate_6ev_single_results", None):
             "PDP variant": "fundamental",
             "Strategy": "exponential",
             "Timestamps": [0, 34, 67, 183, 213, 249],
-            "Iterations": 1,
-            "Configs": 1,
             "Point selection": "Single point (random)",
             "Y-axis range": "[-10, +10]",
             "X-axis": "data range + 20% margin",
@@ -11317,13 +11313,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
         st.json(_6evs_settings_display)
 
     # ---- Quick-browse navigation ----
-    _6evs_n_configs = len(_6evs_results)
+    _6evs_n_iters = len(_6evs_results)
     if "_6evs_browse_idx" not in st.session_state:
         st.session_state["_6evs_browse_idx"] = 0
     # Clamp to valid range
     _6evs_browse_idx = int(st.session_state["_6evs_browse_idx"])
-    if _6evs_browse_idx >= _6evs_n_configs:
-        _6evs_browse_idx = _6evs_n_configs - 1
+    if _6evs_browse_idx >= _6evs_n_iters:
+        _6evs_browse_idx = _6evs_n_iters - 1
     if _6evs_browse_idx < 0:
         _6evs_browse_idx = 0
 
@@ -11340,36 +11336,36 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.rerun()
     with nav_col3:
         _6evs_new_idx = st.number_input(
-            "Config", min_value=1, max_value=_6evs_n_configs,
+            "Iteration", min_value=1, max_value=_6evs_n_iters,
             value=_6evs_browse_idx + 1, step=1, key="_6evs_nav_num_input",
             label_visibility="collapsed",
         )
         if int(_6evs_new_idx) - 1 != _6evs_browse_idx:
             st.session_state["_6evs_browse_idx"] = int(_6evs_new_idx) - 1
             st.rerun()
-        st.caption(f"Config {_6evs_browse_idx + 1} / {_6evs_n_configs}")
+        st.caption(f"Iteration {_6evs_browse_idx + 1} / {_6evs_n_iters}")
     with nav_col4:
-        if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
+        if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
             st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 2
             st.rerun()
     with nav_col5:
-        if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
-            st.session_state["_6evs_browse_idx"] = _6evs_n_configs - 1
-            st.session_state["_6evs_nav_num_input"] = _6evs_n_configs
+        if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
+            st.session_state["_6evs_browse_idx"] = _6evs_n_iters - 1
+            st.session_state["_6evs_nav_num_input"] = _6evs_n_iters
             st.rerun()
 
-    # ---- Display the selected config ----
+    # ---- Display the selected iteration ----
     _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
     _6evs_sp = _6evs_cfg.get("successful_points", [])
     _6evs_n_moves = len(_6evs_sp)
     # Count unique point indices that have been moved
     _6evs_unique_moved = len({int(sp["original_parent_idx"]) for sp in _6evs_sp})
     st.markdown(
-        f"#### Configuration #{_6evs_cnum} / {_6evs_n_configs}  "
+        f"#### Iteration #{_6evs_cnum} / {_6evs_n_iters}  "
         f"(PV={_6evs_dev:.6f} m²)  \n"
-        f"**{_6evs_n_moves}** iterations performed — "
-        f"**{_6evs_unique_moved}** unique points moved"
+        f"**{_6evs_n_moves}** point(s) moved — "
+        f"**{_6evs_unique_moved}** unique points"
     )
 
     _6evs_gen_map: dict[int, np.ndarray] = {}
@@ -11459,7 +11455,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     ax_s.legend(fontsize=7, loc='upper left')
     ax_s.set_xlabel("d1 / x-as (m)")
     ax_s.set_ylabel("d2 / y-as (m)")
-    ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}/{_6evs_n_configs}  |  {_6evs_n_moves} iters, {_6evs_unique_moved} pts moved  (PV={_6evs_dev:.6f} m²)")
+    ax_s.set_title(f"6-Event — Iteration #{_6evs_cnum}/{_6evs_n_iters}  |  {_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)")
     ax_s.grid(True, alpha=0.3)
     fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
     buf_s = io.BytesIO()
@@ -11473,9 +11469,9 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _6evs_gen_log is not None:
         if _6evs_gen_log["success"]:
             st.success(
-                f"✅ Generated **{_6evs_gen_log['configs_created']}** config(s) "
+                f"✅ Completed **{_6evs_gen_log['iters_completed']}** iteration(s) "
                 f"({_6evs_gen_log['retries_used']} attempts used, "
-                f"{_6evs_gen_log['accumulated_sp']} total successful moves, "
+                f"{_6evs_gen_log['accumulated_sp']} total point moves, "
                 f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m)"
             )
         else:
@@ -11490,8 +11486,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     # ---- Generate Next / Generate N buttons (right below graph) ----
     _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3 = st.columns([2, 1, 2])
     with _6evs_btn_col1:
-        if st.button("🔄 Generate Next (+1)", key="_6evs_gen_next", type="primary",
-                     help="Run 1 more iteration starting from the currently displayed config"):
+        if st.button("🔄 Next iteration (+1)", key="_6evs_gen_next", type="primary",
+                     help="Pick a random point and move it (1 iteration), starting from the current state"):
             _6evs_cur = _6evs_results[_6evs_browse_idx]
             st.session_state["_6evs_continue_from"] = _6evs_cur
             st.session_state["_6evs_batch_count"] = 1
@@ -11504,8 +11500,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
             key="_6evs_gen_n_input", label_visibility="collapsed",
         )
     with _6evs_btn_col3:
-        if st.button(f"⚡ Generate {_6evs_n_gen} more", key="_6evs_gen_batch",
-                     help=f"Generate {_6evs_n_gen} configs in one batch, each adding 1 point move"):
+        if st.button(f"⚡ {_6evs_n_gen} more iterations", key="_6evs_gen_batch",
+                     help=f"Run {_6evs_n_gen} iterations in one go, each moving 1 random point"):
             _6evs_cur = _6evs_results[_6evs_browse_idx]
             st.session_state["_6evs_continue_from"] = _6evs_cur
             st.session_state["_6evs_batch_count"] = int(_6evs_n_gen)
