@@ -7091,9 +7091,11 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
         # How many configs to generate in this batch (default 1)
         _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
-        _6evs_max_retries = 100  # retry attempts per config
+        _6evs_max_retries = 500  # retry attempts per config
 
         _6evs_any_success = False
+        _6evs_total_retries_used = 0
+        _6evs_configs_created = 0
         for _6evs_cfg_i in range(_6evs_batch_count):
             status_text.text(
                 f"6-event — config #{_next_cnum} "
@@ -7106,6 +7108,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             # point/direction selections until 1 successful move is found.
             _6evs_iter_ok = False
             for _6evs_retry in range(_6evs_max_retries):
+                _6evs_total_retries_used += 1
                 successful_points_candidate, _6evs_ok = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=list(successful_points),  # copy so failed attempts don't mutate
@@ -7121,11 +7124,12 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     break
 
             if _6evs_iter_ok:
+                _6evs_configs_created += 1
                 config_data = {
                     "successful_points": list(successful_points),
                     "config_number": _next_cnum,
                     "pdp_variant": pdp_variant,
-                    "iterations": 1,
+                    "iterations": _next_cnum,
                     "buffer_x": buffer_x, "buffer_y": buffer_y,
                     "rough_x": rough_x, "rough_y": rough_y,
                     "threshold_mode": mode, "max_threshold": max_threshold,
@@ -7148,12 +7152,22 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 if _6evs_batch_count > 1:
                     status_text.text(
                         f"Stopped at config #{_next_cnum} after {_6evs_max_retries} failed attempts. "
-                        f"{len(_6evs_existing_results)} configs generated so far."
+                        f"{_6evs_configs_created} configs generated so far."
                     )
                 break
 
         progress_bar.empty()
         status_text.empty()
+
+        # Store generation diagnostic log for display near the buttons
+        st.session_state["_6evs_gen_log"] = {
+            "success": _6evs_any_success,
+            "configs_created": _6evs_configs_created,
+            "retries_used": _6evs_total_retries_used,
+            "max_retries": _6evs_max_retries,
+            "batch_requested": _6evs_batch_count,
+            "accumulated_sp": len(successful_points),
+        }
 
         if _6evs_any_success:
             st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
@@ -7161,17 +7175,23 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             st.session_state["_6evs_points_plot"] = _6evs_points_plot
             st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
             # Jump to the last generated config
-            st.session_state["_6evs_browse_idx"] = len(_6evs_existing_results) - 1
-            st.session_state.pop("_6evs_nav_num_input", None)  # force widget to accept new value
+            _new_browse = len(_6evs_existing_results) - 1
+            st.session_state["_6evs_browse_idx"] = _new_browse
+            st.session_state["_6evs_nav_num_input"] = _new_browse + 1  # 1-based widget value
             st.rerun()
         else:
-            # Restore previous results if nothing was generated
+            # Restore previous results so display section can show them + the error
             if _6evs_existing_results:
                 st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
                 st.session_state["_6evs_points_plot"] = _6evs_points_plot
                 st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-            st.warning(f"No successful move found after {_6evs_max_retries} attempts. Try again.")
-            st.session_state["_generate_6ev_single_requested"] = False
+                st.session_state["_generate_6ev_single_requested"] = True  # keep True so display section runs
+                st.rerun()  # rerun so the display section shows the failure message near buttons
+            else:
+                # No existing results at all — cannot display anything, avoid infinite rerun loop
+                st.session_state["_generate_6ev_single_requested"] = False
+                st.error(f"❌ Generation failed after {_6evs_max_retries} attempts. No valid PDP-preserving move found. Try again.")
+                # Don't rerun — there's nothing to display
     finally:
         all_pts_flat = _save_all_pts_flat
         all_ts_flat = _save_all_ts_flat
@@ -11339,12 +11359,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with nav_col1:
         if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = 0
-            st.session_state.pop("_6evs_nav_num_input", None)
+            st.session_state["_6evs_nav_num_input"] = 1
             st.rerun()
     with nav_col2:
         if st.button("◀ Prev", key="_6evs_nav_prev", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx - 1
-            st.session_state.pop("_6evs_nav_num_input", None)
+            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx  # already 1-based due to -1
             st.rerun()
     with nav_col3:
         _6evs_new_idx = st.number_input(
@@ -11359,12 +11379,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with nav_col4:
         if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
-            st.session_state.pop("_6evs_nav_num_input", None)
+            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 2
             st.rerun()
     with nav_col5:
         if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_n_configs - 1
-            st.session_state.pop("_6evs_nav_num_input", None)
+            st.session_state["_6evs_nav_num_input"] = _6evs_n_configs
             st.rerun()
 
     # ---- Display the selected config ----
@@ -11475,6 +11495,23 @@ if st.session_state.get("_generate_6ev_single_results", None):
     buf_s.seek(0)
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
+
+    # ---- Show generation log (if any) ----
+    _6evs_gen_log = st.session_state.pop("_6evs_gen_log", None)
+    if _6evs_gen_log is not None:
+        if _6evs_gen_log["success"]:
+            st.success(
+                f"✅ Generated **{_6evs_gen_log['configs_created']}** config(s) "
+                f"({_6evs_gen_log['retries_used']} attempts used, "
+                f"{_6evs_gen_log['accumulated_sp']} total successful moves)"
+            )
+        else:
+            st.error(
+                f"❌ Generation failed after **{_6evs_gen_log['retries_used']}** attempts. "
+                f"No valid PDP-preserving move found. "
+                f"Accumulated moves so far: {_6evs_gen_log['accumulated_sp']}. "
+                f"Try clicking again (random selection may succeed)."
+            )
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
     _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3 = st.columns([2, 1, 2])
