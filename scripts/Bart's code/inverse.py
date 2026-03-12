@@ -7063,9 +7063,30 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
 
         status_text = st.empty()
-        status_text.text("6-event single iteration — generating 1 config × 1 iter...")
 
-        current_points = _6evs_pts_flat.copy()
+        # Check if we are continuing from a previous config
+        _6evs_prev = st.session_state.pop("_6evs_continue_from", None)
+        _6evs_existing_results: list[tuple] = []
+        if _6evs_prev is not None:
+            _prev_cnum, _prev_pv, _prev_cfg = _6evs_prev
+            # Recover previous results list so we can append
+            _6evs_existing_results = list(st.session_state.get("_6evs_prev_results_backup", []))
+            # Build starting points from the previous config's generated points
+            _prev_sp = _prev_cfg.get("successful_points", [])
+            _prev_gen_map: dict[int, np.ndarray] = {}
+            for sp in _prev_sp:
+                _prev_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+            current_points = _6evs_pts_flat.copy()
+            for fidx, pt in _prev_gen_map.items():
+                if 0 <= fidx < len(current_points):
+                    current_points[fidx] = pt
+            _next_cnum = _prev_cnum + 1
+            status_text.text(f"6-event single — generating config #{_next_cnum} from config #{_prev_cnum}...")
+        else:
+            current_points = _6evs_pts_flat.copy()
+            _next_cnum = 1
+            status_text.text("6-event single iteration — generating 1 config × 1 iter...")
+
         successful_points: list[SuccessfulPoint] = []
         successful_points, success = run_multipoint_iteration(
             current_points=current_points,
@@ -7082,7 +7103,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         if successful_points:
             config_data = {
                 "successful_points": successful_points,
-                "config_number": 1,
+                "config_number": _next_cnum,
                 "pdp_variant": pdp_variant,
                 "iterations": 1,
                 "buffer_x": buffer_x, "buffer_y": buffer_y,
@@ -7090,11 +7111,20 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 "threshold_mode": mode, "max_threshold": max_threshold,
             }
             pv = _perpendicular_variance(_6evs_points_plot, successful_points)
-            st.session_state["_generate_6ev_single_results"] = [(1, pv, config_data)]
+            _6evs_existing_results.append((_next_cnum, pv, config_data))
+            st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
+            st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
             st.session_state["_6evs_points_plot"] = _6evs_points_plot
             st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
+            # Jump to the newly generated config
+            st.session_state["_6evs_browse_idx"] = len(_6evs_existing_results) - 1
             st.rerun()
         else:
+            # Restore previous results if continuation failed
+            if _6evs_existing_results:
+                st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
+                st.session_state["_6evs_points_plot"] = _6evs_points_plot
+                st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
             st.warning("No successful point was generated in this iteration. Try again.")
             st.session_state["_generate_6ev_single_requested"] = False
     finally:
@@ -11509,14 +11539,26 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     st.markdown("---")
 
-    if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
-        st.session_state["_generate_6ev_single_requested"] = False
-        st.session_state["_generate_6ev_single_results"] = None
-        st.session_state.pop("_6evs_points_plot", None)
-        st.session_state.pop("_6evs_vals_plot", None)
-        st.session_state.pop("_6evs_browse_idx", None)
-        st.cache_data.clear()
-        st.rerun()
+    _6evs_btn_col1, _6evs_btn_col2 = st.columns(2)
+    with _6evs_btn_col1:
+        if st.button("🔄 Generate Next from Current", key="_6evs_gen_next", type="primary",
+                     help="Run 1 more iteration starting from the currently displayed generated config"):
+            # Store the current config's generated points as starting point
+            _6evs_cur = _6evs_results[_6evs_browse_idx]
+            st.session_state["_6evs_continue_from"] = _6evs_cur  # (cnum, pv, cfg)
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None  # trigger re-generation
+            st.rerun()
+    with _6evs_btn_col2:
+        if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
+            st.session_state["_generate_6ev_single_requested"] = False
+            st.session_state["_generate_6ev_single_results"] = None
+            st.session_state.pop("_6evs_points_plot", None)
+            st.session_state.pop("_6evs_vals_plot", None)
+            st.session_state.pop("_6evs_browse_idx", None)
+            st.session_state.pop("_6evs_continue_from", None)
+            st.cache_data.clear()
+            st.rerun()
 
 # Display 4-timestamps filtered results
 if st.session_state.get("_generate_four_ts_results", None):
