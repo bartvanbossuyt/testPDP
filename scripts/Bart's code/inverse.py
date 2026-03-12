@@ -7089,49 +7089,87 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             successful_points: list[SuccessfulPoint] = []
             _next_cnum = 1
 
-        # Run exactly 1 iteration (1 point moves per click).
-        # Use "Generate Next from Current" button to accumulate iterations one at a time.
-        status_text.text(f"6-event — config #{_next_cnum} | running 1 iteration …")
-        progress_bar.progress(0.5)
-        successful_points, success = run_multipoint_iteration(
-            current_points=current_points,
-            successful_points=successful_points,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-        )
+        # How many configs to generate in this batch (default 1)
+        _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
+        _6evs_max_retries = 100  # retry attempts per config
+
+        _6evs_any_success = False
+        for _6evs_cfg_i in range(_6evs_batch_count):
+            status_text.text(
+                f"6-event — config #{_next_cnum} "
+                f"({'batch ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
+                f"trying …"
+            )
+            progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
+
+            # Retry up to _6evs_max_retries times with different random
+            # point/direction selections until 1 successful move is found.
+            _6evs_iter_ok = False
+            for _6evs_retry in range(_6evs_max_retries):
+                successful_points_candidate, _6evs_ok = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=list(successful_points),  # copy so failed attempts don't mutate
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+                if _6evs_ok:
+                    successful_points = successful_points_candidate
+                    _6evs_iter_ok = True
+                    break
+
+            if _6evs_iter_ok:
+                config_data = {
+                    "successful_points": list(successful_points),
+                    "config_number": _next_cnum,
+                    "pdp_variant": pdp_variant,
+                    "iterations": 1,
+                    "buffer_x": buffer_x, "buffer_y": buffer_y,
+                    "rough_x": rough_x, "rough_y": rough_y,
+                    "threshold_mode": mode, "max_threshold": max_threshold,
+                }
+                pv = _perpendicular_variance(_6evs_points_plot, successful_points)
+                _6evs_existing_results.append((_next_cnum, pv, config_data))
+                _6evs_any_success = True
+
+                # Prepare for next config in the batch: update current_points
+                _prev_gen_map_batch: dict[int, np.ndarray] = {}
+                for _sp in successful_points:
+                    _prev_gen_map_batch[int(_sp["original_parent_idx"])] = _sp["point"]
+                current_points = _6evs_pts_flat.copy()
+                for _fidx, _pt in _prev_gen_map_batch.items():
+                    if 0 <= _fidx < len(current_points):
+                        current_points[_fidx] = _pt
+                _next_cnum += 1
+            else:
+                # Could not find a successful move after all retries — stop batch
+                if _6evs_batch_count > 1:
+                    status_text.text(
+                        f"Stopped at config #{_next_cnum} after {_6evs_max_retries} failed attempts. "
+                        f"{len(_6evs_existing_results)} configs generated so far."
+                    )
+                break
 
         progress_bar.empty()
         status_text.empty()
 
-        if success:
-            config_data = {
-                "successful_points": successful_points,
-                "config_number": _next_cnum,
-                "pdp_variant": pdp_variant,
-                "iterations": 1,
-                "buffer_x": buffer_x, "buffer_y": buffer_y,
-                "rough_x": rough_x, "rough_y": rough_y,
-                "threshold_mode": mode, "max_threshold": max_threshold,
-            }
-            pv = _perpendicular_variance(_6evs_points_plot, successful_points)
-            _6evs_existing_results.append((_next_cnum, pv, config_data))
+        if _6evs_any_success:
             st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
             st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
             st.session_state["_6evs_points_plot"] = _6evs_points_plot
             st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-            # Jump to the newly generated config
+            # Jump to the last generated config
             st.session_state["_6evs_browse_idx"] = len(_6evs_existing_results) - 1
             st.rerun()
         else:
-            # Restore previous results if continuation failed
+            # Restore previous results if nothing was generated
             if _6evs_existing_results:
                 st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
                 st.session_state["_6evs_points_plot"] = _6evs_points_plot
                 st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-            st.warning("No successful point was generated in this iteration. Try again.")
+            st.warning(f"No successful move found after {_6evs_max_retries} attempts. Try again.")
             st.session_state["_generate_6ev_single_requested"] = False
     finally:
         all_pts_flat = _save_all_pts_flat
@@ -11423,14 +11461,31 @@ if st.session_state.get("_generate_6ev_single_results", None):
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
 
-    # ---- Generate Next button (right below graph) ----
-    if st.button("🔄 Generate Next from Current", key="_6evs_gen_next", type="primary",
-                 help="Run 1 more iteration starting from the currently displayed generated config"):
-        _6evs_cur = _6evs_results[_6evs_browse_idx]
-        st.session_state["_6evs_continue_from"] = _6evs_cur
-        st.session_state["_generate_6ev_single_requested"] = True
-        st.session_state["_generate_6ev_single_results"] = None
-        st.rerun()
+    # ---- Generate Next / Generate N buttons (right below graph) ----
+    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3 = st.columns([2, 1, 2])
+    with _6evs_btn_col1:
+        if st.button("🔄 Generate Next (+1)", key="_6evs_gen_next", type="primary",
+                     help="Run 1 more iteration starting from the currently displayed config"):
+            _6evs_cur = _6evs_results[_6evs_browse_idx]
+            st.session_state["_6evs_continue_from"] = _6evs_cur
+            st.session_state["_6evs_batch_count"] = 1
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
+    with _6evs_btn_col2:
+        _6evs_n_gen = st.number_input(
+            "N", min_value=2, max_value=5000, value=10, step=10,
+            key="_6evs_gen_n_input", label_visibility="collapsed",
+        )
+    with _6evs_btn_col3:
+        if st.button(f"⚡ Generate {_6evs_n_gen} more", key="_6evs_gen_batch",
+                     help=f"Generate {_6evs_n_gen} configs in one batch, each adding 1 point move"):
+            _6evs_cur = _6evs_results[_6evs_browse_idx]
+            st.session_state["_6evs_continue_from"] = _6evs_cur
+            st.session_state["_6evs_batch_count"] = int(_6evs_n_gen)
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
 
     # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
     # Build flat original and generated point arrays for this config
