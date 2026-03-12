@@ -7081,55 +7081,37 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             for fidx, pt in _prev_gen_map.items():
                 if 0 <= fidx < len(current_points):
                     current_points[fidx] = pt
+            # Carry over the accumulated successful_points from the previous config
+            successful_points: list[SuccessfulPoint] = list(_prev_sp)
             _next_cnum = _prev_cnum + 1
         else:
             current_points = _6evs_pts_flat.copy()
+            successful_points: list[SuccessfulPoint] = []
             _next_cnum = 1
 
-        # Run 2500 iterations (same as other generation modes), each
-        # building on the previous iteration's successful_points.
-        _6evs_max_iters = 2500
-        _6evs_early_stop_fails = 200  # stop after this many consecutive failed iterations
-        successful_points: list[SuccessfulPoint] = []
-        _6evs_consec_fails = 0
-        _6evs_actual_iters = 0
-        for _6evs_it in range(_6evs_max_iters):
-            status_text.text(
-                f"6-event — config #{_next_cnum} | iter {_6evs_it + 1}/{_6evs_max_iters} "
-                f"| {len(successful_points)} successful moves"
-            )
-            progress_bar.progress((_6evs_it + 1) / _6evs_max_iters)
-            successful_points, success = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-            _6evs_actual_iters = _6evs_it + 1
-            if success:
-                _6evs_consec_fails = 0
-            else:
-                _6evs_consec_fails += 1
-                if _6evs_consec_fails >= _6evs_early_stop_fails:
-                    status_text.text(
-                        f"Early stop after {_6evs_actual_iters} iters "
-                        f"({_6evs_early_stop_fails} consecutive failures) — "
-                        f"{len(successful_points)} successful moves"
-                    )
-                    break
+        # Run exactly 1 iteration (1 point moves per click).
+        # Use "Generate Next from Current" button to accumulate iterations one at a time.
+        status_text.text(f"6-event — config #{_next_cnum} | running 1 iteration …")
+        progress_bar.progress(0.5)
+        successful_points, success = run_multipoint_iteration(
+            current_points=current_points,
+            successful_points=successful_points,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x,
+            buffer_y=buffer_y,
+            rough_x=rough_x,
+            rough_y=rough_y,
+        )
 
         progress_bar.empty()
         status_text.empty()
 
-        if successful_points:
+        if success:
             config_data = {
                 "successful_points": successful_points,
                 "config_number": _next_cnum,
                 "pdp_variant": pdp_variant,
-                "iterations": _6evs_actual_iters,
+                "iterations": 1,
                 "buffer_x": buffer_x, "buffer_y": buffer_y,
                 "rough_x": rough_x, "rough_y": rough_y,
                 "threshold_mode": mode, "max_threshold": max_threshold,
@@ -11268,19 +11250,39 @@ if st.session_state.get("_generate_6ev_single_results", None):
         f"({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
     )
 
-    # Settings summary
-    _6evs_settings_display = {
-        "PDP variant": "fundamental",
-        "Strategy": "exponential",
-        "Timestamps": [0, 34, 67, 183, 213, 249],
-        "Iterations": 1,
-        "Configs": 1,
-        "Point selection": "Single point (random)",
-        "Y-axis range": "[-10, +10]",
-        "X-axis": "data range + 20% margin",
-        "Equal aspect": False,
-    }
+    # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
+        _6evs_show_lanes = st.checkbox("Show lanes", value=st.session_state.get("_6evs_show_lanes", True), key="_6evs_show_lanes")
+        _lane_col1, _lane_col2 = st.columns(2)
+        with _lane_col1:
+            _6evs_lane1_center = st.number_input(
+                "Lane 1 center (y)", value=st.session_state.get("_6evs_lane1_center", 0.0),
+                step=0.5, format="%.1f", key="_6evs_lane1_center",
+            )
+        with _lane_col2:
+            _6evs_lane2_center = st.number_input(
+                "Lane 2 center (y)", value=st.session_state.get("_6evs_lane2_center", -3.0),
+                step=0.5, format="%.1f", key="_6evs_lane2_center",
+            )
+        _6evs_lane_width = 3.0  # fixed 3 m per lane
+        st.caption(f"Lane width: {_6evs_lane_width} m | Lane 1: [{_6evs_lane1_center - _6evs_lane_width/2:.1f}, {_6evs_lane1_center + _6evs_lane_width/2:.1f}] | Lane 2: [{_6evs_lane2_center - _6evs_lane_width/2:.1f}, {_6evs_lane2_center + _6evs_lane_width/2:.1f}]")
+        _6evs_settings_display = {
+            "PDP variant": "fundamental",
+            "Strategy": "exponential",
+            "Timestamps": [0, 34, 67, 183, 213, 249],
+            "Iterations": 1,
+            "Configs": 1,
+            "Point selection": "Single point (random)",
+            "Y-axis range": "[-10, +10]",
+            "X-axis": "data range + 20% margin",
+            "Equal aspect": False,
+            "Lanes": {
+                "show": _6evs_show_lanes,
+                "lane_width": _6evs_lane_width,
+                "lane_1_center_y": _6evs_lane1_center,
+                "lane_2_center_y": _6evs_lane2_center,
+            },
+        }
         st.json(_6evs_settings_display)
 
     # ---- Quick-browse navigation ----
@@ -11371,6 +11373,24 @@ if st.session_state.get("_generate_6ev_single_results", None):
     fig_s = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
     ax_s = fig_s.add_subplot(111)
     # Deliberately NOT setting equal aspect
+
+    # ---- Draw horizontal lanes (if enabled) ----
+    _6evs_show_lanes_val = st.session_state.get("_6evs_show_lanes", True)
+    if _6evs_show_lanes_val:
+        _6evs_lw = 3.0  # lane width in m
+        _6evs_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+        _6evs_l2c = st.session_state.get("_6evs_lane2_center", -3.0)
+        ax_s.axhspan(_6evs_l1c - _6evs_lw / 2, _6evs_l1c + _6evs_lw / 2,
+                     color='#4FC3F7', alpha=0.15, zorder=0, label='Lane 1')
+        ax_s.axhspan(_6evs_l2c - _6evs_lw / 2, _6evs_l2c + _6evs_lw / 2,
+                     color='#81C784', alpha=0.15, zorder=0, label='Lane 2')
+        # Lane boundary lines
+        for _6evs_edge_y in [_6evs_l1c - _6evs_lw / 2, _6evs_l1c + _6evs_lw / 2,
+                              _6evs_l2c - _6evs_lw / 2, _6evs_l2c + _6evs_lw / 2]:
+            ax_s.axhline(_6evs_edge_y, color='gray', linewidth=0.5, linestyle='--', alpha=0.4, zorder=0)
+        # Center dashed lines
+        ax_s.axhline(_6evs_l1c, color='#0288D1', linewidth=0.6, linestyle=':', alpha=0.5, zorder=0)
+        ax_s.axhline(_6evs_l2c, color='#388E3C', linewidth=0.6, linestyle=':', alpha=0.5, zorder=0)
     for idx_o, oid in enumerate(_6evs_sorted_oids):
         orig, gen, ts = _6evs_plot_data[idx_o]
         lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
