@@ -7081,68 +7081,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 _sp_base_map[int(_sp_item["original_parent_idx"])] = _sp_item["point"]
             _6evs_pdp_checker.update_points(_sp_base_map)
 
-        # ---- Safety constraint parameters ----
-        _safe_edge_margin = 1.2   # m from outer road edge
-        _safe_d1_lim = 5.0        # m along driving direction
-        _safe_d2_lim = 2.2        # m perpendicular to driving direction
-        _safe_angle_min = 70.0    # deflection angles in [70, 110] are flagged
-        _safe_angle_max = 110.0
-        _safe_lw = 3.0
-        _safe_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
-        _safe_l2c = st.session_state.get("_6evs_lane2_center", -3.0)
-        _safe_road_top = max(_safe_l1c + _safe_lw / 2, _safe_l2c + _safe_lw / 2)
-        _safe_road_bot = min(_safe_l1c - _safe_lw / 2, _safe_l2c - _safe_lw / 2)
-
-        def _check_safety(sp_list: list) -> bool:
-            """Return True if the configuration formed by sp_list passes all safety checks."""
-            # Build candidate generated config from sp_list
-            _cand = _6evs_pts_flat.copy()
-            for _s in sp_list:
-                _fi = int(_s["original_parent_idx"])
-                if 0 <= _fi < len(_cand):
-                    _cand[_fi] = _s["point"]
-
-            # 1) Road-edge: every point must be >= _safe_edge_margin from outer edge
-            for _fi2 in range(len(_cand)):
-                _y = float(_cand[_fi2, 1])
-                if (_safe_road_top - _y) < _safe_edge_margin or (_y - _safe_road_bot) < _safe_edge_margin:
-                    return False
-
-            # 2) Proximity: for each shared timestamp, |d1|>=5 OR |d2|>=2.2
-            if len(_6evs_sorted_oids) >= 2:
-                _n0 = _6evs_points_plot[_6evs_sorted_oids[0]].shape[0]
-                _n1 = _6evs_points_plot[_6evs_sorted_oids[1]].shape[0]
-                _off0 = 0
-                _off1 = _n0
-                _ts0 = [float(_6evs_vals_plot[_6evs_sorted_oids[0]][i]) for i in range(_n0)]
-                _ts1 = [float(_6evs_vals_plot[_6evs_sorted_oids[1]][i]) for i in range(_n1)]
-                for _i0, _t0 in enumerate(_ts0):
-                    if _t0 in _ts1:
-                        _i1 = _ts1.index(_t0)
-                        _dx = abs(float(_cand[_off0 + _i0, 0]) - float(_cand[_off1 + _i1, 0]))
-                        _dy = abs(float(_cand[_off0 + _i0, 1]) - float(_cand[_off1 + _i1, 1]))
-                        if _dx < _safe_d1_lim and _dy < _safe_d2_lim:
-                            return False
-
-            # 3) Sharp-angle: deflection at intermediate points not in [70,110]
-            _gi3 = 0
-            for _oid3 in _6evs_sorted_oids:
-                _npts3 = _6evs_points_plot[_oid3].shape[0]
-                if _npts3 >= 3:
-                    _pts3 = _cand[_gi3:_gi3 + _npts3]
-                    for _k3 in range(1, _npts3 - 1):
-                        _v1 = _pts3[_k3] - _pts3[_k3 - 1]
-                        _v2 = _pts3[_k3 + 1] - _pts3[_k3]
-                        _l1 = float(np.linalg.norm(_v1))
-                        _l2 = float(np.linalg.norm(_v2))
-                        if _l1 > 1e-9 and _l2 > 1e-9:
-                            _cos = float(np.clip(np.dot(_v1, _v2) / (_l1 * _l2), -1.0, 1.0))
-                            _defl = float(np.degrees(np.arccos(_cos)))
-                            if _safe_angle_min <= _defl <= _safe_angle_max:
-                                return False
-                _gi3 += _npts3
-            return True
-
         _6evs_iters_completed = 0
         _6evs_iters_failed = 0
         for _6evs_cfg_i in range(_6evs_batch_count):
@@ -7154,7 +7092,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
 
             # ONE attempt: pick random point + direction, max 10 halvings.
-            # If PDP fails OR safety constraints are violated, point stays at start.
+            # If PDP fails, point stays at start.
             successful_points_candidate, _6evs_ok = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=list(successful_points),
@@ -7165,20 +7103,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 rough_y=rough_y,
                 pdp_checker=_6evs_pdp_checker,
             )
-
-            # If PDP succeeded, also check safety constraints
-            if _6evs_ok and not _check_safety(successful_points_candidate):
-                # PDP ok but safety violated — undo the checker state
-                _revert_map: dict[int, np.ndarray] = {}
-                for _s_revert in successful_points:
-                    _revert_map[int(_s_revert["original_parent_idx"])] = _s_revert["point"]
-                _cand_idxs = {int(sp["original_parent_idx"]) for sp in successful_points_candidate}
-                _old_idxs = {int(sp["original_parent_idx"]) for sp in successful_points}
-                for _new_idx in _cand_idxs - _old_idxs:
-                    if 0 <= _new_idx < len(_6evs_pts_flat):
-                        _revert_map[_new_idx] = _6evs_pts_flat[_new_idx]
-                _6evs_pdp_checker.update_points(_revert_map)
-                _6evs_ok = False
 
             if _6evs_ok:
                 successful_points = successful_points_candidate
