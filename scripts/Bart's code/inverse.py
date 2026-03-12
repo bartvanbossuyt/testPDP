@@ -7004,6 +7004,10 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _6evs_is_fixed_flat.append(True)
 
     # ------ Swap globals ------
+    # NOTE: maxdist is intentionally NOT swapped — it is computed from ALL 249
+    # timestamps of both objects (line ~3389) which gives a realistic step size.
+    # The 6-event points are a sparse subset; computing maxdist from them gives
+    # unrealistically large values.
     _save_all_pts_flat = all_pts_flat
     _save_all_ts_flat = all_ts_flat
     _save_all_obj_ids_flat = all_obj_ids_flat
@@ -7012,7 +7016,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _save_n_total_points = n_total_points
     _save_all_points_plot = all_points_plot
     _save_all_vals_plot = all_vals_plot
-    _save_maxdist = maxdist
 
     all_pts_flat = _6evs_pts_flat
     all_ts_flat = _6evs_ts_flat
@@ -7022,18 +7025,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     n_total_points = _6evs_pts_flat.shape[0]
     all_points_plot = _6evs_points_plot
     all_vals_plot = _6evs_vals_plot
-
-    # Recompute maxdist for the 6-event point set (much smaller than full trajectory)
-    _6evs_max_dists = [max_consecutive_dist(pts) for pts in _6evs_points_plot.values()]
-    _6evs_maxdist = max(_6evs_max_dists) if _6evs_max_dists else 0.0
-    if _6evs_maxdist <= 0:
-        # Fallback: use max pairwise distance between all 6-event points
-        if _6evs_pts_flat.shape[0] >= 2:
-            _6evs_pw = pdist(_6evs_pts_flat)
-            _6evs_maxdist = float(_6evs_pw.max()) if _6evs_pw.size > 0 else DEFAULT_MAXDIST_FALLBACK
-        else:
-            _6evs_maxdist = DEFAULT_MAXDIST_FALLBACK
-    maxdist = _6evs_maxdist
 
     try:
         pdp_variant = "fundamental"
@@ -7184,7 +7175,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         n_total_points = _save_n_total_points
         all_points_plot = _save_all_points_plot
         all_vals_plot = _save_all_vals_plot
-        maxdist = _save_maxdist
 if st.session_state.get("_generate_four_ts_requested", False) and not st.session_state.get("_generate_four_ts_results", None):
     st.markdown("---")
     _fts_sorted_oids = sorted(all_objects_points.keys())
