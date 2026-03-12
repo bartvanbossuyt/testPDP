@@ -7063,6 +7063,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
 
         status_text = st.empty()
+        progress_bar = st.progress(0)
 
         # Check if we are continuing from a previous config
         _6evs_prev = st.session_state.pop("_6evs_continue_from", None)
@@ -7081,23 +7082,46 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 if 0 <= fidx < len(current_points):
                     current_points[fidx] = pt
             _next_cnum = _prev_cnum + 1
-            status_text.text(f"6-event single — generating config #{_next_cnum} from config #{_prev_cnum}...")
         else:
             current_points = _6evs_pts_flat.copy()
             _next_cnum = 1
-            status_text.text("6-event single iteration — generating 1 config × 1 iter...")
 
+        # Run 2500 iterations (same as other generation modes), each
+        # building on the previous iteration's successful_points.
+        _6evs_max_iters = 2500
+        _6evs_early_stop_fails = 200  # stop after this many consecutive failed iterations
         successful_points: list[SuccessfulPoint] = []
-        successful_points, success = run_multipoint_iteration(
-            current_points=current_points,
-            successful_points=successful_points,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-        )
+        _6evs_consec_fails = 0
+        _6evs_actual_iters = 0
+        for _6evs_it in range(_6evs_max_iters):
+            status_text.text(
+                f"6-event — config #{_next_cnum} | iter {_6evs_it + 1}/{_6evs_max_iters} "
+                f"| {len(successful_points)} successful moves"
+            )
+            progress_bar.progress((_6evs_it + 1) / _6evs_max_iters)
+            successful_points, success = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=successful_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+            )
+            _6evs_actual_iters = _6evs_it + 1
+            if success:
+                _6evs_consec_fails = 0
+            else:
+                _6evs_consec_fails += 1
+                if _6evs_consec_fails >= _6evs_early_stop_fails:
+                    status_text.text(
+                        f"Early stop after {_6evs_actual_iters} iters "
+                        f"({_6evs_early_stop_fails} consecutive failures) — "
+                        f"{len(successful_points)} successful moves"
+                    )
+                    break
 
+        progress_bar.empty()
         status_text.empty()
 
         if successful_points:
@@ -7105,7 +7129,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 "successful_points": successful_points,
                 "config_number": _next_cnum,
                 "pdp_variant": pdp_variant,
-                "iterations": 1,
+                "iterations": _6evs_actual_iters,
                 "buffer_x": buffer_x, "buffer_y": buffer_y,
                 "rough_x": rough_x, "rough_y": rough_y,
                 "threshold_mode": mode, "max_threshold": max_threshold,
@@ -11379,6 +11403,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
 
+    # ---- Generate Next button (right below graph) ----
+    if st.button("🔄 Generate Next from Current", key="_6evs_gen_next", type="primary",
+                 help="Run 1 more iteration starting from the currently displayed generated config"):
+        _6evs_cur = _6evs_results[_6evs_browse_idx]
+        st.session_state["_6evs_continue_from"] = _6evs_cur
+        st.session_state["_generate_6ev_single_requested"] = True
+        st.session_state["_generate_6ev_single_results"] = None
+        st.rerun()
+
     # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
     # Build flat original and generated point arrays for this config
     _6evs_orig_flat_list: list[np.ndarray] = []
@@ -11539,26 +11572,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     st.markdown("---")
 
-    _6evs_btn_col1, _6evs_btn_col2 = st.columns(2)
-    with _6evs_btn_col1:
-        if st.button("🔄 Generate Next from Current", key="_6evs_gen_next", type="primary",
-                     help="Run 1 more iteration starting from the currently displayed generated config"):
-            # Store the current config's generated points as starting point
-            _6evs_cur = _6evs_results[_6evs_browse_idx]
-            st.session_state["_6evs_continue_from"] = _6evs_cur  # (cnum, pv, cfg)
-            st.session_state["_generate_6ev_single_requested"] = True
-            st.session_state["_generate_6ev_single_results"] = None  # trigger re-generation
-            st.rerun()
-    with _6evs_btn_col2:
-        if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
-            st.session_state["_generate_6ev_single_requested"] = False
-            st.session_state["_generate_6ev_single_results"] = None
-            st.session_state.pop("_6evs_points_plot", None)
-            st.session_state.pop("_6evs_vals_plot", None)
-            st.session_state.pop("_6evs_browse_idx", None)
-            st.session_state.pop("_6evs_continue_from", None)
-            st.cache_data.clear()
-            st.rerun()
+    if st.button("Clear 6-Event Single Results", key="clear_6ev_single_results"):
+        st.session_state["_generate_6ev_single_requested"] = False
+        st.session_state["_generate_6ev_single_results"] = None
+        st.session_state.pop("_6evs_points_plot", None)
+        st.session_state.pop("_6evs_vals_plot", None)
+        st.session_state.pop("_6evs_browse_idx", None)
+        st.session_state.pop("_6evs_continue_from", None)
+        st.cache_data.clear()
+        st.rerun()
 
 # Display 4-timestamps filtered results
 if st.session_state.get("_generate_four_ts_results", None):
