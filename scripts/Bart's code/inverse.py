@@ -7162,6 +7162,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
             # Jump to the last generated config
             st.session_state["_6evs_browse_idx"] = len(_6evs_existing_results) - 1
+            st.session_state.pop("_6evs_nav_num_input", None)  # force widget to accept new value
             st.rerun()
         else:
             # Restore previous results if nothing was generated
@@ -11338,10 +11339,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with nav_col1:
         if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = 0
+            st.session_state.pop("_6evs_nav_num_input", None)
             st.rerun()
     with nav_col2:
         if st.button("◀ Prev", key="_6evs_nav_prev", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx - 1
+            st.session_state.pop("_6evs_nav_num_input", None)
             st.rerun()
     with nav_col3:
         _6evs_new_idx = st.number_input(
@@ -11356,17 +11359,27 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with nav_col4:
         if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
+            st.session_state.pop("_6evs_nav_num_input", None)
             st.rerun()
     with nav_col5:
         if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_configs - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_n_configs - 1
+            st.session_state.pop("_6evs_nav_num_input", None)
             st.rerun()
 
     # ---- Display the selected config ----
     _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
-    st.markdown(f"#### Configuration #{_6evs_cnum} (PV={_6evs_dev:.6f} m²)")
-
     _6evs_sp = _6evs_cfg.get("successful_points", [])
+    _6evs_n_moves = len(_6evs_sp)
+    # Count unique point indices that have been moved
+    _6evs_unique_moved = len({int(sp["original_parent_idx"]) for sp in _6evs_sp})
+    st.markdown(
+        f"#### Configuration #{_6evs_cnum} / {_6evs_n_configs}  "
+        f"(PV={_6evs_dev:.6f} m²)  \n"
+        f"**{_6evs_n_moves}** iterations performed — "
+        f"**{_6evs_unique_moved}** unique points moved"
+    )
+
     _6evs_gen_map: dict[int, np.ndarray] = {}
     for sp in _6evs_sp:
         _6evs_gen_map[int(sp["original_parent_idx"])] = sp["point"]
@@ -11452,7 +11465,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     ax_s.legend(fontsize=7, loc='upper left')
     ax_s.set_xlabel("d1 / x-as (m)")
     ax_s.set_ylabel("d2 / y-as (m)")
-    ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}  (PV={_6evs_dev:.6f} m²)")
+    ax_s.set_title(f"6-Event Single Iter — Config #{_6evs_cnum}/{_6evs_n_configs}  |  {_6evs_n_moves} iters, {_6evs_unique_moved} pts moved  (PV={_6evs_dev:.6f} m²)")
     ax_s.grid(True, alpha=0.3)
     fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
     buf_s = io.BytesIO()
