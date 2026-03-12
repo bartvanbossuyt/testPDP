@@ -4324,7 +4324,7 @@ def run_multipoint_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
-    max_search_steps: int = 7,
+    max_search_steps: int = 10,
     pdp_checker: Optional[IncrementalPDPChecker] = None,
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
@@ -7062,7 +7062,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
         # How many iterations to run in this batch (default 1)
         _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
-        _6evs_max_retries = 500  # retry attempts per iteration
 
         # Create IncrementalPDPChecker once for O(k·N) PDP checks instead of O(N²)
         _6evs_pdp_checker = IncrementalPDPChecker(
@@ -7082,107 +7081,157 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 _sp_base_map[int(_sp_item["original_parent_idx"])] = _sp_item["point"]
             _6evs_pdp_checker.update_points(_sp_base_map)
 
-        _6evs_any_success = False
-        _6evs_total_retries_used = 0
+        # ---- Safety constraint parameters ----
+        _safe_edge_margin = 1.2   # m from outer road edge
+        _safe_d1_lim = 5.0        # m along driving direction
+        _safe_d2_lim = 2.2        # m perpendicular to driving direction
+        _safe_angle_min = 70.0    # deflection angles in [70, 110] are flagged
+        _safe_angle_max = 110.0
+        _safe_lw = 3.0
+        _safe_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+        _safe_l2c = st.session_state.get("_6evs_lane2_center", -3.0)
+        _safe_road_top = max(_safe_l1c + _safe_lw / 2, _safe_l2c + _safe_lw / 2)
+        _safe_road_bot = min(_safe_l1c - _safe_lw / 2, _safe_l2c - _safe_lw / 2)
+
+        def _check_safety(sp_list: list) -> bool:
+            """Return True if the configuration formed by sp_list passes all safety checks."""
+            # Build candidate generated config from sp_list
+            _cand = _6evs_pts_flat.copy()
+            for _s in sp_list:
+                _fi = int(_s["original_parent_idx"])
+                if 0 <= _fi < len(_cand):
+                    _cand[_fi] = _s["point"]
+
+            # 1) Road-edge: every point must be >= _safe_edge_margin from outer edge
+            for _fi2 in range(len(_cand)):
+                _y = float(_cand[_fi2, 1])
+                if (_safe_road_top - _y) < _safe_edge_margin or (_y - _safe_road_bot) < _safe_edge_margin:
+                    return False
+
+            # 2) Proximity: for each shared timestamp, |d1|>=5 OR |d2|>=2.2
+            if len(_6evs_sorted_oids) >= 2:
+                _n0 = _6evs_points_plot[_6evs_sorted_oids[0]].shape[0]
+                _n1 = _6evs_points_plot[_6evs_sorted_oids[1]].shape[0]
+                _off0 = 0
+                _off1 = _n0
+                _ts0 = [float(_6evs_vals_plot[_6evs_sorted_oids[0]][i]) for i in range(_n0)]
+                _ts1 = [float(_6evs_vals_plot[_6evs_sorted_oids[1]][i]) for i in range(_n1)]
+                for _i0, _t0 in enumerate(_ts0):
+                    if _t0 in _ts1:
+                        _i1 = _ts1.index(_t0)
+                        _dx = abs(float(_cand[_off0 + _i0, 0]) - float(_cand[_off1 + _i1, 0]))
+                        _dy = abs(float(_cand[_off0 + _i0, 1]) - float(_cand[_off1 + _i1, 1]))
+                        if _dx < _safe_d1_lim and _dy < _safe_d2_lim:
+                            return False
+
+            # 3) Sharp-angle: deflection at intermediate points not in [70,110]
+            _gi3 = 0
+            for _oid3 in _6evs_sorted_oids:
+                _npts3 = _6evs_points_plot[_oid3].shape[0]
+                if _npts3 >= 3:
+                    _pts3 = _cand[_gi3:_gi3 + _npts3]
+                    for _k3 in range(1, _npts3 - 1):
+                        _v1 = _pts3[_k3] - _pts3[_k3 - 1]
+                        _v2 = _pts3[_k3 + 1] - _pts3[_k3]
+                        _l1 = float(np.linalg.norm(_v1))
+                        _l2 = float(np.linalg.norm(_v2))
+                        if _l1 > 1e-9 and _l2 > 1e-9:
+                            _cos = float(np.clip(np.dot(_v1, _v2) / (_l1 * _l2), -1.0, 1.0))
+                            _defl = float(np.degrees(np.arccos(_cos)))
+                            if _safe_angle_min <= _defl <= _safe_angle_max:
+                                return False
+                _gi3 += _npts3
+            return True
+
         _6evs_iters_completed = 0
+        _6evs_iters_failed = 0
         for _6evs_cfg_i in range(_6evs_batch_count):
             status_text.text(
                 f"6-event — iteration #{_next_cnum} "
-                f"({'step ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
+                f"{'step ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
                 f"trying …"
             )
             progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
 
-            # Retry up to _6evs_max_retries times with different random
-            # point/direction selections until 1 successful move is found.
-            _6evs_iter_ok = False
-            for _6evs_retry in range(_6evs_max_retries):
-                _6evs_total_retries_used += 1
-                successful_points_candidate, _6evs_ok = run_multipoint_iteration(
-                    current_points=current_points,
-                    successful_points=list(successful_points),  # copy so failed attempts don't mutate
-                    pdp_variant=pdp_variant,
-                    buffer_x=buffer_x,
-                    buffer_y=buffer_y,
-                    rough_x=rough_x,
-                    rough_y=rough_y,
-                    pdp_checker=_6evs_pdp_checker,
-                )
-                if _6evs_ok:
-                    successful_points = successful_points_candidate
-                    _6evs_iter_ok = True
-                    break
+            # ONE attempt: pick random point + direction, max 10 halvings.
+            # If PDP fails OR safety constraints are violated, point stays at start.
+            successful_points_candidate, _6evs_ok = run_multipoint_iteration(
+                current_points=current_points,
+                successful_points=list(successful_points),
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+                pdp_checker=_6evs_pdp_checker,
+            )
 
-            if _6evs_iter_ok:
-                _6evs_iters_completed += 1
-                config_data = {
-                    "successful_points": list(successful_points),
-                    "config_number": _next_cnum,
-                    "pdp_variant": pdp_variant,
-                    "iterations": _next_cnum,
-                    "buffer_x": buffer_x, "buffer_y": buffer_y,
-                    "rough_x": rough_x, "rough_y": rough_y,
-                    "threshold_mode": mode, "max_threshold": max_threshold,
-                }
-                pv = _perpendicular_variance(_6evs_points_plot, successful_points)
-                _6evs_existing_results.append((_next_cnum, pv, config_data))
-                _6evs_any_success = True
+            # If PDP succeeded, also check safety constraints
+            if _6evs_ok and not _check_safety(successful_points_candidate):
+                # PDP ok but safety violated — undo the checker state
+                _revert_map: dict[int, np.ndarray] = {}
+                for _s_revert in successful_points:
+                    _revert_map[int(_s_revert["original_parent_idx"])] = _s_revert["point"]
+                _cand_idxs = {int(sp["original_parent_idx"]) for sp in successful_points_candidate}
+                _old_idxs = {int(sp["original_parent_idx"]) for sp in successful_points}
+                for _new_idx in _cand_idxs - _old_idxs:
+                    if 0 <= _new_idx < len(_6evs_pts_flat):
+                        _revert_map[_new_idx] = _6evs_pts_flat[_new_idx]
+                _6evs_pdp_checker.update_points(_revert_map)
+                _6evs_ok = False
 
-                # Prepare for next iteration in the batch: update current_points
-                _prev_gen_map_batch: dict[int, np.ndarray] = {}
-                for _sp in successful_points:
-                    _prev_gen_map_batch[int(_sp["original_parent_idx"])] = _sp["point"]
-                current_points = _6evs_pts_flat.copy()
-                for _fidx, _pt in _prev_gen_map_batch.items():
-                    if 0 <= _fidx < len(current_points):
-                        current_points[_fidx] = _pt
-                _next_cnum += 1
+            if _6evs_ok:
+                successful_points = successful_points_candidate
             else:
-                # Could not find a successful move after all retries — stop batch
-                if _6evs_batch_count > 1:
-                    status_text.text(
-                        f"Stopped at iteration #{_next_cnum} after {_6evs_max_retries} failed attempts. "
-                        f"{_6evs_iters_completed} iterations completed so far."
-                    )
-                break
+                _6evs_iters_failed += 1
+
+            # Always record the iteration (successful or not)
+            _6evs_iters_completed += 1
+            config_data = {
+                "successful_points": list(successful_points),
+                "config_number": _next_cnum,
+                "pdp_variant": pdp_variant,
+                "iterations": _next_cnum,
+                "buffer_x": buffer_x, "buffer_y": buffer_y,
+                "rough_x": rough_x, "rough_y": rough_y,
+                "threshold_mode": mode, "max_threshold": max_threshold,
+                "move_succeeded": _6evs_ok,
+            }
+            pv = _perpendicular_variance(_6evs_points_plot, successful_points)
+            _6evs_existing_results.append((_next_cnum, pv, config_data))
+
+            # Prepare for next iteration in the batch: update current_points
+            _prev_gen_map_batch: dict[int, np.ndarray] = {}
+            for _sp in successful_points:
+                _prev_gen_map_batch[int(_sp["original_parent_idx"])] = _sp["point"]
+            current_points = _6evs_pts_flat.copy()
+            for _fidx, _pt in _prev_gen_map_batch.items():
+                if 0 <= _fidx < len(current_points):
+                    current_points[_fidx] = _pt
+            _next_cnum += 1
 
         progress_bar.empty()
         status_text.empty()
 
         # Store generation diagnostic log for display near the buttons
         st.session_state["_6evs_gen_log"] = {
-            "success": _6evs_any_success,
+            "success": True,
             "iters_completed": _6evs_iters_completed,
-            "retries_used": _6evs_total_retries_used,
-            "max_retries": _6evs_max_retries,
+            "iters_failed": _6evs_iters_failed,
             "batch_requested": _6evs_batch_count,
             "accumulated_sp": len(successful_points),
             "maxdist_used": maxdist,
         }
 
-        if _6evs_any_success:
-            st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
-            st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
-            st.session_state["_6evs_points_plot"] = _6evs_points_plot
-            st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-            # Jump to the last generated config
-            _new_browse = len(_6evs_existing_results) - 1
-            st.session_state["_6evs_browse_idx"] = _new_browse
-            st.session_state["_6evs_nav_num_input"] = _new_browse + 1  # 1-based widget value
-            st.rerun()
-        else:
-            # Restore previous results so display section can show them + the error
-            if _6evs_existing_results:
-                st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
-                st.session_state["_6evs_points_plot"] = _6evs_points_plot
-                st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-                st.session_state["_generate_6ev_single_requested"] = True  # keep True so display section runs
-                st.rerun()  # rerun so the display section shows the failure message near buttons
-            else:
-                # No existing results at all — cannot display anything, avoid infinite rerun loop
-                st.session_state["_generate_6ev_single_requested"] = False
-                st.error(f"❌ Generation failed after {_6evs_max_retries} attempts. No valid PDP-preserving move found. Try again.")
-                # Don't rerun — there's nothing to display
+        st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
+        st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
+        st.session_state["_6evs_points_plot"] = _6evs_points_plot
+        st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
+        # Jump to the last generated config
+        _new_browse = len(_6evs_existing_results) - 1
+        st.session_state["_6evs_browse_idx"] = _new_browse
+        st.session_state["_6evs_nav_num_input"] = _new_browse + 1  # 1-based widget value
+        st.rerun()
     finally:
         all_pts_flat = _save_all_pts_flat
         all_ts_flat = _save_all_ts_flat
@@ -11639,7 +11688,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.warning(
                 f"⚠️ **{_6evs_log_completed}** iteratie(s) voltooid — "
                 f"**{_6evs_log_succeeded}** geslaagd, **{_6evs_log_failed}** mislukt "
-                f"(punt bleef op startpositie). "
+                f"(PDP of veiligheidscontrole gefaald — punt bleef op startpositie). "
                 f"{_6evs_gen_log['accumulated_sp']} totaal verplaatste punten, "
                 f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m"
             )
