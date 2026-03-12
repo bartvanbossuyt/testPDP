@@ -7064,6 +7064,24 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
         _6evs_max_retries = 500  # retry attempts per iteration
 
+        # Create IncrementalPDPChecker once for O(k·N) PDP checks instead of O(N²)
+        _6evs_pdp_checker = IncrementalPDPChecker(
+            original_points=_6evs_pts_flat,
+            pdp_variant=pdp_variant,
+            buffer_x=buffer_x if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0,
+            buffer_y=buffer_y if pdp_variant in ("buffer", "bufferrough") else 0.0,
+            rough_x=rough_x if pdp_variant in ("rough", "bufferrough") else 0.0,
+            rough_y=rough_y if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0,
+            match_threshold=pct_threshold,
+            max_mismatches=max_mismatch_val if mode != "Percentage" else None,
+        )
+        # Apply already-accepted successful_points to the checker base state
+        if successful_points:
+            _sp_base_map: dict[int, np.ndarray] = {}
+            for _sp_item in successful_points:
+                _sp_base_map[int(_sp_item["original_parent_idx"])] = _sp_item["point"]
+            _6evs_pdp_checker.update_points(_sp_base_map)
+
         _6evs_any_success = False
         _6evs_total_retries_used = 0
         _6evs_iters_completed = 0
@@ -7088,6 +7106,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     buffer_y=buffer_y,
                     rough_x=rough_x,
                     rough_y=rough_y,
+                    pdp_checker=_6evs_pdp_checker,
                 )
                 if _6evs_ok:
                     successful_points = successful_points_candidate
@@ -11361,12 +11380,36 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_moves = len(_6evs_sp)
     # Count unique point indices that have been moved
     _6evs_unique_moved = len({int(sp["original_parent_idx"]) for sp in _6evs_sp})
+
+    # --- Determine which object/timestamp was moved in THIS iteration ---
+    # Build flat-index → (object_id, timestamp) mapping
+    _6evs_flat_to_obj_ts: list[tuple[int, float]] = []
+    _6evs_gi_map = 0
+    for _oid_map in _6evs_sorted_oids:
+        for _li_map in range(_6evs_pp[_oid_map].shape[0]):
+            _6evs_flat_to_obj_ts.append((_oid_map, float(_6evs_vp[_oid_map][_li_map])))
+        _6evs_gi_map += _6evs_pp[_oid_map].shape[0]
+    # The last sp entry in the cumulative list is the point moved in this iteration
+    _6evs_moved_info = ""
+    if _6evs_sp:
+        _6evs_last_sp = _6evs_sp[-1]
+        _6evs_moved_fidx = int(_6evs_last_sp["original_parent_idx"])
+        if 0 <= _6evs_moved_fidx < len(_6evs_flat_to_obj_ts):
+            _mv_oid, _mv_ts = _6evs_flat_to_obj_ts[_6evs_moved_fidx]
+            _mv_lbl = OBJECT_LABELS[int(_mv_oid) % len(OBJECT_LABELS)]
+            _mv_parent = _6evs_last_sp.get("parent_point")
+            _mv_new = _6evs_last_sp.get("point")
+            _mv_dist = float(np.linalg.norm(np.asarray(_mv_new) - np.asarray(_mv_parent))) if _mv_parent is not None and _mv_new is not None else 0.0
+            _6evs_moved_info = f"🔄 Iteration #{_6evs_cnum}: moved **{_mv_lbl}** at **t={int(_mv_ts)}** (flat idx {_6evs_moved_fidx}) — Δ = {_mv_dist:.4f} m"
+
     st.markdown(
         f"#### Iteration #{_6evs_cnum} / {_6evs_n_iters}  "
         f"(PV={_6evs_dev:.6f} m²)  \n"
         f"**{_6evs_n_moves}** point(s) moved — "
         f"**{_6evs_unique_moved}** unique points"
     )
+    if _6evs_moved_info:
+        st.info(_6evs_moved_info)
 
     _6evs_gen_map: dict[int, np.ndarray] = {}
     for sp in _6evs_sp:
@@ -11464,34 +11507,75 @@ if st.session_state.get("_generate_6ev_single_results", None):
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
 
-    # ---- Sanity checks: road boundary & trajectory angle alerts ----
+    # ---- Sanity checks: road boundary, proximity & trajectory angle alerts ----
     _6evs_alerts: list[str] = []
 
-    # 1) Road boundary check — are any generated points outside the road?
+    # 1) Road-edge proximity — flag points within 1.2 m of the outer road edge
+    _6evs_edge_margin = 1.2  # metres
     if _6evs_show_lanes_val:
         _6evs_lw_chk = 3.0
         _6evs_l1c_chk = st.session_state.get("_6evs_lane1_center", 0.0)
         _6evs_l2c_chk = st.session_state.get("_6evs_lane2_center", -3.0)
         _6evs_road_top_chk = max(_6evs_l1c_chk + _6evs_lw_chk / 2, _6evs_l2c_chk + _6evs_lw_chk / 2)
         _6evs_road_bot_chk = min(_6evs_l1c_chk - _6evs_lw_chk / 2, _6evs_l2c_chk - _6evs_lw_chk / 2)
-        _6evs_offroad: list[str] = []
+        _6evs_near_edge: list[str] = []
         for idx_chk, oid_chk in enumerate(_6evs_sorted_oids):
             _orig_chk, _gen_chk, _ts_chk = _6evs_plot_data[idx_chk]
             lbl_chk = OBJECT_LABELS[int(oid_chk) % len(OBJECT_LABELS)]
             for li_chk in range(_gen_chk.shape[0]):
                 y_chk = float(_gen_chk[li_chk, 1])
-                if y_chk > _6evs_road_top_chk or y_chk < _6evs_road_bot_chk:
-                    _6evs_offroad.append(
-                        f"**{lbl_chk}** t={int(_ts_chk[li_chk])}: y={y_chk:.2f}m "
-                        f"(road: [{_6evs_road_bot_chk:.1f}, {_6evs_road_top_chk:.1f}])"
+                dist_top = _6evs_road_top_chk - y_chk
+                dist_bot = y_chk - _6evs_road_bot_chk
+                min_edge_dist = min(dist_top, dist_bot)
+                if min_edge_dist < _6evs_edge_margin:
+                    side = "boven" if dist_top < dist_bot else "onder"
+                    _6evs_near_edge.append(
+                        f"**{lbl_chk}** t={int(_ts_chk[li_chk])}: y={y_chk:.2f}m — "
+                        f"{min_edge_dist:.2f}m van {side}rand "
+                        f"(weg: [{_6evs_road_bot_chk:.1f}, {_6evs_road_top_chk:.1f}])"
                     )
-        if _6evs_offroad:
+        if _6evs_near_edge:
             _6evs_alerts.append(
-                "🚧 **Points off-road!** The following generated event points "
-                "are outside the road boundaries:\n- " + "\n- ".join(_6evs_offroad)
+                f"🚧 **Punt(en) dicht bij wegrand!** (<{_6evs_edge_margin}m van buitenrand)\n- "
+                + "\n- ".join(_6evs_near_edge)
             )
 
-    # 2) Sharp-angle check — detect unrealistically sharp turns in overtaking
+    # 2) d1/d2 proximity check — flag when objects are too close at the same timestamp
+    #    Condition: |d1| < 5 m AND |d2| < 2.2 m simultaneously
+    _6evs_prox_d1_lim = 5.0   # metres along driving direction (x)
+    _6evs_prox_d2_lim = 2.2   # metres perpendicular to driving direction (y)
+    if len(_6evs_sorted_oids) >= 2:
+        # Build per-timestamp generated positions for each object
+        _obj0_idx = 0
+        _obj1_idx = 1
+        _gen0 = _6evs_plot_data[_obj0_idx][1]  # generated points object 0
+        _ts0 = _6evs_plot_data[_obj0_idx][2]
+        _gen1 = _6evs_plot_data[_obj1_idx][1]  # generated points object 1
+        _ts1 = _6evs_plot_data[_obj1_idx][2]
+        _lbl0 = OBJECT_LABELS[int(_6evs_sorted_oids[_obj0_idx]) % len(OBJECT_LABELS)]
+        _lbl1 = OBJECT_LABELS[int(_6evs_sorted_oids[_obj1_idx]) % len(OBJECT_LABELS)]
+        _6evs_prox: list[str] = []
+        # Match timestamps between both objects
+        _ts0_list = [float(t) for t in _ts0]
+        _ts1_list = [float(t) for t in _ts1]
+        for _pi0, _t0 in enumerate(_ts0_list):
+            if _t0 in _ts1_list:
+                _pi1 = _ts1_list.index(_t0)
+                _dx = abs(float(_gen0[_pi0, 0]) - float(_gen1[_pi1, 0]))
+                _dy = abs(float(_gen0[_pi0, 1]) - float(_gen1[_pi1, 1]))
+                if _dx < _6evs_prox_d1_lim and _dy < _6evs_prox_d2_lim:
+                    _6evs_prox.append(
+                        f"t={int(_t0)}: d1={_dx:.2f}m, d2={_dy:.2f}m "
+                        f"(limiet: d1<{_6evs_prox_d1_lim}m EN d2<{_6evs_prox_d2_lim}m)"
+                    )
+        if _6evs_prox:
+            _6evs_alerts.append(
+                f"⚠️ **Objecten te dicht bij!** {_lbl0} en {_lbl1} bevinden zich "
+                f"op de volgende timestamps te dicht bij elkaar:\n- "
+                + "\n- ".join(_6evs_prox)
+            )
+
+    # 3) Sharp-angle check — detect unrealistically sharp turns in overtaking
     #    Compute the deflection angle at each intermediate point of each generated
     #    trajectory.  A deflection near 90° (or equivalently an interior angle of
     #    90° / 270°) means the vehicle turns nearly perpendicular — completely
