@@ -6965,7 +6965,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             _6evs_pdp_variant = st.selectbox(
                 "PDP variant",
                 options=["fundamental", "realistic", "buffer", "rough", "bufferrough"],
-                index=1,  # default = realistic
+                index=0,  # default = fundamental (strict order match)
                 key="_6evs_pdp_variant",
                 help="PDP variant used to accept/reject moves.\n\n"
                      "• **fundamental**: strict ordering, no tolerance\n"
@@ -7066,7 +7066,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     all_vals_plot = _6evs_vals_plot
 
     try:
-        pdp_variant = st.session_state.get("_6evs_pdp_variant", "realistic")
+        pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
         buffer_x = st.session_state.get("_6evs_buffer_x", 1.5) if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0
         buffer_y = 0.0
         rough_x = 0.0
@@ -11307,7 +11307,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_per_obj = {oid: _6evs_pp[oid].shape[0] for oid in _6evs_sorted_oids}
     _6evs_n_total = sum(_6evs_n_per_obj.values())
     st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
-    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant", "realistic")
+    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
     _6evs_disp_bx = st.session_state.get("_6evs_buffer_x", 1.5)
     _6evs_disp_ry = st.session_state.get("_6evs_rough_y", 0.4)
     st.markdown(
@@ -11335,7 +11335,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_lane_width = 3.0  # fixed 3 m per lane
         st.caption(f"Lane width: {_6evs_lane_width} m | Lane 1: [{_6evs_lane1_center - _6evs_lane_width/2:.1f}, {_6evs_lane1_center + _6evs_lane_width/2:.1f}] | Lane 2: [{_6evs_lane2_center - _6evs_lane_width/2:.1f}, {_6evs_lane2_center + _6evs_lane_width/2:.1f}]")
         _6evs_settings_display = {
-            "PDP variant": st.session_state.get("_6evs_pdp_variant", "realistic"),
+            "PDP variant": st.session_state.get("_6evs_pdp_variant", "fundamental"),
             "Buffer X": st.session_state.get("_6evs_buffer_x", 1.5),
             "Rough Y": st.session_state.get("_6evs_rough_y", 0.4),
             "Strategy": "exponential",
