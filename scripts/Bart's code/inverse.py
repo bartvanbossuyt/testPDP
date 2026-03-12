@@ -11389,9 +11389,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
         for _li_map in range(_6evs_pp[_oid_map].shape[0]):
             _6evs_flat_to_obj_ts.append((_oid_map, float(_6evs_vp[_oid_map][_li_map])))
         _6evs_gi_map += _6evs_pp[_oid_map].shape[0]
+    _6evs_move_succeeded = _6evs_cfg.get("move_succeeded", True)
     # The last sp entry in the cumulative list is the point moved in this iteration
     _6evs_moved_info = ""
-    if _6evs_sp:
+    if _6evs_sp and _6evs_move_succeeded:
         _6evs_last_sp = _6evs_sp[-1]
         _6evs_moved_fidx = int(_6evs_last_sp["original_parent_idx"])
         if 0 <= _6evs_moved_fidx < len(_6evs_flat_to_obj_ts):
@@ -11401,6 +11402,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _mv_new = _6evs_last_sp.get("point")
             _mv_dist = float(np.linalg.norm(np.asarray(_mv_new) - np.asarray(_mv_parent))) if _mv_parent is not None and _mv_new is not None else 0.0
             _6evs_moved_info = f"🔄 Iteration #{_6evs_cnum}: moved **{_mv_lbl}** at **t={int(_mv_ts)}** (flat idx {_6evs_moved_fidx}) — Δ = {_mv_dist:.4f} m"
+    elif not _6evs_move_succeeded:
+        _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **mislukt** — punt bleef op startpositie (7 halveringen zonder geldige PDP-move)"
 
     st.markdown(
         f"#### Iteration #{_6evs_cnum} / {_6evs_n_iters}  "
@@ -11409,7 +11412,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
         f"**{_6evs_unique_moved}** unique points"
     )
     if _6evs_moved_info:
-        st.info(_6evs_moved_info)
+        if _6evs_move_succeeded:
+            st.info(_6evs_moved_info)
+        else:
+            st.warning(_6evs_moved_info)
 
     _6evs_gen_map: dict[int, np.ndarray] = {}
     for sp in _6evs_sp:
@@ -11619,20 +11625,23 @@ if st.session_state.get("_generate_6ev_single_results", None):
     # ---- Show generation log (if any) ----
     _6evs_gen_log = st.session_state.pop("_6evs_gen_log", None)
     if _6evs_gen_log is not None:
-        if _6evs_gen_log["success"]:
+        _6evs_log_failed = _6evs_gen_log.get('iters_failed', 0)
+        _6evs_log_completed = _6evs_gen_log.get('iters_completed', 0)
+        _6evs_log_succeeded = _6evs_log_completed - _6evs_log_failed
+        if _6evs_log_failed == 0:
             st.success(
-                f"✅ Completed **{_6evs_gen_log['iters_completed']}** iteration(s) "
-                f"({_6evs_gen_log['retries_used']} attempts used, "
-                f"{_6evs_gen_log['accumulated_sp']} total point moves, "
+                f"✅ **{_6evs_log_completed}** iteratie(s) voltooid — "
+                f"alle moves geslaagd "
+                f"({_6evs_gen_log['accumulated_sp']} totaal verplaatste punten, "
                 f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m)"
             )
         else:
-            st.error(
-                f"❌ Generation failed after **{_6evs_gen_log['retries_used']}** attempts. "
-                f"No valid PDP-preserving move found. "
-                f"Accumulated moves so far: {_6evs_gen_log['accumulated_sp']}. "
-                f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m. "
-                f"Try clicking again (random selection may succeed)."
+            st.warning(
+                f"⚠️ **{_6evs_log_completed}** iteratie(s) voltooid — "
+                f"**{_6evs_log_succeeded}** geslaagd, **{_6evs_log_failed}** mislukt "
+                f"(punt bleef op startpositie). "
+                f"{_6evs_gen_log['accumulated_sp']} totaal verplaatste punten, "
+                f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m"
             )
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
