@@ -4324,7 +4324,7 @@ def run_multipoint_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
-    max_search_steps: int = 15,
+    max_search_steps: int = 7,
     pdp_checker: Optional[IncrementalPDPChecker] = None,
 ) -> tuple[list[SuccessfulPoint], bool]:
     """
