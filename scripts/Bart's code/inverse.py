@@ -11364,6 +11364,33 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _6evs_browse_idx < 0:
         _6evs_browse_idx = 0
 
+    # ---- Check if animation just finished generating; activate playback ----
+    if st.session_state.pop("_6evs_anim_pending", False):
+        st.session_state["_6evs_anim_active"] = True
+        st.session_state["_6evs_anim_paused"] = False
+        _anim_start_idx = st.session_state.get("_6evs_anim_start_idx", 0)
+        st.session_state["_6evs_anim_end_idx"] = _6evs_n_iters - 1
+        # Jump to first frame of the animation (the one after the start)
+        _first_anim = min(_anim_start_idx + 1, _6evs_n_iters - 1)
+        st.session_state["_6evs_browse_idx"] = _first_anim
+        st.session_state["_6evs_nav_num_input"] = _first_anim + 1
+        _6evs_browse_idx = _first_anim
+
+    # ---- Animation auto-advance ----
+    _6evs_anim_active = st.session_state.get("_6evs_anim_active", False)
+    if _6evs_anim_active and not st.session_state.get("_6evs_anim_paused", False):
+        _anim_end_idx = st.session_state.get("_6evs_anim_end_idx", _6evs_n_iters - 1)
+        if _6evs_browse_idx < _anim_end_idx:
+            _anim_wait = st.session_state.get("_6evs_anim_speed_val", 10.0)
+            time.sleep(_anim_wait)
+            st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
+            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 2
+            st.rerun()
+        else:
+            # Reached the end: stop animation
+            st.session_state["_6evs_anim_active"] = False
+            st.session_state["_6evs_anim_paused"] = False
+
     nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 3, 1, 1])
     with nav_col1:
         if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
@@ -11691,6 +11718,72 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.session_state["_generate_6ev_single_requested"] = True
             st.session_state["_generate_6ev_single_results"] = None
             st.rerun()
+
+    # ---- Animation row ----
+    _6evs_anim_active = st.session_state.get("_6evs_anim_active", False)
+    st.markdown("---")
+    _anim_col1, _anim_col2, _anim_col3 = st.columns([1, 1, 1], gap="small")
+    with _anim_col1:
+        _6evs_anim_n = st.number_input(
+            "Anim. iterations", min_value=2, max_value=5000, value=100, step=10,
+            key="_6evs_anim_n_input", label_visibility="collapsed",
+            help="Number of iterations to generate and then animate through.",
+            disabled=_6evs_anim_active,
+        )
+    with _anim_col2:
+        _6evs_anim_speed = st.number_input(
+            "Sec/frame", min_value=0.5, max_value=30.0, value=10.0, step=0.5,
+            format="%.1f", key="_6evs_anim_speed", label_visibility="collapsed",
+            help="Seconds to display each iteration before advancing.",
+            disabled=_6evs_anim_active,
+        )
+    with _anim_col3:
+        if not _6evs_anim_active:
+            if st.button(f"\u25b6 Animate {int(_6evs_anim_n)} iters ({_6evs_anim_speed}s/frame)",
+                         key="_6evs_anim_start",
+                         help="Generate iterations in batch, then play back one by one."):
+                # Generate the batch first
+                _6evs_cur = _6evs_results[_6evs_browse_idx]
+                st.session_state["_6evs_continue_from"] = _6evs_cur
+                st.session_state["_6evs_batch_count"] = int(_6evs_anim_n)
+                st.session_state["_6evs_anim_pending"] = True  # flag to start anim after generation
+                st.session_state["_6evs_anim_speed_val"] = float(_6evs_anim_speed)
+                st.session_state["_6evs_anim_start_idx"] = _6evs_browse_idx  # first frame of animation
+                st.session_state["_generate_6ev_single_requested"] = True
+                st.session_state["_generate_6ev_single_results"] = None
+                st.rerun()
+
+    # Animation transport controls (shown when active)
+    if _6evs_anim_active:
+        _ac1, _ac2, _ac3, _ac4 = st.columns([1, 1, 1, 2], gap="small")
+        with _ac1:
+            if st.button("\u23ee Back", key="_6evs_anim_back"):
+                _new = max(0, _6evs_browse_idx - 1)
+                st.session_state["_6evs_browse_idx"] = _new
+                st.session_state["_6evs_nav_num_input"] = _new + 1
+                st.session_state["_6evs_anim_paused"] = True  # pause after manual back
+                st.rerun()
+        with _ac2:
+            _paused = st.session_state.get("_6evs_anim_paused", False)
+            if _paused:
+                if st.button("\u25b6 Resume", key="_6evs_anim_resume", type="primary"):
+                    st.session_state["_6evs_anim_paused"] = False
+                    st.rerun()
+            else:
+                if st.button("\u23f8 Pause", key="_6evs_anim_pause"):
+                    st.session_state["_6evs_anim_paused"] = True
+                    st.rerun()
+        with _ac3:
+            if st.button("\u23f9 Stop", key="_6evs_anim_stop"):
+                st.session_state["_6evs_anim_active"] = False
+                st.session_state["_6evs_anim_paused"] = False
+                st.rerun()
+        with _ac4:
+            _anim_end = st.session_state.get("_6evs_anim_end_idx", _6evs_n_iters - 1)
+            _anim_start = st.session_state.get("_6evs_anim_start_idx", 0)
+            _anim_frame = _6evs_browse_idx - _anim_start
+            _anim_total = _anim_end - _anim_start
+            st.caption(f"Animatie: frame {_anim_frame + 1} / {_anim_total + 1}  |  {'\u23f8 gepauzeerd' if st.session_state.get('_6evs_anim_paused', False) else '\u25b6 speelt'}")
 
     # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
     # Build flat original and generated point arrays for this config
