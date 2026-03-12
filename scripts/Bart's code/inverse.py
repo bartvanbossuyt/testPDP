@@ -11464,6 +11464,74 @@ if st.session_state.get("_generate_6ev_single_results", None):
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
 
+    # ---- Sanity checks: road boundary & trajectory angle alerts ----
+    _6evs_alerts: list[str] = []
+
+    # 1) Road boundary check — are any generated points outside the road?
+    if _6evs_show_lanes_val:
+        _6evs_lw_chk = 3.0
+        _6evs_l1c_chk = st.session_state.get("_6evs_lane1_center", 0.0)
+        _6evs_l2c_chk = st.session_state.get("_6evs_lane2_center", -3.0)
+        _6evs_road_top_chk = max(_6evs_l1c_chk + _6evs_lw_chk / 2, _6evs_l2c_chk + _6evs_lw_chk / 2)
+        _6evs_road_bot_chk = min(_6evs_l1c_chk - _6evs_lw_chk / 2, _6evs_l2c_chk - _6evs_lw_chk / 2)
+        _6evs_offroad: list[str] = []
+        for idx_chk, oid_chk in enumerate(_6evs_sorted_oids):
+            _orig_chk, _gen_chk, _ts_chk = _6evs_plot_data[idx_chk]
+            lbl_chk = OBJECT_LABELS[int(oid_chk) % len(OBJECT_LABELS)]
+            for li_chk in range(_gen_chk.shape[0]):
+                y_chk = float(_gen_chk[li_chk, 1])
+                if y_chk > _6evs_road_top_chk or y_chk < _6evs_road_bot_chk:
+                    _6evs_offroad.append(
+                        f"**{lbl_chk}** t={int(_ts_chk[li_chk])}: y={y_chk:.2f}m "
+                        f"(road: [{_6evs_road_bot_chk:.1f}, {_6evs_road_top_chk:.1f}])"
+                    )
+        if _6evs_offroad:
+            _6evs_alerts.append(
+                "🚧 **Points off-road!** The following generated event points "
+                "are outside the road boundaries:\n- " + "\n- ".join(_6evs_offroad)
+            )
+
+    # 2) Straight-angle check — detect unrealistically straight overtaking segments
+    #    Compute the interior angle at each intermediate point of each generated
+    #    trajectory.  An angle close to 180° means the trajectory is nearly a
+    #    straight line through that point, which is unrealistic for a lane-change
+    #    manoeuvre.
+    _6evs_angle_thresh_deg = 170.0  # degrees — flag if any angle >= this
+    _6evs_straight: list[str] = []
+    for idx_chk, oid_chk in enumerate(_6evs_sorted_oids):
+        _orig_chk, _gen_chk, _ts_chk = _6evs_plot_data[idx_chk]
+        lbl_chk = OBJECT_LABELS[int(oid_chk) % len(OBJECT_LABELS)]
+        n_gen = _gen_chk.shape[0]
+        if n_gen < 3:
+            continue
+        for li_chk in range(1, n_gen - 1):
+            v1 = _gen_chk[li_chk] - _gen_chk[li_chk - 1]      # incoming segment
+            v2 = _gen_chk[li_chk + 1] - _gen_chk[li_chk]        # outgoing segment
+            len1 = float(np.linalg.norm(v1))
+            len2 = float(np.linalg.norm(v2))
+            if len1 < 1e-9 or len2 < 1e-9:
+                continue  # skip degenerate (zero-length) segments
+            cos_angle = float(np.clip(np.dot(v1, v2) / (len1 * len2), -1.0, 1.0))
+            # deflection = 0° means perfectly straight (cos=1); 180° = U-turn (cos=-1)
+            deflection_deg = float(np.degrees(np.arccos(cos_angle)))
+            # "straightness" = how close to a straight line = 180° - deflection
+            straightness = 180.0 - deflection_deg
+            if straightness >= _6evs_angle_thresh_deg:
+                _6evs_straight.append(
+                    f"**{lbl_chk}** at t={int(_ts_chk[li_chk])}: "
+                    f"angle ≈ {straightness:.1f}° (nearly straight)"
+                )
+    if _6evs_straight:
+        _6evs_alerts.append(
+            f"📐 **Nearly straight trajectory!** Angles ≥ {_6evs_angle_thresh_deg}° "
+            f"detected — this may indicate an unrealistic overtaking path:\n- "
+            + "\n- ".join(_6evs_straight)
+        )
+
+    # Show all alerts
+    for _alert_msg in _6evs_alerts:
+        st.warning(_alert_msg)
+
     # ---- Show generation log (if any) ----
     _6evs_gen_log = st.session_state.pop("_6evs_gen_log", None)
     if _6evs_gen_log is not None:
