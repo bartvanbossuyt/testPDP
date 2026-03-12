@@ -11431,17 +11431,19 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_lw = 3.0  # lane width in m
         _6evs_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
         _6evs_l2c = st.session_state.get("_6evs_lane2_center", -3.0)
+        # Road surface: both lanes in dark-gray (#A9A9A9)
         ax_s.axhspan(_6evs_l1c - _6evs_lw / 2, _6evs_l1c + _6evs_lw / 2,
-                     color='#4FC3F7', alpha=0.15, zorder=0, label='Lane 1')
+                     color='#A9A9A9', alpha=0.35, zorder=0)
         ax_s.axhspan(_6evs_l2c - _6evs_lw / 2, _6evs_l2c + _6evs_lw / 2,
-                     color='#81C784', alpha=0.15, zorder=0, label='Lane 2')
-        # Lane boundary lines
-        for _6evs_edge_y in [_6evs_l1c - _6evs_lw / 2, _6evs_l1c + _6evs_lw / 2,
-                              _6evs_l2c - _6evs_lw / 2, _6evs_l2c + _6evs_lw / 2]:
-            ax_s.axhline(_6evs_edge_y, color='gray', linewidth=0.5, linestyle='--', alpha=0.4, zorder=0)
-        # Center dashed lines
-        ax_s.axhline(_6evs_l1c, color='#0288D1', linewidth=0.6, linestyle=':', alpha=0.5, zorder=0)
-        ax_s.axhline(_6evs_l2c, color='#388E3C', linewidth=0.6, linestyle=':', alpha=0.5, zorder=0)
+                     color='#A9A9A9', alpha=0.35, zorder=0)
+        # Outer road edges: solid black lines
+        _6evs_road_top = max(_6evs_l1c + _6evs_lw / 2, _6evs_l2c + _6evs_lw / 2)
+        _6evs_road_bot = min(_6evs_l1c - _6evs_lw / 2, _6evs_l2c - _6evs_lw / 2)
+        ax_s.axhline(_6evs_road_top, color='black', linewidth=1.0, linestyle='-', zorder=1)
+        ax_s.axhline(_6evs_road_bot, color='black', linewidth=1.0, linestyle='-', zorder=1)
+        # Dashed white center line between the two lanes
+        _6evs_divider_y = (_6evs_l1c + _6evs_l2c) / 2.0
+        ax_s.axhline(_6evs_divider_y, color='white', linewidth=1.2, linestyle='--', zorder=1)
     for idx_o, oid in enumerate(_6evs_sorted_oids):
         orig, gen, ts = _6evs_plot_data[idx_o]
         lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
