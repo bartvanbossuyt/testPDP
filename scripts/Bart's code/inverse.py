@@ -11491,13 +11491,14 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 "are outside the road boundaries:\n- " + "\n- ".join(_6evs_offroad)
             )
 
-    # 2) Straight-angle check — detect unrealistically straight overtaking segments
-    #    Compute the interior angle at each intermediate point of each generated
-    #    trajectory.  An angle close to 180° means the trajectory is nearly a
-    #    straight line through that point, which is unrealistic for a lane-change
-    #    manoeuvre.
-    _6evs_angle_thresh_deg = 170.0  # degrees — flag if any angle >= this
-    _6evs_straight: list[str] = []
+    # 2) Sharp-angle check — detect unrealistically sharp turns in overtaking
+    #    Compute the deflection angle at each intermediate point of each generated
+    #    trajectory.  A deflection near 90° (or equivalently an interior angle of
+    #    90° / 270°) means the vehicle turns nearly perpendicular — completely
+    #    unrealistic for a smooth lane-change manoeuvre.
+    _6evs_sharp_min_deg = 70.0   # flag deflection angles in [70°, 110°]
+    _6evs_sharp_max_deg = 110.0  # i.e. "near 90°"
+    _6evs_sharp: list[str] = []
     for idx_chk, oid_chk in enumerate(_6evs_sorted_oids):
         _orig_chk, _gen_chk, _ts_chk = _6evs_plot_data[idx_chk]
         lbl_chk = OBJECT_LABELS[int(oid_chk) % len(OBJECT_LABELS)]
@@ -11512,20 +11513,19 @@ if st.session_state.get("_generate_6ev_single_results", None):
             if len1 < 1e-9 or len2 < 1e-9:
                 continue  # skip degenerate (zero-length) segments
             cos_angle = float(np.clip(np.dot(v1, v2) / (len1 * len2), -1.0, 1.0))
-            # deflection = 0° means perfectly straight (cos=1); 180° = U-turn (cos=-1)
+            # deflection: 0° = straight ahead, 90° = right-angle turn, 180° = U-turn
             deflection_deg = float(np.degrees(np.arccos(cos_angle)))
-            # "straightness" = how close to a straight line = 180° - deflection
-            straightness = 180.0 - deflection_deg
-            if straightness >= _6evs_angle_thresh_deg:
-                _6evs_straight.append(
+            if _6evs_sharp_min_deg <= deflection_deg <= _6evs_sharp_max_deg:
+                _6evs_sharp.append(
                     f"**{lbl_chk}** at t={int(_ts_chk[li_chk])}: "
-                    f"angle ≈ {straightness:.1f}° (nearly straight)"
+                    f"deflection ≈ {deflection_deg:.1f}° (near 90° — sharp turn)"
                 )
-    if _6evs_straight:
+    if _6evs_sharp:
         _6evs_alerts.append(
-            f"📐 **Nearly straight trajectory!** Angles ≥ {_6evs_angle_thresh_deg}° "
-            f"detected — this may indicate an unrealistic overtaking path:\n- "
-            + "\n- ".join(_6evs_straight)
+            f"📐 **Sharp turn detected!** Deflection angles near 90° "
+            f"({_6evs_sharp_min_deg:.0f}°–{_6evs_sharp_max_deg:.0f}°) found — "
+            f"this indicates an unrealistically sharp lane-change:\n- "
+            + "\n- ".join(_6evs_sharp)
         )
 
     # Show all alerts
