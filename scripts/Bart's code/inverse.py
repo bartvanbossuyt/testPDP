@@ -333,8 +333,9 @@ if _is_custom_upload:
     st.session_state["use_external_points"] = False
     if "external_points" in st.session_state:
         del st.session_state["external_points"]
-    # Default PDP variant to fundamental for custom uploads
-    st.session_state["cfg_pdp_variants"] = ["fundamental"]
+    # Default PDP variant to fundamental for custom uploads (only on first load)
+    if "cfg_pdp_variants" not in st.session_state:
+        st.session_state["cfg_pdp_variants"] = ["fundamental"]
 
 if data_source == "Preset configurations":
     _df_all = _read_clean_df("voorbeeld.csv")
@@ -11309,16 +11310,6 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_per_obj = {oid: _6evs_pp[oid].shape[0] for oid in _6evs_sorted_oids}
     _6evs_n_total = sum(_6evs_n_per_obj.values())
     st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
-    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
-    _6evs_disp_bx = st.session_state.get("_6evs_buffer_x", 1.5)
-    _6evs_disp_ry = st.session_state.get("_6evs_rough_y", 0.4)
-    st.markdown(
-        f"Exponential | PDP {_6evs_disp_variant}"
-        f"{' | buf_x=' + str(_6evs_disp_bx) if _6evs_disp_variant in ('buffer','bufferrough','realistic') else ''}"
-        f"{' | rough_y=' + str(_6evs_disp_ry) if _6evs_disp_variant in ('rough','bufferrough','realistic') else ''}"
-        f" | **{_6evs_n_total} total pts** "
-        f"({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
-    )
 
     # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
@@ -11425,6 +11416,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     # ---- Display the selected iteration ----
     _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
+    # Read settings from the config data (what was actually used at generation time)
+    _6evs_disp_variant = _6evs_cfg.get("pdp_variant", st.session_state.get("_6evs_pdp_variant", "fundamental"))
+    _6evs_disp_bx = _6evs_cfg.get("buffer_x", st.session_state.get("_6evs_buffer_x", 1.5))
+    _6evs_disp_ry = _6evs_cfg.get("rough_y", st.session_state.get("_6evs_rough_y", 0.4))
     _6evs_sp = _6evs_cfg.get("successful_points", [])
     _6evs_n_moves = len(_6evs_sp)
     # Count unique point indices that have been moved
@@ -11508,6 +11503,23 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_yhi = 10.0
 
     # ---- Matplotlib static plot (NO equal aspect) ----
+    # Show settings summary above the graph
+    _6evs_ext_pts = st.session_state.get("external_points", [])
+    _6evs_settings_parts = [f"PDP **{_6evs_disp_variant}**"]
+    if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic'):
+        _6evs_settings_parts.append(f"buf_x={_6evs_disp_bx}")
+    if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic'):
+        _6evs_settings_parts.append(f"rough_y={_6evs_disp_ry}")
+    _6evs_settings_parts.append(
+        f"{_6evs_n_total} pts ({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
+    )
+    _6evs_settings_parts.append(f"lanes: {_6evs_lane1_center:.1f} / {_6evs_lane2_center:.1f}")
+    if _6evs_ext_pts:
+        _6evs_settings_parts.append(f"{len(_6evs_ext_pts)} ext. pts")
+    else:
+        _6evs_settings_parts.append("no ext. pts")
+    _6evs_settings_line = " | ".join(_6evs_settings_parts)
+    st.caption(_6evs_settings_line)
     _6evs_fw = 14.0
     _6evs_fh = 5.0
     fig_s = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
@@ -11556,50 +11568,33 @@ if st.session_state.get("_generate_6ev_single_results", None):
     ax_s.legend(fontsize=7, loc='upper left')
     ax_s.set_xlabel("d1 / x-as (m)")
     ax_s.set_ylabel("d2 / y-as (m)")
-    _6evs_plot_title = "6-Event — Original" if _6evs_browse_idx == 0 else f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated}  |  {_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)"
-    ax_s.set_title(_6evs_plot_title)
+    # Build plot subtitle with settings
+    _6evs_sub_parts = [_6evs_disp_variant]
+    if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic'):
+        _6evs_sub_parts.append(f"buf_x={_6evs_disp_bx}")
+    if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic'):
+        _6evs_sub_parts.append(f"rough_y={_6evs_disp_ry}")
+    if _6evs_ext_pts:
+        _6evs_sub_parts.append(f"{len(_6evs_ext_pts)} ext.pts")
+    _6evs_subtitle = "  |  ".join(_6evs_sub_parts)
+    if _6evs_browse_idx == 0:
+        _6evs_plot_title = f"6-Event — Original\n{_6evs_subtitle}"
+    else:
+        _6evs_plot_title = (f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated}  |  "
+                            f"{_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)\n{_6evs_subtitle}")
+    ax_s.set_title(_6evs_plot_title, fontsize=9)
     ax_s.grid(True, alpha=0.3)
-    fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+    fig_s.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.12)
     buf_s = io.BytesIO()
     fig_s.savefig(buf_s, format='png', dpi=150)
     buf_s.seek(0)
     st.image(buf_s, use_container_width=True)
     plt.close(fig_s)
 
-    # ---- Sanity checks: road boundary, proximity & trajectory angle alerts ----
+    # ---- Sanity checks: proximity & trajectory angle alerts ----
     _6evs_alerts: list[str] = []
 
-    # 1) Road-edge proximity — flag points within 1.2 m of the outer road edge
-    _6evs_edge_margin = 1.2  # metres
-    if _6evs_show_lanes_val:
-        _6evs_lw_chk = 3.0
-        _6evs_l1c_chk = st.session_state.get("_6evs_lane1_center", 0.0)
-        _6evs_l2c_chk = st.session_state.get("_6evs_lane2_center", -3.0)
-        _6evs_road_top_chk = max(_6evs_l1c_chk + _6evs_lw_chk / 2, _6evs_l2c_chk + _6evs_lw_chk / 2)
-        _6evs_road_bot_chk = min(_6evs_l1c_chk - _6evs_lw_chk / 2, _6evs_l2c_chk - _6evs_lw_chk / 2)
-        _6evs_near_edge: list[str] = []
-        for idx_chk, oid_chk in enumerate(_6evs_sorted_oids):
-            _orig_chk, _gen_chk, _ts_chk = _6evs_plot_data[idx_chk]
-            lbl_chk = OBJECT_LABELS[int(oid_chk) % len(OBJECT_LABELS)]
-            for li_chk in range(_gen_chk.shape[0]):
-                y_chk = float(_gen_chk[li_chk, 1])
-                dist_top = _6evs_road_top_chk - y_chk
-                dist_bot = y_chk - _6evs_road_bot_chk
-                min_edge_dist = min(dist_top, dist_bot)
-                if min_edge_dist < _6evs_edge_margin:
-                    side = "boven" if dist_top < dist_bot else "onder"
-                    _6evs_near_edge.append(
-                        f"**{lbl_chk}** t={int(_ts_chk[li_chk])}: y={y_chk:.2f}m — "
-                        f"{min_edge_dist:.2f}m van {side}rand "
-                        f"(weg: [{_6evs_road_bot_chk:.1f}, {_6evs_road_top_chk:.1f}])"
-                    )
-        if _6evs_near_edge:
-            _6evs_alerts.append(
-                f"🚧 **Punt(en) dicht bij wegrand!** (<{_6evs_edge_margin}m van buitenrand)\n- "
-                + "\n- ".join(_6evs_near_edge)
-            )
-
-    # 2) d1/d2 proximity check — flag when objects are too close at the same timestamp
+    # 1) d1/d2 proximity check — flag when objects are too close at the same timestamp
     #    Condition: |d1| < 5 m AND |d2| < 2.2 m simultaneously
     _6evs_prox_d1_lim = 5.0   # metres along driving direction (x)
     _6evs_prox_d2_lim = 2.2   # metres perpendicular to driving direction (y)
