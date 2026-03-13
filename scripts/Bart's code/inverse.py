@@ -7192,10 +7192,9 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
         st.session_state["_6evs_points_plot"] = _6evs_points_plot
         st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
-        # Jump to the last generated config
-        _new_browse = len(_6evs_existing_results) - 1
+        # Jump to the last generated config (+1 because index 0 = original)
+        _new_browse = len(_6evs_existing_results)
         st.session_state["_6evs_browse_idx"] = _new_browse
-        st.session_state["_6evs_nav_num_input"] = _new_browse + 1  # 1-based widget value
         st.rerun()
     finally:
         all_pts_flat = _save_all_pts_flat
@@ -11298,7 +11297,10 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
 
 # ============= Display 6-Event Single Iteration results ============
 if st.session_state.get("_generate_6ev_single_results", None):
-    _6evs_results = st.session_state["_generate_6ev_single_results"]
+    _6evs_results_raw = st.session_state["_generate_6ev_single_results"]
+    # Prepend the original (unmodified) configuration as index 0
+    _6evs_original_entry = (0, 0.0, {"successful_points": [], "move_succeeded": True})
+    _6evs_results = [_6evs_original_entry] + list(_6evs_results_raw)
     _6evs_pp = st.session_state.get("_6evs_points_plot", all_points_plot)
     _6evs_vp = st.session_state.get("_6evs_vals_plot", all_vals_plot)
     _6evs_sorted_oids = sorted(_6evs_pp.keys())
@@ -11373,7 +11375,6 @@ if st.session_state.get("_generate_6ev_single_results", None):
         # Jump to first frame of the animation (the one after the start)
         _first_anim = min(_anim_start_idx + 1, _6evs_n_iters - 1)
         st.session_state["_6evs_browse_idx"] = _first_anim
-        st.session_state["_6evs_nav_num_input"] = _first_anim + 1
         _6evs_browse_idx = _first_anim
 
     # ---- Animation auto-advance ----
@@ -11384,43 +11385,42 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _anim_wait = st.session_state.get("_6evs_anim_speed_val", 10.0)
             time.sleep(_anim_wait)
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
-            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 2
             st.rerun()
         else:
             # Reached the end: stop animation
             st.session_state["_6evs_anim_active"] = False
             st.session_state["_6evs_anim_paused"] = False
 
+    _6evs_n_generated = _6evs_n_iters - 1  # exclude the original entry
     nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 3, 1, 1])
+    # Sync widget value with browse index BEFORE rendering the number_input
+    st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx
     with nav_col1:
         if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = 0
-            st.session_state["_6evs_nav_num_input"] = 1
             st.rerun()
     with nav_col2:
         if st.button("◀ Prev", key="_6evs_nav_prev", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx - 1
-            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx  # already 1-based due to -1
             st.rerun()
     with nav_col3:
         _6evs_new_idx = st.number_input(
-            "Iteration", min_value=1, max_value=_6evs_n_iters,
-            value=_6evs_browse_idx + 1, step=1, key="_6evs_nav_num_input",
+            "Config", min_value=0, max_value=_6evs_n_iters - 1,
+            value=_6evs_browse_idx, step=1, key="_6evs_nav_num_input",
             label_visibility="collapsed",
         )
-        if int(_6evs_new_idx) - 1 != _6evs_browse_idx:
-            st.session_state["_6evs_browse_idx"] = int(_6evs_new_idx) - 1
+        if int(_6evs_new_idx) != _6evs_browse_idx:
+            st.session_state["_6evs_browse_idx"] = int(_6evs_new_idx)
             st.rerun()
-        st.caption(f"Iteration {_6evs_browse_idx + 1} / {_6evs_n_iters}")
+        _nav_label = "**Original**" if _6evs_browse_idx == 0 else f"Iteration {_6evs_browse_idx}"
+        st.caption(f"{_nav_label}  /  {_6evs_n_generated} iterations")
     with nav_col4:
         if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
-            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 2
             st.rerun()
     with nav_col5:
         if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_n_iters - 1
-            st.session_state["_6evs_nav_num_input"] = _6evs_n_iters
             st.rerun()
 
     # ---- Display the selected iteration ----
@@ -11454,12 +11454,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
     elif not _6evs_move_succeeded:
         _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **mislukt** — punt bleef op startpositie (7 halveringen zonder geldige PDP-move)"
 
-    st.markdown(
-        f"#### Iteration #{_6evs_cnum} / {_6evs_n_iters}  "
-        f"(PV={_6evs_dev:.6f} m²)  \n"
-        f"**{_6evs_n_moves}** point(s) moved — "
-        f"**{_6evs_unique_moved}** unique points"
-    )
+    if _6evs_browse_idx == 0:
+        st.markdown("#### Original configuration  (PV = 0.000000 m²)")
+    else:
+        st.markdown(
+            f"#### Iteration {_6evs_cnum} / {_6evs_n_generated}  "
+            f"(PV={_6evs_dev:.6f} m²)  \n"
+            f"**{_6evs_n_moves}** point(s) moved — "
+            f"**{_6evs_unique_moved}** unique points"
+        )
     if _6evs_moved_info:
         if _6evs_move_succeeded:
             st.info(_6evs_moved_info)
@@ -11553,7 +11556,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     ax_s.legend(fontsize=7, loc='upper left')
     ax_s.set_xlabel("d1 / x-as (m)")
     ax_s.set_ylabel("d2 / y-as (m)")
-    ax_s.set_title(f"6-Event — Iteration #{_6evs_cnum}/{_6evs_n_iters}  |  {_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)")
+    _6evs_plot_title = "6-Event — Original" if _6evs_browse_idx == 0 else f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated}  |  {_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)"
+    ax_s.set_title(_6evs_plot_title)
     ax_s.grid(True, alpha=0.3)
     fig_s.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
     buf_s = io.BytesIO()
@@ -11760,7 +11764,6 @@ if st.session_state.get("_generate_6ev_single_results", None):
             if st.button("\u23ee Back", key="_6evs_anim_back"):
                 _new = max(0, _6evs_browse_idx - 1)
                 st.session_state["_6evs_browse_idx"] = _new
-                st.session_state["_6evs_nav_num_input"] = _new + 1
                 st.session_state["_6evs_anim_paused"] = True  # pause after manual back
                 st.rerun()
         with _ac2:
