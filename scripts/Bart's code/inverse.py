@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 # ============= Named constants (avoid magic numbers) =============
 MAX_DIRECTION_ATTEMPTS: int = 50       # Max attempts to find a valid direction vector
 MAX_RESET_ATTEMPTS: int = 20           # Max attempts when resetting/placing a new point
-MAX_BINARY_SEARCH_STEPS: int = 7       # Steps in binary search for boundary finding
+MAX_BINARY_SEARCH_STEPS: int = 10      # Steps in binary search for boundary finding
 MAX_GENERATION_ITERATIONS: int = 1000  # Max configs for ext30 generation
 MAX_FILTER_CONFIGS: int = 100          # Max configs for filtered timestamp generation
 MAX_FILTER_ITERATIONS: int = 2500      # Max iterations per config for filtered generation
@@ -1643,7 +1643,7 @@ with sc4:
         index=0,
         key="cfg_strategy",
         horizontal=True,
-        help="Choose the search strategy for configuration generation.\n- exponential: halve distance until match\n- linear: decrease by 10% of maxdist per step\n- binary: 7-step binary search"
+        help="Choose the search strategy for configuration generation.\n- exponential: halve distance until match\n- linear: decrease by 10% of maxdist per step\n- binary: 10-step binary search"
     )
 with sc5:
     # Number of iterations per configuration (used by both animate and generate)
@@ -4056,7 +4056,7 @@ def run_binary_iteration(
     1. Start with a point at distance maxdist from the parent point
     2. If PDP matches → save as ok_point, try to go further by adding delta
     3. If PDP doesn't match → compute midpoint between ok_point and current point
-    4. Repeat for 7 steps, halving delta each time
+    4. Repeat for 10 steps, halving delta each time
     5. Final placement is at the last ok_point
     
     Returns:
@@ -4115,7 +4115,7 @@ def run_binary_iteration(
     had_full_match = False
     diag_rows: list[dict[str, Any]] = st.session_state.get("diag_rows", [])
     
-    # Binary search: 7 steps
+    # Binary search: 10 steps
     for binary_step in range(max_binary_steps):
         # Compute candidate positions: ok_point + delta for each point
         candidate_positions: dict[int, np.ndarray] = {}  # Explicit type for Pylance
@@ -4205,7 +4205,7 @@ def generate_binary_multipoint() -> None:
     """
     Multi-point aware version of non-animated binary generation.
     
-    Uses the 7-step binary search strategy for each iteration.
+    Uses the 10-step binary search strategy for each iteration.
     Supports multi-point selection and multi-variant generation.
     """
     # Get parameters
@@ -4681,7 +4681,7 @@ def generate_exp() -> None:
         completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
         max_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
         search_steps = int(st.session_state.get("anim_search_steps", 0))
-        max_search_steps = 7
+        max_search_steps = 10
 
         distance = float(st.session_state.get("anim_distance", maxdist))
         angle = float(st.session_state.get("anim_angle", 0.0))
@@ -5151,7 +5151,7 @@ if animate_btn:
         #   g: correct_order = parent coordinates (for each selected point)
         #   h: WAIT, then halve to 0.5×maxdist BEFORE first test
         #
-        # Steps n=1 to 7:
+        # Steps n=1 to 10:
         #   - Test current positions for order match (ALL n points together!)
         #   - WAIT
         #   - If match: correct_order = current positions
@@ -6963,10 +6963,25 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     with st.expander("⚙️ Generation settings", expanded=False):
         _6evs_pcol1, _6evs_pcol2, _6evs_pcol3 = st.columns([1, 1, 1], gap="small")
         with _6evs_pcol1:
+            _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+            # Sync with the general PDP config: when the user changes cfg_pdp_variants,
+            # automatically update the 6-event variant to match.
+            _cfg_variants = st.session_state.get("cfg_pdp_variants", [])
+            _6evs_general_variant = "fundamental"
+            if _cfg_variants:
+                for _cv in _cfg_variants:
+                    if _cv in _6evs_pdp_variant_options:
+                        _6evs_general_variant = _cv
+                        break
+            _6evs_prev_general = st.session_state.get("_6evs_prev_general_variant", None)
+            if _6evs_prev_general != _6evs_general_variant:
+                # General config changed → sync 6-event selectbox to match
+                st.session_state["_6evs_pdp_variant"] = _6evs_general_variant
+            st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant
+
             _6evs_pdp_variant = st.selectbox(
                 "PDP variant",
-                options=["fundamental", "realistic", "buffer", "rough", "bufferrough"],
-                index=0,  # default = fundamental (strict order match)
+                options=_6evs_pdp_variant_options,
                 key="_6evs_pdp_variant",
                 help="PDP variant used to accept/reject moves.\n\n"
                      "• **fundamental**: strict ordering, no tolerance\n"
@@ -11447,7 +11462,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _mv_dist = float(np.linalg.norm(np.asarray(_mv_new) - np.asarray(_mv_parent))) if _mv_parent is not None and _mv_new is not None else 0.0
             _6evs_moved_info = f"🔄 Iteration #{_6evs_cnum}: moved **{_mv_lbl}** at **t={int(_mv_ts)}** (flat idx {_6evs_moved_fidx}) — Δ = {_mv_dist:.4f} m"
     elif not _6evs_move_succeeded:
-        _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **mislukt** — punt bleef op startpositie (7 halveringen zonder geldige PDP-move)"
+        _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **mislukt** — punt bleef op startpositie (10 halveringen zonder geldige PDP-move)"
 
     if _6evs_browse_idx == 0:
         st.markdown("#### Original configuration  (PV = 0.000000 m²)")
@@ -13913,7 +13928,7 @@ with tab_static:
             # a) Auto-advance with slow interval: update every step
             should_update_heatmaps = True
         else:
-            # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 7)
+            # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 10)
             # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
             should_update_heatmaps = (search_steps == 0)
     else:
@@ -14370,7 +14385,7 @@ with tab_animation:
         default_num_configs = int(st.session_state.get("cfg_num_configs", 1))
 
         search_steps = int(st.session_state.get("anim_search_steps", 0))
-        max_search_steps = 7
+        max_search_steps = 10
 
         distance = float(st.session_state.get("anim_distance", maxdist))
         angle = float(st.session_state.get("anim_angle", 0.0))
@@ -14406,7 +14421,7 @@ with tab_animation:
                 st.rerun()
 
         # === Case 1: success (orders match) or distance collapsed to 0 ===
-        # For BINARY mode: ONLY complete after 7 steps (distance will be set to 0 after step 7)
+        # For BINARY mode: ONLY complete after 10 steps (distance will be set to 0 after step 10)
         # For EXPONENTIAL mode: complete when orders match or distance <= 0
         binary_complete = binary_mode and distance <= 0.0 and gen_pt is not None
         exponential_complete = not binary_mode and ((same_d1 and same_d2 and gen_pt is not None) or (distance <= 0.0 and gen_pt is not None))
@@ -14638,11 +14653,11 @@ with tab_animation:
             _skip_wait_intervals = st.session_state.get("_skip_wait_intervals", False)
 
             if binary_mode:
-                # ============= CORRECTED BINARY SEARCH STRATEGY (7 steps, MULTI-POINT) =============
+                # ============= CORRECTED BINARY SEARCH STRATEGY (10 steps, MULTI-POINT) =============
                 # Algorithm:
                 # - Init: all n points at distance maxdist, correct_orders = parent coords, current_distance = maxdist
                 # - Step 0: halve naar 0.5×maxdist BEFORE testing
-                # - Steps 1-7: 
+                # - Steps 1-10: 
                 #   - Test ALL n points for combined PDP order match
                 #   - If ALL match: distance += 0.5^(n+1) × maxdist, correct_orders = current positions
                 #   - If any no match: distance -= 0.5^(n+1) × maxdist
@@ -14651,7 +14666,7 @@ with tab_animation:
                 binary_step = int(st.session_state.get("anim_binary_step", 0))
 
                 # INSTANT ITERATION: If skip_wait_intervals is set, complete all remaining binary steps at once
-                if _skip_wait_intervals and binary_step < 7:
+                if _skip_wait_intervals and binary_step < 10:
                     # Get all selected indices and movement vectors
                     selected_indices = st.session_state.get("anim_selected_indices", [parent_idx])
                     movement_vectors = st.session_state.get("anim_movement_vectors", {})
@@ -14719,7 +14734,7 @@ with tab_animation:
                         )
                         return match_d1 and match_d2
 
-                    # Simulate all remaining binary search steps (from current step to 7)
+                    # Simulate all remaining binary search steps (from current step to 10)
                     logger.debug(f"[DEBUG INSTANT BINARY] Starting instant completion from step {binary_step}")
 
                     # Step 1: halve to 0.5×maxdist if not done yet
@@ -14727,8 +14742,8 @@ with tab_animation:
                         current_distance = 0.5 * maxdist
                         binary_step = 1
 
-                    # Steps 2-7: simulate binary search
-                    while binary_step < 7:
+                    # Steps 2-10: simulate binary search
+                    while binary_step < 10:
                         binary_step += 1
                         test_positions = _compute_positions_at_distance(current_distance)
                         matches = _check_match_for_positions(test_positions)
@@ -14745,9 +14760,9 @@ with tab_animation:
 
                         logger.debug(f"[DEBUG INSTANT BINARY] Step {binary_step}: match={matches}, distance={current_distance:.4f}")
 
-                    # Finalize: set to step 7+ and trigger completion
-                    st.session_state["anim_binary_step"] = 7
-                    st.session_state["anim_search_steps"] = 7
+                    # Finalize: set to step 10+ and trigger completion
+                    st.session_state["anim_binary_step"] = 10
+                    st.session_state["anim_search_steps"] = 10
                     st.session_state["anim_binary_current_distance"] = current_distance
                     st.session_state["anim_binary_correct_orders"] = {int(k): v.copy() for k, v in correct_orders.items()}
 
@@ -14850,8 +14865,8 @@ with tab_animation:
                         new_positions[idx] = new_pt
                     return new_positions
 
-                if binary_step >= 7:
-                    # After 7 steps: finalize at correct_orders for ALL points
+                if binary_step >= 10:
+                    # After 10 steps: finalize at correct_orders for ALL points
                     # If current step matches, update correct_orders first
                     if current_matches:
                         for idx in selected_indices:
@@ -14901,7 +14916,7 @@ with tab_animation:
                     st.session_state["anim_generated_points"] = {int(k): v for k, v in new_positions.items()}
                     logger.debug(f"[DEBUG BINARY STEP {binary_step}] HALVE! distance {maxdist:.4f} -> {new_distance:.4f} for {len(selected_indices)} points")
                 else:
-                    # Steps 2-7: Test current position, then apply +/- formula
+                    # Steps 2-10: Test current position, then apply +/- formula
                     # delta_term = 0.5^(binary_step) × maxdist
                     # (step 2: 0.5², step 3: 0.5³, etc.)
                     delta_term = (0.5 ** binary_step) * maxdist
