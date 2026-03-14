@@ -11465,11 +11465,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **mislukt** — punt bleef op startpositie (10 halveringen zonder geldige PDP-move)"
 
     if _6evs_browse_idx == 0:
-        st.markdown("#### Original configuration  (PV = 0.000000 m²)")
+        st.markdown("#### Original configuration")
     else:
         st.markdown(
-            f"#### Iteration {_6evs_cnum} / {_6evs_n_generated}  "
-            f"(PV={_6evs_dev:.6f} m²)  \n"
+            f"#### Iteration {_6evs_cnum} / {_6evs_n_generated}  \n"
             f"**{_6evs_n_moves}** point(s) moved — "
             f"**{_6evs_unique_moved}** unique points"
         )
@@ -11596,7 +11595,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_plot_title = f"6-Event — Original\n{_6evs_subtitle}"
     else:
         _6evs_plot_title = (f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated}  |  "
-                            f"{_6evs_n_moves} pts moved, {_6evs_unique_moved} unique  (PV={_6evs_dev:.6f} m²)\n{_6evs_subtitle}")
+                            f"{_6evs_n_moves} pts moved, {_6evs_unique_moved} unique\n{_6evs_subtitle}")
     ax_s.set_title(_6evs_plot_title, fontsize=9)
     ax_s.grid(True, alpha=0.3)
     fig_s.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.12)
