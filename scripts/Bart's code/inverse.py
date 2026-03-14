@@ -11798,6 +11798,201 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _anim_status = "\u23f8 gepauzeerd" if st.session_state.get("_6evs_anim_paused", False) else "\u25b6 speelt"
             st.caption(f"Animatie: frame {_anim_frame + 1} / {_anim_total + 1}  |  {_anim_status}")
 
+    # ---- Smooth animated GIF (timestamp-interpolated) ----
+    st.markdown("---")
+    _smooth_col1, _smooth_col2, _smooth_col3 = st.columns([1, 1, 2], gap="small")
+    with _smooth_col1:
+        _smooth_fps = st.number_input(
+            "FPS", min_value=5, max_value=60, value=30, step=5,
+            key="_6evs_smooth_fps", label_visibility="collapsed",
+            help="Frames per second for the smooth GIF animation.",
+        )
+    with _smooth_col2:
+        _smooth_duration = st.number_input(
+            "Duration (s)", min_value=1.0, max_value=30.0, value=5.0, step=0.5,
+            format="%.1f", key="_6evs_smooth_duration", label_visibility="collapsed",
+            help="Total duration of the smooth animation in seconds.",
+        )
+    with _smooth_col3:
+        _smooth_btn = st.button(
+            f"🎬 Smooth GIF ({_smooth_fps} fps, {_smooth_duration}s)",
+            key="_6evs_smooth_gif_btn",
+            help="Generate a smooth animated GIF of the current iteration, "
+                 "interpolating trajectories over timestamps with cubic splines.",
+        )
+    st.caption(f"FPS: {_smooth_fps}  |  Duration: {_smooth_duration}s  |  "
+               f"Total frames: {int(_smooth_fps * _smooth_duration)}")
+
+    if _smooth_btn and _6evs_plot_data:
+        _smooth_n_frames = int(_smooth_fps * _smooth_duration)
+
+        # Build per-object spline data: timestamps → (x, y) for original and generated
+        _smooth_orig_splines: dict[int, tuple] = {}  # oid → (ts_arr, cs_x, cs_y)
+        _smooth_gen_splines: dict[int, tuple] = {}
+        _smooth_t_min = float('inf')
+        _smooth_t_max = float('-inf')
+
+        for idx_o, oid in enumerate(_6evs_sorted_oids):
+            orig, gen, ts = _6evs_plot_data[idx_o]
+            ts_f = ts.astype(float)
+            _smooth_t_min = min(_smooth_t_min, float(ts_f.min()))
+            _smooth_t_max = max(_smooth_t_max, float(ts_f.max()))
+
+            if len(ts_f) >= 2:
+                # Cubic spline if 4+ points, otherwise linear interpolation
+                _spline_kind = 3 if len(ts_f) >= 4 else 1
+                try:
+                    _cs_orig_x = CubicSpline(ts_f, orig[:, 0], bc_type='natural') if _spline_kind == 3 else None
+                    _cs_orig_y = CubicSpline(ts_f, orig[:, 1], bc_type='natural') if _spline_kind == 3 else None
+                    _cs_gen_x = CubicSpline(ts_f, gen[:, 0], bc_type='natural') if _spline_kind == 3 else None
+                    _cs_gen_y = CubicSpline(ts_f, gen[:, 1], bc_type='natural') if _spline_kind == 3 else None
+                except Exception:
+                    _cs_orig_x = _cs_orig_y = _cs_gen_x = _cs_gen_y = None
+                _smooth_orig_splines[oid] = (ts_f, orig, _cs_orig_x, _cs_orig_y)
+                _smooth_gen_splines[oid] = (ts_f, gen, _cs_gen_x, _cs_gen_y)
+            else:
+                _smooth_orig_splines[oid] = (ts_f, orig, None, None)
+                _smooth_gen_splines[oid] = (ts_f, gen, None, None)
+
+        # Generate uniform time samples
+        _smooth_t_values = np.linspace(_smooth_t_min, _smooth_t_max, _smooth_n_frames)
+
+        def _interp_at_t(ts_arr: np.ndarray, pts: np.ndarray, cs_x, cs_y, t: float):
+            """Interpolate trajectory up to time t, returning array of (x, y) points."""
+            # Find all data points with timestamp <= t
+            mask = ts_arr <= t + 1e-9
+            known_pts = pts[mask]
+            known_ts = ts_arr[mask]
+
+            if len(known_pts) == 0:
+                return np.array([]).reshape(0, 2), np.array([])
+
+            if cs_x is not None and cs_y is not None and len(known_ts) >= 2:
+                # Generate smooth curve from first known timestamp to t
+                t_lo = float(known_ts[0])
+                t_hi = min(float(t), float(ts_arr.max()))
+                n_interp = max(int((t_hi - t_lo) / (float(ts_arr.max() - ts_arr.min())) * 200), 10)
+                t_fine = np.linspace(t_lo, t_hi, n_interp)
+                x_fine = cs_x(t_fine)
+                y_fine = cs_y(t_fine)
+                curve = np.column_stack([x_fine, y_fine])
+                return curve, known_ts
+            else:
+                return known_pts, known_ts
+
+        # Render frames
+        _smooth_gif_frames: list[PILImage.Image] = []
+        _smooth_progress = st.progress(0)
+        _smooth_status = st.empty()
+
+        for _fr_idx, _t_cur in enumerate(_smooth_t_values):
+            _smooth_status.text(f"Rendering smooth frame {_fr_idx + 1}/{_smooth_n_frames} (t = {_t_cur:.1f})...")
+
+            fig_sm = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=120)
+            ax_sm = fig_sm.add_subplot(111)
+
+            # Draw lanes
+            if _6evs_show_lanes_val:
+                _lw = 3.0
+                _l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+                _l2c = st.session_state.get("_6evs_lane2_center", -3.0)
+                ax_sm.axhspan(_l1c - _lw / 2, _l1c + _lw / 2, color='#A9A9A9', alpha=0.35, zorder=0)
+                ax_sm.axhspan(_l2c - _lw / 2, _l2c + _lw / 2, color='#A9A9A9', alpha=0.35, zorder=0)
+                _road_top = max(_l1c + _lw / 2, _l2c + _lw / 2)
+                _road_bot = min(_l1c - _lw / 2, _l2c - _lw / 2)
+                ax_sm.axhline(_road_top, color='black', linewidth=1.0, linestyle='-', zorder=1)
+                ax_sm.axhline(_road_bot, color='black', linewidth=1.0, linestyle='-', zorder=1)
+                _div_y = (_l1c + _l2c) / 2.0
+                ax_sm.axhline(_div_y, color='white', linewidth=1.2, linestyle='--', zorder=1)
+
+            for idx_o, oid in enumerate(_6evs_sorted_oids):
+                orig, gen, ts = _6evs_plot_data[idx_o]
+                lbl = OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)]
+                clr = f"C{int(oid)}"
+                ts_f = ts.astype(float)
+
+                # Original trajectory (full, faded)
+                ax_sm.plot(orig[:, 0], orig[:, 1], lw=0.8, color=clr, alpha=0.25, ls='--')
+
+                # Generated smooth curve up to _t_cur
+                _ts_arr_g, _pts_g, _cs_gx, _cs_gy = _smooth_gen_splines[oid]
+                curve_g, known_ts_g = _interp_at_t(_ts_arr_g, _pts_g, _cs_gx, _cs_gy, _t_cur)
+                if curve_g.shape[0] >= 2:
+                    ax_sm.plot(curve_g[:, 0], curve_g[:, 1], lw=2.0, color=clr, alpha=1.0, label=f"{lbl} gen")
+                # Plot data-point markers for known timestamps <= t
+                mask_g = ts_f <= _t_cur + 1e-9
+                for li in range(len(ts_f)):
+                    if mask_g[li]:
+                        ax_sm.plot(gen[li, 0], gen[li, 1], 'o', color=clr, markersize=5, zorder=5, alpha=0.9)
+                # Moving head dot (interpolated position at exactly _t_cur)
+                if _cs_gx is not None and _cs_gy is not None and _smooth_t_min <= _t_cur <= _smooth_t_max:
+                    _t_clamped = np.clip(_t_cur, float(ts_f.min()), float(ts_f.max()))
+                    _hx = float(_cs_gx(_t_clamped))
+                    _hy = float(_cs_gy(_t_clamped))
+                    ax_sm.plot(_hx, _hy, 'o', color=clr, markersize=9, zorder=10,
+                               markeredgecolor='white', markeredgewidth=1.5)
+
+            ax_sm.set_xlim(_6evs_xlo, _6evs_xhi)
+            ax_sm.set_ylim(_6evs_ylo, _6evs_yhi)
+            ax_sm.set_xlabel("d1 / x-as (m)", fontsize=8)
+            ax_sm.set_ylabel("d2 / y-as (m)", fontsize=8)
+            ax_sm.legend(fontsize=6, loc='upper left')
+            _t_pct = (_t_cur - _smooth_t_min) / max(_smooth_t_max - _smooth_t_min, 1e-9) * 100
+            ax_sm.set_title(
+                f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated}  |  t = {_t_cur:.1f}  ({_t_pct:.0f}%)\n"
+                f"{_6evs_subtitle}", fontsize=8)
+            ax_sm.grid(True, alpha=0.3)
+            fig_sm.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.12)
+
+            _buf_sm = io.BytesIO()
+            fig_sm.savefig(_buf_sm, format='png', dpi=120)
+            _buf_sm.seek(0)
+            _smooth_gif_frames.append(PILImage.open(_buf_sm).copy())
+            plt.close(fig_sm)
+            _smooth_progress.progress((_fr_idx + 1) / _smooth_n_frames)
+
+        _smooth_progress.empty()
+        _smooth_status.empty()
+
+        # Assemble GIF
+        if _smooth_gif_frames:
+            _smooth_gif_buf = io.BytesIO()
+            _frame_ms = max(int(1000 / _smooth_fps), 10)
+            _smooth_durations = [_frame_ms] * len(_smooth_gif_frames)
+            _smooth_durations[-1] = GIF_LAST_FRAME_PAUSE_MS  # pause on last frame
+            _smooth_gif_frames[0].save(
+                _smooth_gif_buf,
+                format='GIF',
+                save_all=True,
+                append_images=_smooth_gif_frames[1:],
+                duration=_smooth_durations,
+                loop=0,
+            )
+            _smooth_gif_buf.seek(0)
+            _smooth_gif_bytes = _smooth_gif_buf.getvalue()
+
+            # Store in session state so it persists across reruns
+            st.session_state["_6evs_smooth_gif_data"] = _smooth_gif_bytes
+            st.session_state["_6evs_smooth_gif_iter"] = _6evs_browse_idx
+
+    # Display persisted smooth GIF (if generated for the current iteration)
+    _smooth_gif_data = st.session_state.get("_6evs_smooth_gif_data")
+    _smooth_gif_iter = st.session_state.get("_6evs_smooth_gif_iter")
+    if _smooth_gif_data and _smooth_gif_iter == _6evs_browse_idx:
+        import base64 as _b64
+        _gif_b64 = _b64.b64encode(_smooth_gif_data).decode()
+        st.markdown(
+            f'<img src="data:image/gif;base64,{_gif_b64}" style="width:100%;" />',
+            unsafe_allow_html=True,
+        )
+        st.download_button(
+            label=f"⬇ Download smooth GIF — Iteration {_6evs_cnum}",
+            data=_smooth_gif_data,
+            file_name=f"6event_iter{_6evs_cnum}_smooth.gif",
+            mime="image/gif",
+            key="_6evs_smooth_gif_dl",
+        )
+
     # ---- PDP Inequality Matrices (d1 & d2, original vs generated) ----
     # Build flat original and generated point arrays for this config
     _6evs_orig_flat_list: list[np.ndarray] = []
