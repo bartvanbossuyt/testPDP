@@ -11826,9 +11826,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _smooth_btn and _6evs_plot_data:
         _smooth_n_frames = int(_smooth_fps * _smooth_duration)
 
-        # Build per-object spline data: timestamps → (x, y) for original and generated
-        _smooth_orig_splines: dict[int, tuple] = {}  # oid → (ts_arr, cs_x, cs_y)
-        _smooth_gen_splines: dict[int, tuple] = {}
+        # Build per-object trajectory data: timestamps → (x, y) for generated
+        _smooth_gen_data: dict[int, tuple] = {}  # oid → (ts_arr, pts)
         _smooth_t_min = float('inf')
         _smooth_t_max = float('-inf')
 
@@ -11837,48 +11836,71 @@ if st.session_state.get("_generate_6ev_single_results", None):
             ts_f = ts.astype(float)
             _smooth_t_min = min(_smooth_t_min, float(ts_f.min()))
             _smooth_t_max = max(_smooth_t_max, float(ts_f.max()))
-
-            if len(ts_f) >= 2:
-                # Cubic spline if 4+ points, otherwise linear interpolation
-                _spline_kind = 3 if len(ts_f) >= 4 else 1
-                try:
-                    _cs_orig_x = CubicSpline(ts_f, orig[:, 0], bc_type='natural') if _spline_kind == 3 else None
-                    _cs_orig_y = CubicSpline(ts_f, orig[:, 1], bc_type='natural') if _spline_kind == 3 else None
-                    _cs_gen_x = CubicSpline(ts_f, gen[:, 0], bc_type='natural') if _spline_kind == 3 else None
-                    _cs_gen_y = CubicSpline(ts_f, gen[:, 1], bc_type='natural') if _spline_kind == 3 else None
-                except Exception:
-                    _cs_orig_x = _cs_orig_y = _cs_gen_x = _cs_gen_y = None
-                _smooth_orig_splines[oid] = (ts_f, orig, _cs_orig_x, _cs_orig_y)
-                _smooth_gen_splines[oid] = (ts_f, gen, _cs_gen_x, _cs_gen_y)
-            else:
-                _smooth_orig_splines[oid] = (ts_f, orig, None, None)
-                _smooth_gen_splines[oid] = (ts_f, gen, None, None)
+            _smooth_gen_data[oid] = (ts_f, gen)
 
         # Generate uniform time samples
         _smooth_t_values = np.linspace(_smooth_t_min, _smooth_t_max, _smooth_n_frames)
 
-        def _interp_at_t(ts_arr: np.ndarray, pts: np.ndarray, cs_x, cs_y, t: float):
-            """Interpolate trajectory up to time t, returning array of (x, y) points."""
-            # Find all data points with timestamp <= t
-            mask = ts_arr <= t + 1e-9
-            known_pts = pts[mask]
-            known_ts = ts_arr[mask]
+        # Corner-rounding fraction: 0.15 = smooths 15% of each segment near corners
+        _CORNER_FRAC = 0.15
 
-            if len(known_pts) == 0:
-                return np.array([]).reshape(0, 2), np.array([])
+        def _rounded_linear_curve(ts_arr: np.ndarray, pts: np.ndarray, t_max: float):
+            """Piecewise-linear trajectory with gently rounded corners up to t_max.
 
-            if cs_x is not None and cs_y is not None and len(known_ts) >= 2:
-                # Generate smooth curve from first known timestamp to t
-                t_lo = float(known_ts[0])
-                t_hi = min(float(t), float(ts_arr.max()))
-                n_interp = max(int((t_hi - t_lo) / (float(ts_arr.max() - ts_arr.min())) * 200), 10)
-                t_fine = np.linspace(t_lo, t_hi, n_interp)
-                x_fine = cs_x(t_fine)
-                y_fine = cs_y(t_fine)
-                curve = np.column_stack([x_fine, y_fine])
-                return curve, known_ts
+            Uses quadratic Bézier blending near each interior data point to
+            soften the corners while keeping the path close to the data.
+            Returns (curve_xy, head_xy).
+            """
+            mask = ts_arr <= t_max + 1e-9
+            visible_pts = pts[mask]
+            visible_ts = ts_arr[mask]
+            if len(visible_pts) == 0:
+                return np.array([]).reshape(0, 2), None
+            if len(visible_pts) == 1:
+                return visible_pts, visible_pts[0]
+
+            # Also include partial segment to the *next* point if t_max is
+            # between two timestamps:
+            next_idx = int(np.sum(mask))  # first index NOT visible
+            if next_idx < len(ts_arr):
+                frac = (t_max - float(visible_ts[-1])) / (float(ts_arr[next_idx]) - float(visible_ts[-1]))
+                frac = np.clip(frac, 0.0, 1.0)
+                interp_pt = visible_pts[-1] + frac * (pts[next_idx] - visible_pts[-1])
+                all_pts = np.vstack([visible_pts, interp_pt[np.newaxis, :]])
             else:
-                return known_pts, known_ts
+                all_pts = visible_pts
+
+            # Build rounded path
+            n_seg_pts = 8  # points per rounded corner
+            curve_pts: list[np.ndarray] = [all_pts[0]]
+            for i in range(1, len(all_pts) - 1):
+                p_prev = all_pts[i - 1]
+                p_curr = all_pts[i]
+                p_next = all_pts[i + 1]
+                # Points where the rounding starts/ends
+                d_in = p_curr - p_prev
+                d_out = p_next - p_curr
+                len_in = float(np.linalg.norm(d_in))
+                len_out = float(np.linalg.norm(d_out))
+                if len_in < 1e-12 or len_out < 1e-12:
+                    curve_pts.append(p_curr)
+                    continue
+                # Rounding radius limited by segment lengths
+                r_in = min(_CORNER_FRAC, 0.5) * len_in
+                r_out = min(_CORNER_FRAC, 0.5) * len_out
+                p_start = p_curr - (d_in / len_in) * r_in
+                p_end = p_curr + (d_out / len_out) * r_out
+                # Add straight segment up to the rounding start
+                curve_pts.append(p_start)
+                # Quadratic Bézier: p_start → p_curr (control) → p_end
+                for si in range(1, n_seg_pts + 1):
+                    bt = si / n_seg_pts
+                    bp = (1 - bt) ** 2 * p_start + 2 * (1 - bt) * bt * p_curr + bt ** 2 * p_end
+                    curve_pts.append(bp)
+            curve_pts.append(all_pts[-1])
+            curve_arr = np.array(curve_pts)
+            head = curve_arr[-1]
+            return curve_arr, head
 
         # Render frames
         _smooth_gif_frames: list[PILImage.Image] = []
@@ -11914,9 +11936,9 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 # Original trajectory (full, faded)
                 ax_sm.plot(orig[:, 0], orig[:, 1], lw=0.8, color=clr, alpha=0.25, ls='--')
 
-                # Generated smooth curve up to _t_cur
-                _ts_arr_g, _pts_g, _cs_gx, _cs_gy = _smooth_gen_splines[oid]
-                curve_g, known_ts_g = _interp_at_t(_ts_arr_g, _pts_g, _cs_gx, _cs_gy, _t_cur)
+                # Generated trajectory with rounded corners up to _t_cur
+                _ts_arr_g, _pts_g = _smooth_gen_data[oid]
+                curve_g, head_g = _rounded_linear_curve(_ts_arr_g, _pts_g, _t_cur)
                 if curve_g.shape[0] >= 2:
                     ax_sm.plot(curve_g[:, 0], curve_g[:, 1], lw=2.0, color=clr, alpha=1.0, label=f"{lbl} gen")
                 # Plot data-point markers for known timestamps <= t
@@ -11924,12 +11946,9 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 for li in range(len(ts_f)):
                     if mask_g[li]:
                         ax_sm.plot(gen[li, 0], gen[li, 1], 'o', color=clr, markersize=5, zorder=5, alpha=0.9)
-                # Moving head dot (interpolated position at exactly _t_cur)
-                if _cs_gx is not None and _cs_gy is not None and _smooth_t_min <= _t_cur <= _smooth_t_max:
-                    _t_clamped = np.clip(_t_cur, float(ts_f.min()), float(ts_f.max()))
-                    _hx = float(_cs_gx(_t_clamped))
-                    _hy = float(_cs_gy(_t_clamped))
-                    ax_sm.plot(_hx, _hy, 'o', color=clr, markersize=9, zorder=10,
+                # Moving head dot
+                if head_g is not None:
+                    ax_sm.plot(head_g[0], head_g[1], 'o', color=clr, markersize=9, zorder=10,
                                markeredgecolor='white', markeredgewidth=1.5)
 
             ax_sm.set_xlim(_6evs_xlo, _6evs_xhi)
@@ -12014,10 +12033,31 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_d2_pct = _6evs_pdp_detail.get("d2_percentage", 0.0) * 100
         _6evs_d1_mm = _6evs_pdp_detail.get("d1_mismatches", 0)
         _6evs_d2_mm = _6evs_pdp_detail.get("d2_mismatches", 0)
+        _6evs_d1_ok = _6evs_d1_mm == 0
+        _6evs_d2_ok = _6evs_d2_mm == 0
         st.markdown(
             f"**PDP fundamental** | d1: {_6evs_d1_pct:.1f}% ({_6evs_d1_mm} mismatches) | "
             f"d2: {_6evs_d2_pct:.1f}% ({_6evs_d2_mm} mismatches)"
         )
+        # Explain mismatches when present
+        if not _6evs_d1_ok or not _6evs_d2_ok:
+            _mismatch_parts: list[str] = []
+            if not _6evs_d1_ok:
+                _mismatch_parts.append(
+                    f"**d1 (x)**: {_6evs_d1_mm} pair(s) changed order — "
+                    "some points swapped their longitudinal (driving-direction) ranking"
+                )
+            if not _6evs_d2_ok:
+                _mismatch_parts.append(
+                    f"**d2 (y)**: {_6evs_d2_mm} pair(s) changed order — "
+                    "some points swapped their lateral (perpendicular) ranking"
+                )
+            st.caption(
+                "Order mismatches: " + "; ".join(_mismatch_parts) + ".\n\n"
+                "In the matrices below, cells with a **magenta overlay** mark "
+                "point-pairs whose relative order (< = >) differs between the original "
+                "and generated configuration. Green = closer, yellow = equal, red = farther."
+            )
 
         from matplotlib.colors import ListedColormap as _6evs_LCM
         _6evs_hm_cmap = _6evs_LCM(['#00AA00', '#FFFF00', '#FF0000'])
@@ -12076,14 +12116,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             display = _6evs_reorder_matrix(matrix)
             fig_hm, ax_hm = plt.subplots(figsize=(3.5, 3.5))
             ax_hm.imshow(display, cmap=_6evs_hm_cmap, vmin=0, vmax=2, aspect='equal')
-            # Highlight differences
+            # Highlight differences with semi-transparent overlay (no black stroke)
             if comp_matrix is not None:
                 comp_display = _6evs_reorder_matrix(comp_matrix)
                 for i in range(n):
                     for j in range(n):
                         if display[i, j] != comp_display[i, j]:
                             rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
-                                                  fill=False, edgecolor='black', linewidth=1.5)
+                                                  facecolor='magenta', alpha=0.35,
+                                                  edgecolor='none', linewidth=0)
                             ax_hm.add_patch(rect)
             if len(_6evs_reorder_labels) == n and n <= 16:
                 ax_hm.set_xticks(range(n))
