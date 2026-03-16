@@ -6959,6 +6959,26 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _6evs_n_ts_total = sum(_6evs_n_ts_per_obj.values())
     _6evs_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _6evs_n_ts_per_obj.items())
 
+    # ---- Always sync from general sidebar BEFORE widget instantiation ----
+    _6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+    _cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
+    _gen_variant = "fundamental"
+    for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
+        if _cv_g in _6evs_pv_opts:
+            _gen_variant = _cv_g
+            break
+    _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
+    _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
+    _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
+    _gen_sig = (_gen_variant, _gen_bx, _gen_rx, _gen_ry)
+    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig:
+        st.session_state["_6evs_pdp_variant"] = _gen_variant
+        st.session_state["_6evs_buffer_x"] = _gen_bx
+        st.session_state["_6evs_rough_x"] = _gen_rx
+        st.session_state["_6evs_rough_y"] = _gen_ry
+    st.session_state["_6evs_prev_general_sig"] = _gen_sig
+    st.session_state["_6evs_prev_general_variant"] = _gen_variant
+
     # ------ User-tuneable generation parameters ------
     with st.expander("⚙️ Generation settings", expanded=False):
         _6evs_pcol1, _6evs_pcol2, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1], gap="small")
@@ -7080,26 +7100,6 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     n_total_points = _6evs_pts_flat.shape[0]
     all_points_plot = _6evs_points_plot
     all_vals_plot = _6evs_vals_plot
-
-    # ---- Always sync from general sidebar BEFORE reading variant ----
-    _6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-    _cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
-    _gen_variant = "fundamental"
-    for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
-        if _cv_g in _6evs_pv_opts:
-            _gen_variant = _cv_g
-            break
-    _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
-    _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
-    _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
-    _gen_sig = (_gen_variant, _gen_bx, _gen_rx, _gen_ry)
-    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig:
-        st.session_state["_6evs_pdp_variant"] = _gen_variant
-        st.session_state["_6evs_buffer_x"] = _gen_bx
-        st.session_state["_6evs_rough_x"] = _gen_rx
-        st.session_state["_6evs_rough_y"] = _gen_ry
-    st.session_state["_6evs_prev_general_sig"] = _gen_sig
-    st.session_state["_6evs_prev_general_variant"] = _gen_variant
 
     try:
         pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
