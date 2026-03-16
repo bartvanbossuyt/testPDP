@@ -6961,7 +6961,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
     # ------ User-tuneable generation parameters ------
     with st.expander("⚙️ Generation settings", expanded=False):
-        _6evs_pcol1, _6evs_pcol2, _6evs_pcol3 = st.columns([1, 1, 1], gap="small")
+        _6evs_pcol1, _6evs_pcol2, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1], gap="small")
         with _6evs_pcol1:
             _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
             # Sync with the general PDP config: when the user changes cfg_pdp_variants,
@@ -7000,6 +7000,17 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                      "Only used by buffer/bufferrough/realistic variants.",
             )
         with _6evs_pcol3:
+            _6evs_rough_x = st.number_input(
+                "Rough X (d1)",
+                min_value=0.0, max_value=100.0,
+                value=st.session_state.get("_6evs_rough_x", 0.0),
+                step=0.05, format="%.2f",
+                key="_6evs_rough_x",
+                help="Equality tolerance on longitudinal ordering. "
+                     "Points within this distance are treated as equal in d1. "
+                     "Only used by rough/bufferrough variants.",
+            )
+        with _6evs_pcol4:
             _6evs_rough_y = st.number_input(
                 "Rough Y (d2)",
                 min_value=0.0, max_value=100.0,
@@ -7014,6 +7025,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _6evs_settings = {
         "PDP variant": _6evs_pdp_variant,
         "Buffer X": _6evs_buffer_x,
+        "Rough X": _6evs_rough_x,
         "Rough Y": _6evs_rough_y,
         "Strategy": "exponential",
         "Timestamps": [0, 34, 67, 183, 213, 249],
@@ -7026,6 +7038,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     st.caption(
         f"1 iteration per click | exponential | PDP {_6evs_pdp_variant}"
         f"{' | buf_x=' + str(_6evs_buffer_x) if _6evs_pdp_variant in ('buffer','bufferrough','realistic') else ''}"
+        f"{' | rough_x=' + str(_6evs_rough_x) if _6evs_pdp_variant in ('rough','bufferrough') else ''}"
         f"{' | rough_y=' + str(_6evs_rough_y) if _6evs_pdp_variant in ('rough','bufferrough','realistic') else ''}"
         f" | {_6evs_ts_info}"
     )
@@ -7085,7 +7098,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
         buffer_x = st.session_state.get("_6evs_buffer_x", 1.5) if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0
         buffer_y = 0.0
-        rough_x = 0.0
+        rough_x = st.session_state.get("_6evs_rough_x", 0.0) if pdp_variant in ("rough", "bufferrough") else 0.0
         rough_y = st.session_state.get("_6evs_rough_y", 0.4) if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
@@ -11326,6 +11339,20 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_total = sum(_6evs_n_per_obj.values())
     st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
 
+    # ---- Sync _6evs_pdp_variant from the general cfg_pdp_variants ----
+    _6evs_pdp_variant_options_disp = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+    _cfg_variants_disp = st.session_state.get("cfg_pdp_variants", [])
+    _6evs_general_variant_disp = "fundamental"
+    if _cfg_variants_disp:
+        for _cv_d in _cfg_variants_disp:
+            if _cv_d in _6evs_pdp_variant_options_disp:
+                _6evs_general_variant_disp = _cv_d
+                break
+    _6evs_prev_general_disp = st.session_state.get("_6evs_prev_general_variant", None)
+    if _6evs_prev_general_disp != _6evs_general_variant_disp:
+        st.session_state["_6evs_pdp_variant"] = _6evs_general_variant_disp
+    st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant_disp
+
     # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
         _6evs_show_lanes = st.checkbox("Show lanes", value=st.session_state.get("_6evs_show_lanes", True), key="_6evs_show_lanes")
@@ -11345,6 +11372,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_settings_display = {
             "PDP variant": st.session_state.get("_6evs_pdp_variant", "fundamental"),
             "Buffer X": st.session_state.get("_6evs_buffer_x", 1.5),
+            "Rough X": st.session_state.get("_6evs_rough_x", 0.0),
             "Rough Y": st.session_state.get("_6evs_rough_y", 0.4),
             "Strategy": "exponential",
             "Timestamps": [0, 34, 67, 183, 213, 249],
@@ -11431,10 +11459,11 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     # ---- Display the selected iteration ----
     _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
-    # Read settings from the config data (what was actually used at generation time)
-    _6evs_disp_variant = _6evs_cfg.get("pdp_variant", st.session_state.get("_6evs_pdp_variant", "fundamental"))
-    _6evs_disp_bx = _6evs_cfg.get("buffer_x", st.session_state.get("_6evs_buffer_x", 1.5))
-    _6evs_disp_ry = _6evs_cfg.get("rough_y", st.session_state.get("_6evs_rough_y", 0.4))
+    # Read settings from current session state (reflects what the user has selected NOW)
+    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
+    _6evs_disp_bx = st.session_state.get("_6evs_buffer_x", 1.5)
+    _6evs_disp_rx = st.session_state.get("_6evs_rough_x", 0.0)
+    _6evs_disp_ry = st.session_state.get("_6evs_rough_y", 0.4)
     _6evs_sp = _6evs_cfg.get("successful_points", [])
     _6evs_n_moves = len(_6evs_sp)
     # Count unique point indices that have been moved
@@ -11523,6 +11552,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic'):
         _6evs_settings_parts.append(f"buf_x={_6evs_disp_bx}")
     if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic'):
+        _6evs_settings_parts.append(f"rough_x={_6evs_disp_rx}")
         _6evs_settings_parts.append(f"rough_y={_6evs_disp_ry}")
     _6evs_settings_parts.append(
         f"{_6evs_n_total} pts ({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
@@ -11587,6 +11617,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic'):
         _6evs_sub_parts.append(f"buf_x={_6evs_disp_bx}")
     if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic'):
+        _6evs_sub_parts.append(f"rough_x={_6evs_disp_rx}")
         _6evs_sub_parts.append(f"rough_y={_6evs_disp_ry}")
     if _6evs_ext_pts:
         _6evs_sub_parts.append(f"{len(_6evs_ext_pts)} ext.pts")
@@ -12026,7 +12057,11 @@ if st.session_state.get("_generate_6ev_single_results", None):
     if _6evs_orig_flat.shape[0] > 0:
         _6evs_pdp_detail = check_pdp_match_detailed(
             _6evs_orig_flat, _6evs_gen_flat,
-            pdp_variant="fundamental",
+            pdp_variant=_6evs_disp_variant,
+            buffer_x=_6evs_disp_bx if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic') else 0.0,
+            buffer_y=0.0,
+            rough_x=_6evs_disp_rx if _6evs_disp_variant in ('rough', 'bufferrough') else 0.0,
+            rough_y=_6evs_disp_ry if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic') else 0.0,
         )
 
         _6evs_d1_pct = _6evs_pdp_detail.get("d1_percentage", 0.0) * 100
@@ -12035,8 +12070,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_d2_mm = _6evs_pdp_detail.get("d2_mismatches", 0)
         _6evs_d1_ok = _6evs_d1_mm == 0
         _6evs_d2_ok = _6evs_d2_mm == 0
+        _6evs_match_label_parts = [f"**PDP {_6evs_disp_variant}**"]
+        if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic'):
+            _6evs_match_label_parts.append(f"buf_x={_6evs_disp_bx}")
+        if _6evs_disp_variant in ('rough', 'bufferrough'):
+            _6evs_match_label_parts.append(f"rough_x={_6evs_disp_rx}")
+        if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic'):
+            _6evs_match_label_parts.append(f"rough_y={_6evs_disp_ry}")
+        _6evs_match_label = " | ".join(_6evs_match_label_parts)
         st.markdown(
-            f"**PDP fundamental** | d1: {_6evs_d1_pct:.1f}% ({_6evs_d1_mm} mismatches) | "
+            f"{_6evs_match_label} | d1: {_6evs_d1_pct:.1f}% ({_6evs_d1_mm} mismatches) | "
             f"d2: {_6evs_d2_pct:.1f}% ({_6evs_d2_mm} mismatches)"
         )
         # Explain mismatches when present
