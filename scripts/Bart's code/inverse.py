@@ -6974,9 +6974,18 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                         _6evs_general_variant = _cv
                         break
             _6evs_prev_general = st.session_state.get("_6evs_prev_general_variant", None)
-            if _6evs_prev_general != _6evs_general_variant:
-                # General config changed → sync 6-event selectbox to match
+            _general_bx = st.session_state.get("cfg_buffer_x", 1.5)
+            _general_rx = st.session_state.get("cfg_rough_x", 0.0)
+            _general_ry = st.session_state.get("cfg_rough_y", 0.4)
+            _general_sig = (_6evs_general_variant, _general_bx, _general_rx, _general_ry)
+            _prev_sig = st.session_state.get("_6evs_prev_general_sig", None)
+            if _prev_sig != _general_sig:
+                # General config changed → sync 6-event selectbox AND parameters to match
                 st.session_state["_6evs_pdp_variant"] = _6evs_general_variant
+                st.session_state["_6evs_buffer_x"] = _general_bx
+                st.session_state["_6evs_rough_x"] = _general_rx
+                st.session_state["_6evs_rough_y"] = _general_ry
+            st.session_state["_6evs_prev_general_sig"] = _general_sig
             st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant
 
             _6evs_pdp_variant = st.selectbox(
@@ -11349,8 +11358,17 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 _6evs_general_variant_disp = _cv_d
                 break
     _6evs_prev_general_disp = st.session_state.get("_6evs_prev_general_variant", None)
-    if _6evs_prev_general_disp != _6evs_general_variant_disp:
+    _general_bx_d = st.session_state.get("cfg_buffer_x", 1.5)
+    _general_rx_d = st.session_state.get("cfg_rough_x", 0.0)
+    _general_ry_d = st.session_state.get("cfg_rough_y", 0.4)
+    _general_sig_d = (_6evs_general_variant_disp, _general_bx_d, _general_rx_d, _general_ry_d)
+    _prev_sig_d = st.session_state.get("_6evs_prev_general_sig", None)
+    if _prev_sig_d != _general_sig_d:
         st.session_state["_6evs_pdp_variant"] = _6evs_general_variant_disp
+        st.session_state["_6evs_buffer_x"] = _general_bx_d
+        st.session_state["_6evs_rough_x"] = _general_rx_d
+        st.session_state["_6evs_rough_y"] = _general_ry_d
+    st.session_state["_6evs_prev_general_sig"] = _general_sig_d
     st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant_disp
 
     # Settings summary (including lane settings)
