@@ -6762,7 +6762,9 @@ def _run_filtered_ts_generation(
     n_ts_per_obj = {oid: filt_points[oid].shape[0] for oid in sorted_oids}
     n_ts_total = sum(n_ts_per_obj.values())
     ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in n_ts_per_obj.items())
-    st.caption(f"{num_configs} configs × {num_iterations} iter | exponential | PDP fundamental | {ts_info}")
+    _filt_pv_cap = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    _filt_pv_str = _filt_pv_cap[0] if _filt_pv_cap else "fundamental"
+    st.caption(f"{num_configs} configs × {num_iterations} iter | exponential | PDP {_filt_pv_str} | {ts_info}")
     st.info(f"Aantal timestamps na filtering: {n_ts_total} totaal ({ts_info})")
 
     # --- Step 3: Build flattened points from filtered data ---
@@ -6804,7 +6806,8 @@ def _run_filtered_ts_generation(
     all_vals_plot = filt_vals
 
     try:
-        pdp_variant = "fundamental"
+        _filt_pv_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        pdp_variant = _filt_pv_list[0] if _filt_pv_list else "fundamental"
         buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
         buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
@@ -6971,11 +6974,11 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
     _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
     _gen_sig = (_gen_variant, _gen_bx, _gen_rx, _gen_ry)
-    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig:
-        st.session_state["_6evs_pdp_variant"] = _gen_variant
-        st.session_state["_6evs_buffer_x"] = _gen_bx
-        st.session_state["_6evs_rough_x"] = _gen_rx
-        st.session_state["_6evs_rough_y"] = _gen_ry
+    # ALWAYS write: ensures the selectbox starts with the sidebar value.
+    st.session_state["_6evs_pdp_variant"] = _gen_variant
+    st.session_state["_6evs_buffer_x"] = _gen_bx
+    st.session_state["_6evs_rough_x"] = _gen_rx
+    st.session_state["_6evs_rough_y"] = _gen_ry
     st.session_state["_6evs_prev_general_sig"] = _gen_sig
     st.session_state["_6evs_prev_general_variant"] = _gen_variant
 
@@ -7102,11 +7105,11 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     all_vals_plot = _6evs_vals_plot
 
     try:
-        pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
-        buffer_x = st.session_state.get("_6evs_buffer_x", 1.5) if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0
+        pdp_variant = st.session_state.get("_6evs_pdp_variant") or _gen_variant
+        buffer_x = st.session_state.get("_6evs_buffer_x", _gen_bx) if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0
         buffer_y = 0.0
-        rough_x = st.session_state.get("_6evs_rough_x", 0.0) if pdp_variant in ("rough", "bufferrough") else 0.0
-        rough_y = st.session_state.get("_6evs_rough_y", 0.4) if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0
+        rough_x = st.session_state.get("_6evs_rough_x", _gen_rx) if pdp_variant in ("rough", "bufferrough") else 0.0
+        rough_y = st.session_state.get("_6evs_rough_y", _gen_ry) if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0
         mode, pct_threshold, max_mismatch_val = get_threshold_settings()
         max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
 
@@ -7306,7 +7309,8 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
     all_vals_plot = _fts_vals_plot
 
     try:
-        pdp_variant = "fundamental"
+        _fts_pv_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        pdp_variant = _fts_pv_list[0] if _fts_pv_list else "fundamental"
         buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
         buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
@@ -7443,7 +7447,8 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
     all_vals_plot = _tts_vals_plot
 
     try:
-        pdp_variant = "fundamental"
+        _tts_pv_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+        pdp_variant = _tts_pv_list[0] if _tts_pv_list else "fundamental"
         buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
         buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
         rough_x = st.session_state.get("cfg_rough_x", 0.0)
@@ -11358,11 +11363,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _gen_rx_d = st.session_state.get("cfg_rough_x", 0.0)
     _gen_ry_d = st.session_state.get("cfg_rough_y", 0.4)
     _gen_sig_d = (_gen_variant_d, _gen_bx_d, _gen_rx_d, _gen_ry_d)
-    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig_d:
-        st.session_state["_6evs_pdp_variant"] = _gen_variant_d
-        st.session_state["_6evs_buffer_x"] = _gen_bx_d
-        st.session_state["_6evs_rough_x"] = _gen_rx_d
-        st.session_state["_6evs_rough_y"] = _gen_ry_d
+    # ALWAYS write: no widget owns these keys in the display section, and
+    # Streamlit clears widget-tied keys when the generation selectbox is
+    # not rendered (generation guard is False once results exist).
+    st.session_state["_6evs_pdp_variant"] = _gen_variant_d
+    st.session_state["_6evs_buffer_x"] = _gen_bx_d
+    st.session_state["_6evs_rough_x"] = _gen_rx_d
+    st.session_state["_6evs_rough_y"] = _gen_ry_d
     st.session_state["_6evs_prev_general_sig"] = _gen_sig_d
     st.session_state["_6evs_prev_general_variant"] = _gen_variant_d
 
@@ -11383,7 +11390,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_lane_width = 3.0  # fixed 3 m per lane
         st.caption(f"Lane width: {_6evs_lane_width} m | Lane 1: [{_6evs_lane1_center - _6evs_lane_width/2:.1f}, {_6evs_lane1_center + _6evs_lane_width/2:.1f}] | Lane 2: [{_6evs_lane2_center - _6evs_lane_width/2:.1f}, {_6evs_lane2_center + _6evs_lane_width/2:.1f}]")
         _6evs_settings_display = {
-            "PDP variant": st.session_state.get("_6evs_pdp_variant", "fundamental"),
+            "PDP variant": st.session_state.get("_6evs_pdp_variant") or _gen_variant_d,
             "Buffer X": st.session_state.get("_6evs_buffer_x", 1.5),
             "Rough X": st.session_state.get("_6evs_rough_x", 0.0),
             "Rough Y": st.session_state.get("_6evs_rough_y", 0.4),
@@ -11473,10 +11480,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
     # ---- Display the selected iteration ----
     _6evs_cnum, _6evs_dev, _6evs_cfg = _6evs_results[_6evs_browse_idx]
     # Read settings from current session state (reflects what the user has selected NOW)
-    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
-    _6evs_disp_bx = st.session_state.get("_6evs_buffer_x", 1.5)
-    _6evs_disp_rx = st.session_state.get("_6evs_rough_x", 0.0)
-    _6evs_disp_ry = st.session_state.get("_6evs_rough_y", 0.4)
+    _6evs_disp_variant = st.session_state.get("_6evs_pdp_variant") or _gen_variant_d
+    _6evs_disp_bx = st.session_state.get("_6evs_buffer_x", _gen_bx_d)
+    _6evs_disp_rx = st.session_state.get("_6evs_rough_x", _gen_rx_d)
+    _6evs_disp_ry = st.session_state.get("_6evs_rough_y", _gen_ry_d)
     _6evs_sp = _6evs_cfg.get("successful_points", [])
     _6evs_n_moves = len(_6evs_sp)
     # Count unique point indices that have been moved
