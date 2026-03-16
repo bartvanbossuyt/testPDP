@@ -12115,9 +12115,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 )
             st.caption(
                 "Order mismatches: " + "; ".join(_mismatch_parts) + ".\n\n"
-                "In the matrices below, cells with a **magenta overlay** mark "
-                "point-pairs whose relative order (< = >) differs between the original "
-                "and generated configuration. Green = closer, yellow = equal, red = farther."
+                "Compare the original and generated matrices side-by-side to see which "
+                "cells changed. Green = closer, yellow = equal, red = farther."
             )
 
         from matplotlib.colors import ListedColormap as _6evs_LCM
@@ -12171,22 +12170,11 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 return m
             return m[np.ix_(idx, idx)]
 
-        def _6evs_create_heatmap(matrix: np.ndarray, title: str,
-                                  comp_matrix: np.ndarray | None = None) -> Figure:
+        def _6evs_create_heatmap(matrix: np.ndarray, title: str) -> Figure:
             n = matrix.shape[0]
             display = _6evs_reorder_matrix(matrix)
             fig_hm, ax_hm = plt.subplots(figsize=(3.5, 3.5))
             ax_hm.imshow(display, cmap=_6evs_hm_cmap, vmin=0, vmax=2, aspect='equal')
-            # Highlight differences with semi-transparent overlay (no black stroke)
-            if comp_matrix is not None:
-                comp_display = _6evs_reorder_matrix(comp_matrix)
-                for i in range(n):
-                    for j in range(n):
-                        if display[i, j] != comp_display[i, j]:
-                            rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
-                                                  facecolor='magenta', alpha=0.35,
-                                                  edgecolor='none', linewidth=0)
-                            ax_hm.add_patch(rect)
             if len(_6evs_reorder_labels) == n and n <= 16:
                 ax_hm.set_xticks(range(n))
                 ax_hm.set_yticks(range(n))
@@ -12220,15 +12208,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
         with hmc3:
             st.markdown("**Generated d1**")
             if _6evs_gen_d1 is not None:
-                _fig3 = _6evs_create_heatmap(_6evs_gen_d1, "Generated d1 (x)",
-                                              comp_matrix=_6evs_orig_d1)
+                _fig3 = _6evs_create_heatmap(_6evs_gen_d1, "Generated d1 (x)")
                 st.pyplot(_fig3)
                 plt.close(_fig3)
         with hmc4:
             st.markdown("**Generated d2**")
             if _6evs_gen_d2 is not None:
-                _fig4 = _6evs_create_heatmap(_6evs_gen_d2, "Generated d2 (y)",
-                                              comp_matrix=_6evs_orig_d2)
+                _fig4 = _6evs_create_heatmap(_6evs_gen_d2, "Generated d2 (y)")
                 st.pyplot(_fig4)
                 plt.close(_fig4)
 
