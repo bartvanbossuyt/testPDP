@@ -6964,29 +6964,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _6evs_pcol1, _6evs_pcol2, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1], gap="small")
         with _6evs_pcol1:
             _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-            # Sync with the general PDP config: when the user changes cfg_pdp_variants,
-            # automatically update the 6-event variant to match.
-            _cfg_variants = st.session_state.get("cfg_pdp_variants", [])
-            _6evs_general_variant = "fundamental"
-            if _cfg_variants:
-                for _cv in _cfg_variants:
-                    if _cv in _6evs_pdp_variant_options:
-                        _6evs_general_variant = _cv
-                        break
-            _6evs_prev_general = st.session_state.get("_6evs_prev_general_variant", None)
-            _general_bx = st.session_state.get("cfg_buffer_x", 1.5)
-            _general_rx = st.session_state.get("cfg_rough_x", 0.0)
-            _general_ry = st.session_state.get("cfg_rough_y", 0.4)
-            _general_sig = (_6evs_general_variant, _general_bx, _general_rx, _general_ry)
-            _prev_sig = st.session_state.get("_6evs_prev_general_sig", None)
-            if _prev_sig != _general_sig:
-                # General config changed → sync 6-event selectbox AND parameters to match
-                st.session_state["_6evs_pdp_variant"] = _6evs_general_variant
-                st.session_state["_6evs_buffer_x"] = _general_bx
-                st.session_state["_6evs_rough_x"] = _general_rx
-                st.session_state["_6evs_rough_y"] = _general_ry
-            st.session_state["_6evs_prev_general_sig"] = _general_sig
-            st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant
+            # Sync already happened before generation (unconditional sync block above)
 
             _6evs_pdp_variant = st.selectbox(
                 "PDP variant",
@@ -7102,6 +7080,26 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     n_total_points = _6evs_pts_flat.shape[0]
     all_points_plot = _6evs_points_plot
     all_vals_plot = _6evs_vals_plot
+
+    # ---- Always sync from general sidebar BEFORE reading variant ----
+    _6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+    _cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
+    _gen_variant = "fundamental"
+    for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
+        if _cv_g in _6evs_pv_opts:
+            _gen_variant = _cv_g
+            break
+    _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
+    _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
+    _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
+    _gen_sig = (_gen_variant, _gen_bx, _gen_rx, _gen_ry)
+    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig:
+        st.session_state["_6evs_pdp_variant"] = _gen_variant
+        st.session_state["_6evs_buffer_x"] = _gen_bx
+        st.session_state["_6evs_rough_x"] = _gen_rx
+        st.session_state["_6evs_rough_y"] = _gen_ry
+    st.session_state["_6evs_prev_general_sig"] = _gen_sig
+    st.session_state["_6evs_prev_general_variant"] = _gen_variant
 
     try:
         pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
@@ -11348,28 +11346,25 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_total = sum(_6evs_n_per_obj.values())
     st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
 
-    # ---- Sync _6evs_pdp_variant from the general cfg_pdp_variants ----
-    _6evs_pdp_variant_options_disp = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-    _cfg_variants_disp = st.session_state.get("cfg_pdp_variants", [])
-    _6evs_general_variant_disp = "fundamental"
-    if _cfg_variants_disp:
-        for _cv_d in _cfg_variants_disp:
-            if _cv_d in _6evs_pdp_variant_options_disp:
-                _6evs_general_variant_disp = _cv_d
-                break
-    _6evs_prev_general_disp = st.session_state.get("_6evs_prev_general_variant", None)
-    _general_bx_d = st.session_state.get("cfg_buffer_x", 1.5)
-    _general_rx_d = st.session_state.get("cfg_rough_x", 0.0)
-    _general_ry_d = st.session_state.get("cfg_rough_y", 0.4)
-    _general_sig_d = (_6evs_general_variant_disp, _general_bx_d, _general_rx_d, _general_ry_d)
-    _prev_sig_d = st.session_state.get("_6evs_prev_general_sig", None)
-    if _prev_sig_d != _general_sig_d:
-        st.session_state["_6evs_pdp_variant"] = _6evs_general_variant_disp
-        st.session_state["_6evs_buffer_x"] = _general_bx_d
-        st.session_state["_6evs_rough_x"] = _general_rx_d
-        st.session_state["_6evs_rough_y"] = _general_ry_d
-    st.session_state["_6evs_prev_general_sig"] = _general_sig_d
-    st.session_state["_6evs_prev_general_variant"] = _6evs_general_variant_disp
+    # ---- Sync from general sidebar (same logic as pre-generation block) ----
+    _6evs_pv_opts_d = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+    _cfg_v_disp = st.session_state.get("cfg_pdp_variants", [])
+    _gen_variant_d = "fundamental"
+    for _cv_d in (_cfg_v_disp if _cfg_v_disp else []):
+        if _cv_d in _6evs_pv_opts_d:
+            _gen_variant_d = _cv_d
+            break
+    _gen_bx_d = st.session_state.get("cfg_buffer_x", 1.5)
+    _gen_rx_d = st.session_state.get("cfg_rough_x", 0.0)
+    _gen_ry_d = st.session_state.get("cfg_rough_y", 0.4)
+    _gen_sig_d = (_gen_variant_d, _gen_bx_d, _gen_rx_d, _gen_ry_d)
+    if st.session_state.get("_6evs_prev_general_sig") != _gen_sig_d:
+        st.session_state["_6evs_pdp_variant"] = _gen_variant_d
+        st.session_state["_6evs_buffer_x"] = _gen_bx_d
+        st.session_state["_6evs_rough_x"] = _gen_rx_d
+        st.session_state["_6evs_rough_y"] = _gen_ry_d
+    st.session_state["_6evs_prev_general_sig"] = _gen_sig_d
+    st.session_state["_6evs_prev_general_variant"] = _gen_variant_d
 
     # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
