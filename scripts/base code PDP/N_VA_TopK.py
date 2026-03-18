@@ -1,0 +1,124 @@
+"""
+v220517
+FUNCTIONALITY
+    Visual Analytics: Creates Top-K visualizations based on the distance matrix
+EXPLANATION
+    Creates Top-K analyses showing nearest neighbors, based on the distance matrix
+INPUT
+    N_C_DistanceMatrix
+OUTPUT
+    Visualization + N_C_TopK_c*.png for each configuration
+"""
+
+from matplotlib import pyplot as plt
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from scipy.stats import rankdata
+from sklearn.manifold import MDS
+from sklearn.metrics.pairwise import manhattan_distances, euclidean_distances
+import av
+import csv
+import numpy as np
+np.random.seed(0)
+import os
+import random
+import seaborn as sns
+sns.set_theme()
+import sklearn.datasets as dt
+import time
+
+# Start time
+t_start = time.time()
+
+av.L_dataset = []
+D_poi_mapping = {}
+cur_poi_id = 0
+dim = -1
+
+# Set to 1 to see print statements
+verbose = 1
+
+# Determine the appropriate file name
+if av.PDPg_fundamental_active == 1:
+    file_name = 'N_C_PDPg_fundamental_DistanceMatrix.csv'
+elif av.PDPg_buffer_active == 1:
+    file_name = 'N_C_PDPg_buffer_DistanceMatrix.csv'
+elif av.PDPg_rough_active == 1:
+    file_name = 'N_C_PDPg_rough_DistanceMatrix.csv'
+elif av.PDPg_bufferrough_active == 1:
+    file_name = 'N_C_PDPg_bufferrough_DistanceMatrix.csv'
+else:
+    print("Variable a does not hold an appropriate value.")
+    file_name = None
+
+if file_name is not None:
+    full_file_name = file_name
+    if getattr(av, 'INPUT_DISTANCE_MATRIX', None):
+        inp = av.INPUT_DISTANCE_MATRIX
+        if os.path.isdir(inp):
+            full_file_name = os.path.join(inp, file_name)
+        elif isinstance(inp, str) and inp.lower().endswith('.csv'):
+            full_file_name = inp
+        else:
+            full_file_name = os.path.join(inp, file_name)
+
+    with open(full_file_name) as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter=',')
+        for L_row in csv_reader:
+            poi_id = L_row[0]
+            if dim == -1:
+                dim = len(L_row) - 3
+            # Check if poi_id is a string, if it is, map to int
+            try:
+                int(poi_id)
+            except ValueError:
+                if poi_id not in D_poi_mapping:
+                    D_poi_mapping[poi_id] = cur_poi_id
+                    cur_poi_id += 1
+                L_row[2] = D_poi_mapping[poi_id]
+            av.L_dataset.append(list(map(float, L_row)))
+
+# Transform list to array
+av.A_dataset = np.array(av.L_dataset, dtype=np.float32)
+
+# Create the top-k visualizations
+# Loop over each row of A_dataset and create a bar graph
+for i in range(av.con):
+    row = av.A_dataset[i]
+    sorted_indices = np.argsort(row)
+    sorted_values = row[sorted_indices]
+    plt.title('TopK wrt Con ' + str(i), fontsize=30)
+    labels = [str(j) for j in sorted_indices]
+    ax = plt.gca()
+    ax.spines['bottom'].set_color('black')
+    ax.spines['left'].set_color('black')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.bar(labels, sorted_values, color='white', edgecolor='black')
+    plt.gca().set_facecolor('white')
+    plt.xlabel('Con', fontsize=20, fontname='Arial')
+    plt.ylabel('Distance', fontsize=20, fontname='Arial')
+    ax.set_ylim(0, 100)
+    y_ticks = np.arange(0, 110, 10)
+    plt.yticks(y_ticks, color='black', fontsize=15)
+    ax.tick_params(axis='both', labelsize=15, labelcolor='black')
+    ax.yaxis.grid(True, linestyle='dotted', linewidth=0.5, color='black', alpha=0.5)
+    
+    # Define output folder once
+    output_folder = os.path.join(av.OUTPUT_FOLDER, 'topk')
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Choose filename depending on which PDPg mode is active
+    if av.PDPg_fundamental_active == 1:
+        filename = os.path.join(output_folder, f'N_C_PDPg_fundamental_TopK_c{i}.png')
+    elif av.PDPg_buffer_active == 1:
+        filename = os.path.join(output_folder, f'N_C_PDPg_buffer_TopK_c{i}.png')
+    elif av.PDPg_rough_active == 1:
+        filename = os.path.join(output_folder, f'N_C_PDPg_rough_TopK_c{i}.png')
+    elif av.PDPg_bufferrough_active == 1:
+        filename = os.path.join(output_folder, f'N_C_PDPg_bufferrough_TopK_c{i}.png')
+    
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.clf()
+
+# End and print time
+print('Time elapsed for running module "N_VA_TopK": {:.3f} sec.'.format(time.time() - t_start))
