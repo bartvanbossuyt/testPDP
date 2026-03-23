@@ -4,7 +4,7 @@
 > 📁 **Archived copy:** `scripts/_archive/pdp/`  
 > 🔧 **Type:** Clean, modular Python package
 
-A **clean, modular implementation** of Pairwise Distance Pattern (PDP) analysis for moving object trajectories. This is the most modern and maintainable version of the PDP codebase.
+A **clean, modular implementation** of (PDP) analysis for moving object trajectories. This is the most modern and maintainable version of the PDP codebase.
 
 ## Overview
 
