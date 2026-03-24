@@ -8,11 +8,15 @@ DEFAULT_LANE_SETUP = {
 }
 
 # Configuration for lane drawing per 'c' value
-LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 11)}
+# Default configuration for all configs 0-67
+LANE_CONFIGURATIONS: dict[int, dict] = {c: {**DEFAULT_LANE_SETUP} for c in range(0, 68)}
+
 # Apply offset to Config 1 to center cars in lanes (shift road up by half lane width)
 LANE_CONFIGURATIONS[1]["offset"] = 1.25
 # Config 4 also needs this offset
 LANE_CONFIGURATIONS[4] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
+# Config 7: horizontal lanes (force straight horizontal lanes)
+LANE_CONFIGURATIONS[7] = {**DEFAULT_LANE_SETUP, "offset": 0.0, "force_horizontal": True}
 # Also add Config 11 with the same offset, as it's often used as default
 LANE_CONFIGURATIONS[11] = {**DEFAULT_LANE_SETUP, "offset": 1.25}
 # Config 3: overtaking scenario with wider lanes
@@ -42,8 +46,8 @@ LANE_CONFIGURATIONS[68] = {
     "lane_width": 3.0,
     "offset": 0.0,
     "centerline_y": -5.0,
-    "bounds": {"x": (0, 2000), "y": (-10.0, -0.5)},
+    "bounds": {"x": (0, 2800), "y": (-10.0, -0.5)},
     "force_horizontal": True,
-    "description": "Straight 2-lane overtaking maneuver",
+    "description": "Straight 2-lane overtaking maneuver (160 timestamps, 8-step reinsertion)",
 }
 

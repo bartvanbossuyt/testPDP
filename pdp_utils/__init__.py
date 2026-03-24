@@ -69,6 +69,25 @@ from .drawing import (
     compute_perpendicular_offset,
 )
 
+from .lane_geometry import (
+    safe_normalize,
+    calculate_vehicle_speeds,
+    determine_driving_direction,
+    vehicles_same_direction,
+    offset_polyline,
+    lane_polylines_bounds,
+    extract_centerline_from_data,
+    build_lane_polylines,
+)
+
+from .plotting import (
+    add_lane_polylines_plotly,
+    add_intersection_lanes_plotly,
+    draw_frenet_axes,
+    draw_intersection_lanes_matplotlib,
+    annotate_points,
+)
+
 __all__ = [
     # core
     "COORD_DISPLAY_PRECISION",
@@ -119,4 +138,19 @@ __all__ = [
     "remove_duplicate_points",
     "extract_longest_object_path",
     "compute_perpendicular_offset",
+    # lane_geometry
+    "safe_normalize",
+    "calculate_vehicle_speeds",
+    "determine_driving_direction",
+    "vehicles_same_direction",
+    "offset_polyline",
+    "lane_polylines_bounds",
+    "extract_centerline_from_data",
+    "build_lane_polylines",
+    # plotting
+    "add_lane_polylines_plotly",
+    "add_intersection_lanes_plotly",
+    "draw_frenet_axes",
+    "draw_intersection_lanes_matplotlib",
+    "annotate_points",
 ]
