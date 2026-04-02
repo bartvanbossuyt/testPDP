@@ -8,16 +8,15 @@ import time
 
 st.set_page_config(layout="wide")
 
-# ---------------- Unieke keys voor plotly_chart ---------------- #
-if "_plot_seq" not in st.session_state:
-    st.session_state._plot_seq = 0
-
-def unique_key(base: str) -> str:
-    st.session_state._plot_seq += 1
-    return f"{base}_{st.session_state._plot_seq}"
+# -----------------------------------------------------------------------------
+# PDP inverse — high level explanation
+# -----------------------------------------------------------------------------
+# (ongewijzigde toelichting ingekort voor leesbaarheid)
 
 # ---------------- Exact sleep helper (respect user's choice exactly) ---------------- #
 def sleep_if_needed():
+    """Sleep exactly the number of milliseconds chosen by the user.
+    0 ms -> no sleep. No multipliers."""
     delay_ms = st.session_state.get("frame_delay_ms", 0)
     if isinstance(delay_ms, (int, float)) and delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
@@ -46,17 +45,18 @@ for _k, _v in (
 
 # --- Iteration/config settings ---#
 MAX_STEPS = 12
-CONFIG_STEPS = list(range(1, 100))  # 1..99
+CONFIG_STEPS = list(range(1, 100))  # 1..99 (all configs < 100)
 SPECIAL_CONFIGS = CONFIG_STEPS
 
 # ---------------- Heatmap helper ---------------- #
 def plot_heatmap(
     z, x_labels, y_labels, title,
-    width_px=200, height_px=200,
+    width=200, height=200,
     show_values=True, fontsize=14,
     target=None,
     show_axis_labels=True,
-    key_base: str = "heatmap"
+    *,
+    key: str
 ):
     # invert Y for top-to-bottom display
     y_labels = y_labels[::-1]
@@ -109,15 +109,14 @@ def plot_heatmap(
 
     fig.update_layout(
         title=title,
-        width=width_px,
-        height=height_px,
+        width=width,
+        height=height,
         margin=dict(l=10, r=10, t=30, b=10),
         xaxis=xaxis_cfg,
         yaxis=yaxis_cfg
     )
 
-    # steeds een unieke key gebruiken
-    (target or st).plotly_chart(fig, width='content', key=unique_key(key_base))
+    (target or st).plotly_chart(fig, use_container_width=False, key=key)
 
 # ---------------- Load data ---------------- #
 @st.cache_data
@@ -184,6 +183,7 @@ with col2:
         key="frame_delay_ms"
     )
 
+    # Toggle to show/hide test points (pink/gray)
     show_test_points = st.checkbox(
         "Show test points (pink/gray)",
         value=True,
@@ -522,7 +522,7 @@ if reset_clicked:
     st.session_state.axes_locked = False
     reset_clicked_now = True
 
-# ---------------- Base figure ---------------- #
+# ---------------- Base figure (with d1/d2 strings) ---------------- #
 def base_fig(x_min_new, x_max_new, y_min_new, y_max_new,
              circle_center=None, circle_radius=None, red_point=None,
              base_d1_text="", cur_d1_text="", base_d2_text="", cur_d2_text="",
@@ -653,8 +653,8 @@ def base_fig(x_min_new, x_max_new, y_min_new, y_max_new,
                             fillcolor="rgba(0,0,0,0)")
         fig_local.add_trace(go.Scatter(x=[cx], y=[cy], mode="markers",
                                        marker=dict(symbol="cross", size=16, color="black",
-                                                   line=dict(width=2, color="black"))),
-                            )
+                                                   line=dict(width=2, color="black")),
+                                       hoverinfo="none", showlegend=False))
 
     fig_local.add_annotation(xref="paper", yref="paper", x=0.99, y=0.01,
                              text="<i>d</i><sub>1</sub>", showarrow=False,
@@ -662,6 +662,27 @@ def base_fig(x_min_new, x_max_new, y_min_new, y_max_new,
     fig_local.add_annotation(xref="paper", yref="paper", x=0.01, y=0.99,
                              text="<i>d</i><sub>2</sub>", showarrow=False,
                              font=dict(size=26, color="black"))
+
+    if base_d1_text:
+        fig_local.add_annotation(xref="paper", yref="paper", x=0.06, y=0.98,
+                                 text=f"<b>d1:</b> {base_d1_text}", showarrow=False,
+                                 align="left", font=dict(size=18),
+                                 borderpad=2, bgcolor="rgba(255,255,255,0.8)")
+    if cur_d1_text:
+        fig_local.add_annotation(xref="paper", yref="paper", x=0.06, y=0.90,
+                                 text=f"<b>d1:</b> {cur_d1_text}", showarrow=False,
+                                 align="left", font=dict(size=18),
+                                 borderpad=2, bgcolor="rgba(255,255,255,0.8)")
+    if base_d2_text:
+        fig_local.add_annotation(xref="paper", yref="paper", x=0.06, y=0.82,
+                                 text=f"<b>d2:</b> {base_d2_text}", showarrow=False,
+                                 align="left", font=dict(size=18),
+                                 borderpad=2, bgcolor="rgba(255,255,255,0.8)")
+    if cur_d2_text:
+        fig_local.add_annotation(xref="paper", yref="paper", x=0.06, y=0.74,
+                                 text=f"<b>d2:</b> {cur_d2_text}", showarrow=False,
+                                 align="left", font=dict(size=18),
+                                 borderpad=2, bgcolor="rgba(255,255,255,0.8)")
 
     if len(subset_times) > 0:
         time_label = f"t = {subset_times[0]}–{subset_times[-1]}"
@@ -709,7 +730,10 @@ def _compose_original_text(original_points):
     return "\n".join(lines)
 
 def _status_html(is_ok: bool) -> str:
-    return '<span style="color:#1f6bff;"><b>ok</b></span>' if is_ok else '<span style="color:#c01616;"><b>not correct</b></span>'
+    if is_ok:
+        return '<span style="color:#1f6bff;"><b>ok</b></span>'
+    else:
+        return '<span style="color:#c01616;"><b>not correct</b></span>'
 
 def _compose_checkpoint_html(original_points, pts, step):
     ok_d1 = _same_order(original_points, pts, axis='x')
@@ -747,25 +771,23 @@ display_labels, base_keys, key_to_point_base, M1, M2 = build_base_matrices(k_poi
 show_labels = (timepoints_n < 4)
 show_values = (timepoints_n <= 3)
 
-# Originele heatmaps (één keer tekenen)
+# ---- Heatmaps met stabiele, unieke keys ----
 plot_heatmap(M1, display_labels, display_labels, "<i>d</i><sub>1</sub>",
              200, 200, show_values=show_values, fontsize=14,
-             target=mat_orig_d1, show_axis_labels=show_labels, key_base="orig_d1")
+             target=mat_orig_d1, show_axis_labels=show_labels, key="orig_d1")
 
 plot_heatmap(M2, display_labels, display_labels, "<i>d</i><sub>2</sub>",
              200, 200, show_values=show_values, fontsize=14,
-             target=mat_orig_d2, show_axis_labels=show_labels, key_base="orig_d2")
+             target=mat_orig_d2, show_axis_labels=show_labels, key="orig_d2")
 
-# Seed placeholders voor 'generated'
-mat_gen_d1.empty()
+# Seed de 'generated' placeholders (deze keys worden later geüpdatet)
 plot_heatmap(M1, display_labels, display_labels, "<i>d</i><sub>1</sub>",
              200, 200, show_values=show_values, fontsize=14,
-             target=mat_gen_d1, show_axis_labels=show_labels, key_base="gen_d1")
+             target=mat_gen_d1, show_axis_labels=show_labels, key="gen_d1")
 
-mat_gen_d2.empty()
 plot_heatmap(M2, display_labels, display_labels, "<i>d</i><sub>2</sub>",
              200, 200, show_values=show_values, fontsize=14,
-             target=mat_gen_d2, show_axis_labels=show_labels, key_base="gen_d2")
+             target=mat_gen_d2, show_axis_labels=show_labels, key="gen_d2")
 
 # ---------------- ORIGINAL text box ---------------- #
 with col1:
@@ -774,7 +796,7 @@ with col1:
         st.session_state.orig_text = _compose_original_text(key_to_point_base)
     st.text_area("Original configuration", value=st.session_state.orig_text, height=110, disabled=True, key="orig_box")
 
-# ---------------- Axis padding updater ---------------- #
+# ---------------- Axis padding updater (locked after originals placed) ---------------- #
 def auto_expand_axes_for_point(px, py):
     global x_min_new, x_max_new, y_min_new, y_max_new
     if st.session_state.axes_locked:
@@ -785,7 +807,7 @@ def auto_expand_axes_for_point(px, py):
     if py < y_min_new + margin: y_min_new = py - margin
     if py > y_max_new - margin: y_max_new = py + margin
 
-# ---------------- Ordering text helpers ---------------- #
+# ---------------- Ordering text helpers for figure ---------------- #
 def base_order_texts(points_dict):
     base_x_groups = order_groups_from_points_dict(points_dict, axis='x')
     base_y_groups = order_groups_from_points_dict(points_dict, axis='y')
@@ -838,16 +860,13 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
             base_keys, merged_current_points_dict(key_to_point_base),
             chosen_label, trial_xy
         )
-        # Ververs de bestaande 'generated' heatmaps via hun placeholder
-        mat_gen_d1.empty()
+        # update de bestaande 'generated' heatmaps met dezelfde keys
         plot_heatmap(M3_try, display_labels, display_labels, "<i>d</i><sub>1</sub>",
                      200, 200, show_values=show_values, fontsize=14,
-                     target=mat_gen_d1, show_axis_labels=show_labels, key_base="gen_d1")
-
-        mat_gen_d2.empty()
+                     target=mat_gen_d1, show_axis_labels=show_labels, key="gen_d1")
         plot_heatmap(M4_try, display_labels, display_labels, "<i>d</i><sub>2</sub>",
                      200, 200, show_values=show_values, fontsize=14,
-                     target=mat_gen_d2, show_axis_labels=show_labels, key_base="gen_d2")
+                     target=mat_gen_d2, show_axis_labels=show_labels, key="gen_d2")
 
         current_points_for_order = dict(merged_current_points_dict(key_to_point_base))
         chosen_key = f"{'k' if chosen_label.startswith('k') else 'l'}|t{idx}"
@@ -869,7 +888,7 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
             box_center=bcenter, box_half_x=hx, box_half_y=hy,
             ray_segment=debug_ray
         )
-        canvas.plotly_chart(fig, width='stretch', key=unique_key("canvas"))
+        canvas.plotly_chart(fig, use_container_width=True)
         auto_expand_axes_for_point(trial_xy[0], trial_xy[1])
 
         matched = (np.array_equal(M1, M3_try) and np.array_equal(M2, M4_try))
@@ -908,18 +927,15 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
             box_center=bcenter, box_half_x=hx, box_half_y=hy,
             ray_segment=debug_ray
         )
-        canvas.plotly_chart(fig_final, width='stretch', key=unique_key("canvas"))
+        canvas.plotly_chart(fig_final, use_container_width=True)
 
-        # Zet 'generated' heatmaps naar de finale staat
-        mat_gen_d1.empty()
+        # ook hier: dezelfde keys blijven behouden
         plot_heatmap(M3_fin, display_labels, display_labels, "<i>d</i><sub>1</sub>",
                      200, 200, show_values=show_values, fontsize=14,
-                     target=mat_gen_d1, show_axis_labels=show_labels, key_base="gen_d1")
-
-        mat_gen_d2.empty()
+                     target=mat_gen_d1, show_axis_labels=show_labels, key="gen_d1")
         plot_heatmap(M4_fin, display_labels, display_labels, "<i>d</i><sub>2</sub>",
                      200, 200, show_values=show_values, fontsize=14,
-                     target=mat_gen_d2, show_axis_labels=show_labels, key_base="gen_d2")
+                     target=mat_gen_d2, show_axis_labels=show_labels, key="gen_d2")
 
     def update_checkpoint_text_if_needed():
         iters_done = st.session_state.repeats_done + 1
@@ -934,7 +950,7 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
     if strategy == "Exponential":
         r = clamp_radius(float(maxdist), maxdist)
         theta, r_eff, rmax_theta = choose_fixed_theta_for_r_strict_inside_box(
-            origin=(cx, cy), r=r, center=box_center, hx=box_half_x, hy=box_half_y
+            origin=(cx, cy), r=r, center=bcenter, hx=hx, hy=hy
         )
 
         eps_line = 1e-10
@@ -988,7 +1004,7 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
         pos = clamp_radius(halfstep, maxdist)
 
         theta, pos_eff, rmax_theta = choose_fixed_theta_for_r_strict_inside_box(
-            origin=(cx, cy), r=pos, center=box_center, hx=box_half_x, hy=box_half_y
+            origin=(cx, cy), r=pos, center=bcenter, hx=hx, hy=hy
         )
 
         eps_line = 1e-10
@@ -1082,7 +1098,7 @@ def run_configs(n_configs=1, iters_per_config=3, strategy="Exponential", mark_k0
             show_tests=show_test_points,
             box_center=box_center, box_half_x=box_half_x, box_half_y=box_half_y
         )
-        canvas.plotly_chart(fig_snap, width='stretch', key=unique_key("canvas"))
+        canvas.plotly_chart(fig_snap, use_container_width=True)
 
 # ---------------- Initial draw ---------------- #
 display_labels, base_keys, key_to_point_base, M1, M2 = build_base_matrices(k_points, l_points, timepoints_n)
@@ -1105,7 +1121,7 @@ fig0 = base_fig(
     show_tests=show_test_points,
     box_center=box_center, box_half_x=box_half_x, box_half_y=box_half_y
 )
-canvas.plotly_chart(fig0, width='stretch', key=unique_key("canvas"))
+canvas.plotly_chart(fig0, use_container_width=True)
 
 # >>> LOCK AXES NOW
 st.session_state.axes_locked = True

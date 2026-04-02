@@ -823,12 +823,6 @@ def _status_html(is_ok: bool) -> str:
         return '<span style="color:#c01616;"><b>not correct</b></span>'
 
 def _compose_checkpoint_html(original_points, pts, step):
-    # Compose a small HTML snippet summarizing whether the generated
-    # configuration `pts` preserves the original ordering on both axes.
-    # - original_points: mapping key->(x,y) for the canonical/original points
-    # - pts: mapping key->(x,y) for the generated/committed points
-    # - step: integer index of the configuration (used for labelling)
-    # Returns an HTML string suitable for rendering inside the checkpoint box.
     ok_d1 = _same_order(original_points, pts, axis='x')
     ok_d2 = _same_order(original_points, pts, axis='y')
     line_d1 = _format_order_line(pts, 'd1').replace("d1:", f"d1 new ({step}th):")
@@ -919,22 +913,6 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
                           canvas, mat_gen_d1, mat_gen_d2,
                           show_labels, strategy,
                           mark_k0_purple=False):
-    # Purpose: perform one interactive search/optimization iteration for the
-    # chosen base point (e.g. 'k|t0' or 'l|t2'). The routine tries candidate
-    # positions (trial_xy) and compares the ordering matrices M3/M4 against
-    # the original M1/M2. If a candidate matches both matrices, it "commits"
-    # the candidate as a prime (updates st.session_state.prime_k / prime_l).
-    # Inputs:
-    # - chosen_label: string label for the base point to modify
-    # - x_base_x, x_base_y: starting coordinates (floats)
-    # - maxdist: maximum movement radius
-    # - base_keys, key_to_point_base, M1, M2: canonical data used for comparisons
-    # - canvas, mat_gen_d1/mat_gen_d2: streamlit targets for visual output
-    # - show_labels, strategy: UI options controlling display/algorithm
-    # Side effects:
-    # - updates st.session_state (latest_blue_k/l, prime_k/l, prime_count_k/l,
-    #   and possibly pt_final_purple)
-    # - draws intermediate and final plots to the supplied canvas/targets
     if maxdist is None or maxdist <= 0:
         return False, None
 
@@ -1038,14 +1016,6 @@ def run_halving_iteration(chosen_label, x_base_x, x_base_y, maxdist,
                      200, 200, show_values=show_values, fontsize=14, target=mat_gen_d2, show_axis_labels=show_labels)
 
     def update_checkpoint_text_if_needed():
-        """
-        When certain configuration indices are reached (SPECIAL_CONFIGS),
-        compose and store a short HTML snapshot summarizing the generated
-        ordering. This updates `st.session_state.checkpoint_texts` and
-        writes into an existing placeholder if present. This helper is a
-        lightweight side-effecting function (it touches session_state and
-        the UI placeholders) and is called after a commit.
-        """
         iters_done = st.session_state.repeats_done + 1
         if iters_done in SPECIAL_CONFIGS:
             pts_now = dict(merged_current_points_dict(key_to_point_base))
@@ -1172,11 +1142,6 @@ def build_hybrid_polyline(base_points, primes_map):
     return pts
 
 def snapshot_current_hybrids():
-    # Snapshot the current hybrid polylines for k and l families.
-    # This collects the current primes combined with base points into
-    # a polyline suitable for green snapshot overlays. The function
-    # appends results into `st.session_state.green_snaps_k` and
-    # `st.session_state.green_snaps_l` for later plotting.
     k_h = build_hybrid_polyline(k_points, st.session_state.prime_k)
     if len(k_h) >= 2:
         xs_k, ys_k = zip(*k_h)
@@ -1188,14 +1153,6 @@ def snapshot_current_hybrids():
 
 # ---------------- Config runner ---------------- #
 def run_configs(n_configs=1, iters_per_config=3, strategy="Exponential", mark_k0_purple=False):
-    # High-level runner that executes multiple configuration iterations.
-    # Purpose: run `n_configs` separate configurations of `iters_per_config`
-    # iterations each. Each iteration selects a random base point and calls
-    # `run_halving_iteration` (the per-point search) which may commit primes.
-    # Side-effects:
-    # - updates `st.session_state.repeats_done` to count total iterations
-    # - captures snapshots (via snapshot_current_hybrids)
-    # - updates the displayed original configuration text
     if len(labels_points) == 0 or maxdist is None or maxdist <= 0:
         return
 
