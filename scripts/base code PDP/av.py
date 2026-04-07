@@ -51,6 +51,7 @@ PDPg_bufferrough = 0
 # Report/visual analytics switches
 N_VA_Report = 0
 N_VA_StaticAbsolute = 1
+N_VA_StaticAbsolute_color = 1
 N_VA_StaticRelative = 0
 N_VA_StaticFinetuned = 0
 N_VA_DynamicAbsolute = 0
@@ -68,12 +69,12 @@ N_VA_Inverse = 0
 N_VA_TSNE = 1
 
 # PDP window and geometry params
-window_length_tst = 3
+window_length_tst = 137
 
-buffer_x = 15
-buffer_y = 1
-rough_x = 30
-rough_y = 3
+buffer_x = 0
+buffer_y = 0
+rough_x = 0
+rough_y = 0
 
 DD  = 2
 des = 2
@@ -111,23 +112,23 @@ if graphical_user_interface == 1:
 
 # ---------------- Choose active dataset ----------------
 # NOTE: Update these paths to match your local setup
-DATA_NOCLASS   = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_NC_inD_F100.csv"
-DATA_WITHCLASS = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_CL_inD_F100.csv"
+DATA_NOCLASS   = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv'
+DATA_WITHCLASS = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv'
 
 # Pick which one you want active right now:
-dataset_name = DATA_WITHCLASS  # Switch to DATA_NOCLASS if you want the 5-col file
+dataset_name = DATA_NOCLASS  # Switch to DATA_NOCLASS if you want the 5-col file
 dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 
 # Central output folder for distance matrices, images and other generated files.
 # Change this single variable if you move the output folder.
 # Use an absolute path or a path relative to the project root.
-OUTPUT_FOLDER = os.path.expanduser('/Users/olivier/Documents/STREAMS/inD/Data/test')
+OUTPUT_FOLDER = os.path.expanduser('D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB')
 
 # Path or folder where distance-matrix CSV files live. You can set this to either:
 # - an absolute path to a directory (then scripts will look for filenames inside that dir),
 # - or a full path to a single CSV file (then that file will be used directly),
 # - or None to keep existing relative-file behavior.
-INPUT_DISTANCE_MATRIX = '/Users/olivier/Documents/STREAMS/inD/Data/test'
+INPUT_DISTANCE_MATRIX = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB'
 
 # ---------------- Load & normalize data ----------------
 # Detect number of columns: 5 (no class) or 6 (with class)

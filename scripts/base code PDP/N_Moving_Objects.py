@@ -22,6 +22,8 @@ t_start = time.time()
 # Conditionally import visual modules (based on av toggles)
 if av.N_VA_StaticAbsolute == 1:
     import N_VA_StaticAbsolute
+if av.N_VA_StaticAbsolute_color == 1:
+    import N_VA_StaticAbsolute_color   
 if av.N_VA_StaticRelative == 1:
     import N_VA_StaticRelative
 if av.N_VA_StaticFinetuned == 1:
