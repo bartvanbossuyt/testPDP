@@ -105,6 +105,9 @@ def _subscript(n: int) -> str:
 _CAR_LENGTH = 4.5   # typical car length along driving direction (x)
 _CAR_WIDTH  = 1.8   # typical car width perpendicular to driving direction (y)
 
+# ---- 6-event lane width override (metres) ----
+_6EVS_LANE_WIDTH = 3.7  # lane width used in all 6-event logic
+
 
 def _draw_car_rect(
     ax: "matplotlib.axes.Axes",
@@ -1825,7 +1828,7 @@ with st.expander("Advanced Point Selection", expanded=False):
         )
     elif point_selection_mode == "Consecutive time stamps":
         # Get available objects from data (use config_df which is already available)
-        available_objects: list[int] = sorted(config_df["o"].unique().tolist())  # type: ignore[attr-defined]
+        available_objects: list[int] = sorted(int(x) for x in config_df["o"].unique().tolist())  # type: ignore[attr-defined]
         if not available_objects:
             available_objects = [0, 1]  # Default: assume k and l
         object_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in available_objects]
@@ -7257,6 +7260,15 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 _sp_base_map[int(_sp_item["original_parent_idx"])] = _sp_item["point"]
             _6evs_pdp_checker.update_points(_sp_base_map)
 
+        # Compute road edges for distance tracking
+        _6evs_iter_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+        _6evs_iter_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
+        _6evs_iter_lw = _6EVS_LANE_WIDTH
+        _6evs_iter_road_top = max(_6evs_iter_l1c + _6evs_iter_lw / 2, _6evs_iter_l2c + _6evs_iter_lw / 2)
+        _6evs_iter_road_bot = min(_6evs_iter_l1c - _6evs_iter_lw / 2, _6evs_iter_l2c - _6evs_iter_lw / 2)
+        # Carry over previous distance records when continuing
+        _6evs_edge_distances: list[dict] = list(st.session_state.get("_6evs_edge_distances", []))
+
         _6evs_iters_completed = 0
         _6evs_iters_failed = 0
         for _6evs_cfg_i in range(_6evs_batch_count):
@@ -7300,6 +7312,43 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             pv = _perpendicular_variance(_6evs_points_plot, successful_points)
             _6evs_existing_results.append((_next_cnum, pv, config_data))
 
+            # ---- Track closest distance of each object to road edge ----
+            _6evs_gen_map_dist: dict[int, np.ndarray] = {}
+            for _sp_d in successful_points:
+                _6evs_gen_map_dist[int(_sp_d["original_parent_idx"])] = _sp_d["point"]
+            _6evs_iter_gen_pts = _6evs_pts_flat.copy()
+            for _fidx_d, _pt_d in _6evs_gen_map_dist.items():
+                if 0 <= _fidx_d < len(_6evs_iter_gen_pts):
+                    _6evs_iter_gen_pts[_fidx_d] = _pt_d
+            # Only non-fixed (moveable) points — use car rectangle face, not centroid
+            _6evs_half_car_w = _CAR_WIDTH / 2.0
+            _6evs_moveable_y = [
+                float(_6evs_iter_gen_pts[_mi][1])
+                for _mi in range(len(_6evs_iter_gen_pts))
+                if _mi < len(_6evs_is_fixed_flat) and not _6evs_is_fixed_flat[_mi]
+            ]
+            if _6evs_moveable_y:
+                # Distance from the car's top face to the road top edge
+                _dist_face_to_top = [(y + _6evs_half_car_w) - _6evs_iter_road_top
+                                     if (y + _6evs_half_car_w) > _6evs_iter_road_top
+                                     else _6evs_iter_road_top - (y + _6evs_half_car_w)
+                                     for y in _6evs_moveable_y]
+                # Distance from the car's bottom face to the road bottom edge
+                _dist_face_to_bot = [_6evs_iter_road_bot - (y - _6evs_half_car_w)
+                                     if (y - _6evs_half_car_w) < _6evs_iter_road_bot
+                                     else (y - _6evs_half_car_w) - _6evs_iter_road_bot
+                                     for y in _6evs_moveable_y]
+                _closest_edge_dist = min(min(_dist_face_to_top), min(_dist_face_to_bot))
+            else:
+                _closest_edge_dist = float('nan')
+            _6evs_edge_distances.append({
+                "iteration": _next_cnum,
+                "closest_distance_to_edge": round(_closest_edge_dist, 6),
+                "road_top": _6evs_iter_road_top,
+                "road_bot": _6evs_iter_road_bot,
+                "move_succeeded": _6evs_ok,
+            })
+
             # Prepare for next iteration in the batch: update current_points
             _prev_gen_map_batch: dict[int, np.ndarray] = {}
             for _sp in successful_points:
@@ -7325,6 +7374,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
         st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
         st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
+        st.session_state["_6evs_edge_distances"] = _6evs_edge_distances
         st.session_state["_6evs_points_plot"] = _6evs_points_plot
         st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
         # Jump to the last generated config (+1 because index 0 = original)
@@ -8021,7 +8071,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
             avg_y = float(np.mean(y_all)) if y_all else 0.0
             if not _is_custom_upload:
                 _lc = LANE_CONFIGURATIONS.get(selected_c_int, {})
-                lane_width = float(_lc.get("lane_width", 3.5))
+                lane_width = _6EVS_LANE_WIDTH
                 _lane1_c = avg_y + lane_width / 2.0
                 _lane2_c = avg_y - lane_width / 2.0
                 _road_top = _lane1_c + lane_width / 2
@@ -8389,7 +8439,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
             # Draw lanes positioned at vehicle location (skip for custom uploads)
             if not _is_custom_upload:
                 _lc = LANE_CONFIGURATIONS.get(selected_c_int, {})
-                lane_width = float(_lc.get("lane_width", 3.5))
+                lane_width = _6EVS_LANE_WIDTH
                 _lane1_c = avg_y + lane_width / 2.0
                 _lane2_c = avg_y - lane_width / 2.0
                 # Filled gray lane surfaces (6-event style)
@@ -9011,8 +9061,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlim(_ext30_x_lo, _ext30_x_hi)
         ax_s.set_ylim(_ext30_y_lo, _ext30_y_hi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)")
-        ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)")
+        ax_s.set_ylabel("d1 / y-axis (m)")
         # Toon het juiste aantal timestamps per object (na filtering)
         _ext30_ts_per_o = filtered_counts if 'filtered_counts' in locals() else {oid: _ext30_display_points[oid].shape[0] for oid in _ext30_sorted_oids}
         _ext30_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o.items())
@@ -9090,8 +9140,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_xlim(_ext30_gif_xmin, _ext30_gif_xmax)
             ax_f.set_ylim(_ext30_gif_ymin, _ext30_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             _ext30_ts_per_o2 = {oid: _ext30_display_points[oid].shape[0] for oid in _ext30_sorted_oids}
             _ext30_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _ext30_ts_per_o2.items())
             ax_f.set_title(f"Config #{_ext30_cnum} — t ≤ {t_cutoff:g} — {_ext30_ts_info2} ts  (PV={_ext30_dev:.4f} m²)", fontsize=9)
@@ -9339,8 +9389,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlim(_r30_x_lo, _r30_x_hi)
         ax_s.set_ylim(_r30_y_lo, _r30_y_hi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)")
-        ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)")
+        ax_s.set_ylabel("d1 / y-axis (m)")
         _r30_ts_per_o = _r30_filtered_counts
         _r30_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _r30_ts_per_o.items())
         ax_s.set_title(f"Config #{_r30_cnum} — PV={_r30_dev:.4f} m² — {_r30_ts_info} timestamps (rough d0=d1=0.30m)")
@@ -9413,8 +9463,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_xlim(_r30_gif_xmin, _r30_gif_xmax)
             ax_f.set_ylim(_r30_gif_ymin, _r30_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             _r30_ts_per_o2 = {oid: _r30_display_points[oid].shape[0] for oid in _r30_sorted_oids}
             _r30_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _r30_ts_per_o2.items())
             ax_f.set_title(f"Config #{_r30_cnum} — t ≤ {t_cutoff:g} — {_r30_ts_info2} ts  (PV={_r30_dev:.4f} m², rough 0.30m)", fontsize=9)
@@ -9662,8 +9712,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlim(_brc_x_lo, _brc_x_hi)
         ax_s.set_ylim(_brc_y_lo, _brc_y_hi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)")
-        ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)")
+        ax_s.set_ylabel("d1 / y-axis (m)")
         _brc_ts_per_o = _brc_filtered_counts
         _brc_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _brc_ts_per_o.items())
         ax_s.set_title(f"Config #{_brc_cnum} — PV={_brc_dev:.4f} m² — {_brc_ts_info} timestamps (bufferrough, consec ts)")
@@ -9736,8 +9786,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_xlim(_brc_gif_xmin, _brc_gif_xmax)
             ax_f.set_ylim(_brc_gif_ymin, _brc_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             _brc_ts_per_o2 = {oid: _brc_display_points[oid].shape[0] for oid in _brc_sorted_oids}
             _brc_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _brc_ts_per_o2.items())
             ax_f.set_title(f"Config #{_brc_cnum} — t ≤ {t_cutoff:g} — {_brc_ts_info2} ts  (PV={_brc_dev:.4f} m², bufferrough consec)", fontsize=9)
@@ -9987,8 +10037,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlim(_brcrd_x_lo, _brcrd_x_hi)
         ax_s.set_ylim(_brcrd_y_lo, _brcrd_y_hi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)")
-        ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)")
+        ax_s.set_ylabel("d1 / y-axis (m)")
         _brcrd_ts_per_o = _brcrd_filtered_counts
         _brcrd_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _brcrd_ts_per_o.items())
         ax_s.set_title(f"Config #{_brcrd_cnum} — PV={_brcrd_dev:.4f} m² — {_brcrd_ts_info} timestamps (bufferrough, consec ts, random dirs)")
@@ -10061,8 +10111,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_xlim(_brcrd_gif_xmin, _brcrd_gif_xmax)
             ax_f.set_ylim(_brcrd_gif_ymin, _brcrd_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             _brcrd_ts_per_o2 = {oid: _brcrd_display_points[oid].shape[0] for oid in _brcrd_sorted_oids}
             _brcrd_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _brcrd_ts_per_o2.items())
             ax_f.set_title(f"Config #{_brcrd_cnum} — t ≤ {t_cutoff:g} — {_brcrd_ts_info2} ts  (PV={_brcrd_dev:.4f} m², bufferrough consec rand)", fontsize=9)
@@ -10307,8 +10357,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         ax_s.set_xlim(_fe_x_lo, _fe_x_hi)
         ax_s.set_ylim(_fe_y_lo, _fe_y_hi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)")
-        ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)")
+        ax_s.set_ylabel("d1 / y-axis (m)")
         _fe_ts_per_o = _fe_filtered_counts
         _fe_ts_info = ", ".join(f"obj{oid}:{n}" for oid, n in _fe_ts_per_o.items())
         ax_s.set_title(f"Config #{_fe_cnum} (fixed EP) — PV={_fe_dev:.4f} m² — {_fe_ts_info} timestamps")
@@ -10361,8 +10411,8 @@ Each configuration includes an **animated GIF** download showing the trajectory 
             ax_f.set_xlim(_fe_gif_xmin, _fe_gif_xmax)
             ax_f.set_ylim(_fe_gif_ymin, _fe_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             _fe_ts_per_o2 = {oid: _fe_display_points[oid].shape[0] for oid in _fe_sorted_oids}
             _fe_ts_info2 = ", ".join(f"obj{oid}:{n}" for oid, n in _fe_ts_per_o2.items())
             ax_f.set_title(f"Config #{_fe_cnum} (fixed EP) — t ≤ {t_cutoff:g} — {_fe_ts_info2} ts  (PV={_fe_dev:.4f} m²)", fontsize=9)
@@ -10557,7 +10607,7 @@ def _display_top_n_with_gif(
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_dn_xlo, _dn_xhi); ax_s.set_ylim(_dn_ylo, _dn_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         _dn_ts_info = ", ".join(f"obj{oid}:{all_points_plot[oid].shape[0]}" for oid in _dn_sorted_oids)
         ax_s.set_title(f"Config #{_dn_cnum} — PV={_dn_dev:.4f} m² — {_dn_ts_info} timestamps")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
@@ -10603,8 +10653,8 @@ def _display_top_n_with_gif(
             ax_f.set_xlim(_dn_gif_xmin, _dn_gif_xmax)
             ax_f.set_ylim(_dn_gif_ymin, _dn_gif_ymax)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_dn_cnum} — t ≤ {tc:g}  (PV={_dn_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_dn_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -10775,7 +10825,7 @@ if st.session_state.get("_generate_half_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_hts_xlo, _hts_xhi); ax_s.set_ylim(_hts_ylo, _hts_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_hts_cnum}  (PV={_hts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -10815,8 +10865,8 @@ if st.session_state.get("_generate_half_ts_results", None):
             ax_f.set_xlim(_hts_xlo, _hts_xhi)
             ax_f.set_ylim(_hts_ylo, _hts_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_hts_cnum} — t ≤ {tc:g}  (PV={_hts_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_hts_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -10975,7 +11025,7 @@ if st.session_state.get("_generate_quarter_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_qts_xlo, _qts_xhi); ax_s.set_ylim(_qts_ylo, _qts_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_qts_cnum}  (PV={_qts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -11015,8 +11065,8 @@ if st.session_state.get("_generate_quarter_ts_results", None):
             ax_f.set_xlim(_qts_xlo, _qts_xhi)
             ax_f.set_ylim(_qts_ylo, _qts_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_qts_cnum} — t ≤ {tc:g}  (PV={_qts_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_qts_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -11170,7 +11220,7 @@ if st.session_state.get("_generate_eighth_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_ets_xlo, _ets_xhi); ax_s.set_ylim(_ets_ylo, _ets_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_ets_cnum}  (PV={_ets_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -11208,8 +11258,8 @@ if st.session_state.get("_generate_eighth_ts_results", None):
             ax_f.set_xlim(_ets_xlo, _ets_xhi)
             ax_f.set_ylim(_ets_ylo, _ets_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_ets_cnum} — t ≤ {tc:g}  (PV={_ets_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_ets_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -11361,7 +11411,7 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_sts_xlo, _sts_xhi); ax_s.set_ylim(_sts_ylo, _sts_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_sts_cnum}  (PV={_sts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -11399,8 +11449,8 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
             ax_f.set_xlim(_sts_xlo, _sts_xhi)
             ax_f.set_ylim(_sts_ylo, _sts_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_sts_cnum} — t ≤ {tc:g}  (PV={_sts_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_sts_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -11507,7 +11557,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 step=0.5, format="%.1f", key="_6evs_lane2_center",
             )
         _6evs_lc = LANE_CONFIGURATIONS.get(selected_c_int, {})
-        _6evs_lane_width = float(_6evs_lc.get("lane_width", 3.5))
+        _6evs_lane_width = _6EVS_LANE_WIDTH
         st.caption(f"Lane width: {_6evs_lane_width} m | Lane 1: [{_6evs_lane1_center - _6evs_lane_width/2:.1f}, {_6evs_lane1_center + _6evs_lane_width/2:.1f}] | Lane 2: [{_6evs_lane2_center - _6evs_lane_width/2:.1f}, {_6evs_lane2_center + _6evs_lane_width/2:.1f}]")
         _6evs_cur_variant = st.session_state.get("_6evs_pdp_variant") or _gen_variant_d
         _6evs_settings_display = {
@@ -11706,7 +11756,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_settings_parts.append(
         f"{_6evs_n_total} pts ({', '.join(f'obj {oid}: {n}' for oid, n in _6evs_n_per_obj.items())})"
     )
-    _6evs_settings_parts.append(f"lanes: {_6evs_lane1_center:.1f} / {_6evs_lane2_center:.1f}")
+    _6evs_info_lw = _6EVS_LANE_WIDTH
+    _6evs_settings_parts.append(
+        f"lane width: {_6evs_info_lw:.1f} m | "
+        f"lane 1: [{_6evs_lane1_center - _6evs_info_lw/2:.1f}, {_6evs_lane1_center + _6evs_info_lw/2:.1f}] (center {_6evs_lane1_center:.1f}) | "
+        f"lane 2: [{_6evs_lane2_center - _6evs_info_lw/2:.1f}, {_6evs_lane2_center + _6evs_info_lw/2:.1f}] (center {_6evs_lane2_center:.1f})"
+    )
     if _6evs_ext_pts:
         _6evs_settings_parts.append(f"{len(_6evs_ext_pts)} ext. pts")
     else:
@@ -11723,7 +11778,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_show_lanes_val = st.session_state.get("_6evs_show_lanes", True)
     if _6evs_show_lanes_val:
         _6evs_lc_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
-        _6evs_lw = float(_6evs_lc_cfg.get("lane_width", 3.5))
+        _6evs_lw = _6EVS_LANE_WIDTH
         _6evs_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
         _6evs_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
         # Road surface: one continuous span covering both lanes
@@ -11756,7 +11811,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                           fontsize=5, color=clr, alpha=0.9,
                           xytext=(3, -8), textcoords='offset points')
 
-    # ---- Draw external reference points (gray squares) ----
+    # ---- Draw external reference points (gray circles) ----
     if _6evs_ext_pts:
         _ext_coords = []
         for _ep in _6evs_ext_pts:
@@ -11765,7 +11820,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         if _ext_coords:
             _ext_arr = np.array(_ext_coords)
             ax_s.scatter(_ext_arr[:, 0], _ext_arr[:, 1],
-                         s=80, marker='s', color='gray', edgecolors='black',
+                         s=40, marker='o', color='gray', edgecolors='black',
                          linewidths=1.5, zorder=5, label='External ref.')
             for _ei, (_ex, _ey) in enumerate(_ext_coords):
                 ax_s.annotate(f"ext_{_ei}", xy=(_ex, _ey),
@@ -11849,8 +11904,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     ax_s.set_xlim(_6evs_xlo, _6evs_xhi)
     ax_s.set_ylim(_6evs_ylo, _6evs_yhi)
     ax_s.legend(fontsize=7, loc='upper left')
-    ax_s.set_xlabel("d0 / x-as (m)")
-    ax_s.set_ylabel("d1 / y-as (m)")
+    ax_s.set_xlabel("d0 / x-axis (m)")
+    ax_s.set_ylabel("d1 / y-axis (m)")
     # Build plot subtitle with settings
     _6evs_sub_parts = [_6evs_disp_variant]
     if _6evs_disp_variant in ('buffer', 'bufferrough'):
@@ -11984,7 +12039,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                                 method="animate", label=f"{int(t)}")
                            for t in _c0_timestamps],
                 )],
-                xaxis_title="d0 / x-as (m)", yaxis_title="d1 / y-as (m)",
+                xaxis_title="d0 / x-axis (m)", yaxis_title="d1 / y-axis (m)",
                 title="C0 — Original Dynamic Trajectory",
                 height=500, margin=dict(b=120),
             )
@@ -12049,7 +12104,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 _c0_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
                 _c0_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
                 _c0_lc_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
-                _c0_lw = float(_c0_lc_cfg.get("lane_width", 3.5))
+                _c0_lw = _6EVS_LANE_WIDTH
                 # One continuous gray road surface covering both lanes
                 _c0_road_top = max(_c0_l1c + _c0_lw / 2, _c0_l2c + _c0_lw / 2)
                 _c0_road_bot = min(_c0_l1c - _c0_lw / 2, _c0_l2c - _c0_lw / 2)
@@ -12067,7 +12122,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                                    line_dash="dot")
 
             _c0_sfig.update_layout(
-                xaxis_title="d0 / x-as (m)", yaxis_title="d1 / y-as (m)",
+                xaxis_title="d0 / x-axis (m)", yaxis_title="d1 / y-axis (m)",
                 title=f"C0 — Original at t = {_c0_slider_t}",
                 height=450,
                 xaxis=dict(range=[_6evs_xlo, _6evs_xhi]),
@@ -12082,7 +12137,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     # ---- Get road boundaries from config / session state ----
     _sc_lc_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
-    _sc_lw = float(_sc_lc_cfg.get("lane_width", 3.5))
+    _sc_lw = _6EVS_LANE_WIDTH
     _sc_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
     _sc_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
     _sc_road_top = max(_sc_l1c + _sc_lw / 2, _sc_l2c + _sc_lw / 2)
@@ -12091,7 +12146,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     # ========================================================================
     # CHECK 1 — Road Departure: car rectangle extends beyond road edges
     # ========================================================================
-    _sc_road_margin = 0.2  # metres — warn when car edge is within this margin of road edge
+    _sc_road_margin = 0.3  # metres — warn when car edge is within this margin of road edge
     _sc_depart: list[str] = []
     for idx_rd, oid_rd in enumerate(_6evs_sorted_oids):
         _orig_rd, _gen_rd, _ts_rd = _6evs_plot_data[idx_rd]
@@ -12330,7 +12385,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             )
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
-    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3 = st.columns([2, 1, 2])
+    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4 = st.columns([2, 1, 2, 2])
     with _6evs_btn_col1:
         if st.button("🔄 Next iteration (+1)", key="_6evs_gen_next", type="primary",
                      help="Pick a random point and move it (1 iteration), starting from the current state"):
@@ -12351,6 +12406,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _6evs_cur = _6evs_results[_6evs_browse_idx]
             st.session_state["_6evs_continue_from"] = _6evs_cur
             st.session_state["_6evs_batch_count"] = int(_6evs_n_gen)
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
+    with _6evs_btn_col4:
+        if st.button("⚡ 50 more iterations", key="_6evs_gen_batch_50",
+                     help="Run 50 iterations in one go, each moving 1 random point"):
+            _6evs_cur = _6evs_results[_6evs_browse_idx]
+            st.session_state["_6evs_continue_from"] = _6evs_cur
+            st.session_state["_6evs_batch_count"] = 50
             st.session_state["_generate_6ev_single_requested"] = True
             st.session_state["_generate_6ev_single_results"] = None
             st.rerun()
@@ -12461,8 +12525,17 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _smooth_t_max = max(_smooth_t_max, float(ts_f.max()))
             _smooth_gen_data[oid] = (ts_f, gen)
 
-        # Generate uniform time samples
-        _smooth_t_values = np.linspace(_smooth_t_min, _smooth_t_max, _smooth_n_frames)
+        # Generate uniform time samples — include pause frames at event 0
+        # so the animation clearly shows the starting position before moving.
+        _smooth_pause_frames = max(int(_smooth_fps * 0.5), 3)  # ~0.5s pause at start
+        _smooth_move_frames = _smooth_n_frames - _smooth_pause_frames
+        if _smooth_move_frames < 2:
+            _smooth_move_frames = _smooth_n_frames
+            _smooth_pause_frames = 0
+        _smooth_t_values = np.concatenate([
+            np.full(_smooth_pause_frames, _smooth_t_min),
+            np.linspace(_smooth_t_min, _smooth_t_max, _smooth_move_frames),
+        ])
 
         # Corner-rounding fraction: reduced by 75% for tighter corners
         _CORNER_FRAC = 0.0375
@@ -12526,12 +12599,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
             return curve_arr, head
 
         # Render frames
+        _smooth_total_frames = len(_smooth_t_values)
         _smooth_gif_frames: list[PILImage.Image] = []
         _smooth_progress = st.progress(0)
         _smooth_status = st.empty()
 
         for _fr_idx, _t_cur in enumerate(_smooth_t_values):
-            _smooth_status.text(f"Rendering smooth frame {_fr_idx + 1}/{_smooth_n_frames} (t = {_t_cur:.1f})...")
+            _smooth_status.text(f"Rendering smooth frame {_fr_idx + 1}/{_smooth_total_frames} (t = {_t_cur:.1f})...")
 
             fig_sm = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=120)
             ax_sm = fig_sm.add_subplot(111)
@@ -12539,7 +12613,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             # Draw lanes
             if _6evs_show_lanes_val:
                 _lc_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
-                _lw = float(_lc_cfg.get("lane_width", 3.5))
+                _lw = _6EVS_LANE_WIDTH
                 _l1c = st.session_state.get("_6evs_lane1_center", 0.0)
                 _l2c = st.session_state.get("_6evs_lane2_center", -3.5)
                 _road_top = max(_l1c + _lw / 2, _l2c + _lw / 2)
@@ -12573,7 +12647,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 if head_g is not None:
                     _draw_car_rect(ax_sm, float(head_g[0]), float(head_g[1]), clr, alpha=1.0, zorder=10, linewidth=2.0)
 
-            # ---- Draw external reference points (gray squares) ----
+            # ---- Draw external reference points (gray circles) ----
             _anim_ext_pts = st.session_state.get("external_points", []) if st.session_state.get("use_external_points", False) else []
             if _anim_ext_pts:
                 _anim_ext_coords = []
@@ -12583,7 +12657,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 if _anim_ext_coords:
                     _anim_ext_arr = np.array(_anim_ext_coords)
                     ax_sm.scatter(_anim_ext_arr[:, 0], _anim_ext_arr[:, 1],
-                                  s=60, marker='s', color='gray', edgecolors='black',
+                                  s=30, marker='o', color='gray', edgecolors='black',
                                   linewidths=1.2, zorder=5, label='External ref.')
 
             # ---- Draw buffer / rough zones for generated points visible at _t_cur ----
@@ -12658,8 +12732,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
             ax_sm.set_xlim(_6evs_xlo, _6evs_xhi)
             ax_sm.set_ylim(_6evs_ylo, _6evs_yhi)
-            ax_sm.set_xlabel("d0 / x-as (m)", fontsize=8)
-            ax_sm.set_ylabel("d1 / y-as (m)", fontsize=8)
+            ax_sm.set_xlabel("d0 / x-axis (m)", fontsize=8)
+            ax_sm.set_ylabel("d1 / y-axis (m)", fontsize=8)
             ax_sm.legend(fontsize=6, loc='upper left')
             _t_pct = (_t_cur - _smooth_t_min) / max(_smooth_t_max - _smooth_t_min, 1e-9) * 100
             ax_sm.set_title(
@@ -12673,7 +12747,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_sm.seek(0)
             _smooth_gif_frames.append(PILImage.open(_buf_sm).copy())
             plt.close(fig_sm)
-            _smooth_progress.progress((_fr_idx + 1) / _smooth_n_frames)
+            _smooth_progress.progress((_fr_idx + 1) / _smooth_total_frames)
 
         _smooth_progress.empty()
         _smooth_status.empty()
@@ -12767,6 +12841,51 @@ if st.session_state.get("_generate_6ev_single_results", None):
             file_name=f"6event_{_cfg_label}_config.csv",
             mime="text/csv",
             key="_6evs_config_csv_dl",
+        )
+
+    # ---- Closest distance to road edge — graph + CSV ----
+    _6evs_edge_dist_data = st.session_state.get("_6evs_edge_distances", [])
+    if _6evs_edge_dist_data:
+        st.markdown("#### Closest distance to road edge")
+        _ed_iters = [d["iteration"] for d in _6evs_edge_dist_data]
+        _ed_dists = [d["closest_distance_to_edge"] for d in _6evs_edge_dist_data]
+        _ed_ok = [d.get("move_succeeded", True) for d in _6evs_edge_dist_data]
+
+        fig_ed = Figure(figsize=(14.0, 3.5), dpi=150)
+        ax_ed = fig_ed.add_subplot(111)
+        # Color-code: green for successful moves, red for failed
+        _ed_colors = ['#2ca02c' if ok else '#d62728' for ok in _ed_ok]
+        ax_ed.scatter(_ed_iters, _ed_dists, c=_ed_colors, s=20, zorder=3)
+        ax_ed.plot(_ed_iters, _ed_dists, color='steelblue', linewidth=1.0, alpha=0.6, zorder=2)
+        # Highlight the currently browsed iteration
+        if 1 <= _6evs_cnum <= max(_ed_iters):
+            _cur_idx_in_ed = next((i for i, it in enumerate(_ed_iters) if it == _6evs_cnum), None)
+            if _cur_idx_in_ed is not None:
+                ax_ed.axvline(_ed_iters[_cur_idx_in_ed], color='orange', linewidth=1.5, linestyle='--', alpha=0.7, zorder=1)
+                ax_ed.scatter([_ed_iters[_cur_idx_in_ed]], [_ed_dists[_cur_idx_in_ed]],
+                              s=80, marker='D', color='orange', edgecolors='black', linewidths=1.0, zorder=4)
+        # Threshold line (road-departure warning margin)
+        _ed_threshold = 0.3  # metres — same as _sc_road_margin in safety checks
+        ax_ed.axhline(_ed_threshold, color='red', linewidth=1.5, linestyle='-', alpha=0.8, zorder=1,
+                      label=f'Threshold ({_ed_threshold} m)')
+        ax_ed.legend(loc='upper right', fontsize=7)
+        ax_ed.set_xlabel("Iteration", fontsize=9)
+        ax_ed.set_ylabel("Closest car face to road edge (m)", fontsize=9)
+        ax_ed.set_title("Min. distance of any car face to road edge per iteration", fontsize=10)
+        ax_ed.grid(True, alpha=0.3)
+        ax_ed.tick_params(labelsize=8)
+        fig_ed.tight_layout()
+        st.pyplot(fig_ed)
+
+        # CSV download for edge distances
+        _ed_df = pd.DataFrame(_6evs_edge_dist_data)
+        _ed_csv_text = _ed_df.to_csv(index=False)
+        st.download_button(
+            label="⬇ Download closest-distance CSV",
+            data=_ed_csv_text,
+            file_name="6event_closest_edge_distance.csv",
+            mime="text/csv",
+            key="_6evs_edge_dist_csv_dl",
         )
 
     # ---- PDP Inequality Matrices (d0 & d1, original vs generated) ----
@@ -13076,7 +13195,7 @@ if st.session_state.get("_generate_four_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_fts_xlo, _fts_xhi); ax_s.set_ylim(_fts_ylo, _fts_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_fts_cnum}  (PV={_fts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -13114,8 +13233,8 @@ if st.session_state.get("_generate_four_ts_results", None):
             ax_f.set_xlim(_fts_xlo, _fts_xhi)
             ax_f.set_ylim(_fts_ylo, _fts_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_fts_cnum} — t ≤ {tc:g}  (PV={_fts_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_fts_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -13267,7 +13386,7 @@ if st.session_state.get("_generate_two_ts_results", None):
                       arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
         ax_s.set_xlim(_tts_xlo, _tts_xhi); ax_s.set_ylim(_tts_ylo, _tts_yhi)
         ax_s.legend(fontsize=7, loc='upper left')
-        ax_s.set_xlabel("d0 / x-as (m)"); ax_s.set_ylabel("d1 / y-as (m)")
+        ax_s.set_xlabel("d0 / x-axis (m)"); ax_s.set_ylabel("d1 / y-axis (m)")
         ax_s.set_title(f"Config #{_tts_cnum}  (PV={_tts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
@@ -13305,8 +13424,8 @@ if st.session_state.get("_generate_two_ts_results", None):
             ax_f.set_xlim(_tts_xlo, _tts_xhi)
             ax_f.set_ylim(_tts_ylo, _tts_yhi)
             ax_f.set_aspect("equal", adjustable="datalim")
-            ax_f.set_xlabel("d0 / x-as (m)", fontsize=9)
-            ax_f.set_ylabel("d1 / y-as (m)", fontsize=9)
+            ax_f.set_xlabel("d0 / x-axis (m)", fontsize=9)
+            ax_f.set_ylabel("d1 / y-axis (m)", fontsize=9)
             ax_f.set_title(f"Config #{_tts_cnum} — t ≤ {tc:g}  (PV={_tts_dev:.4f} m²)", fontsize=9)
             for idx_o, oid in enumerate(_tts_sorted_oids):
                 lbl = OBJECT_LABELS[oid % len(OBJECT_LABELS)]; clr = f"C{oid}"
@@ -13861,7 +13980,7 @@ def create_smooth_animation(
             y=ext_pts_arr[:, 1],
             mode='markers',
             name='External Reference',
-            marker=dict(size=10, symbol='square', color='gray', 
+            marker=dict(size=5, symbol='circle', color='gray', 
                        line=dict(color='black', width=1.5)),
             showlegend=True,
         ))
@@ -14048,7 +14167,7 @@ def draw_original(ax: matplotlib.axes.Axes) -> None:
     if external_pts_for_window:
         ext_pts_arr = np.array(external_pts_for_window)
         ax.scatter(ext_pts_arr[:, 0], ext_pts_arr[:, 1], 
-                   s=80, marker='s', color='gray', edgecolors='black', 
+                   s=40, marker='o', color='gray', edgecolors='black', 
                    linewidths=1.5, zorder=5, label='External ref.')  # type: ignore
         # Add labels for external points (use point index from original list)
         n_timestamps = len(selected_ts_window)
@@ -14256,7 +14375,7 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
     if external_pts_for_window:
         ext_pts_arr = np.array(external_pts_for_window)
         ax.scatter(ext_pts_arr[:, 0], ext_pts_arr[:, 1], 
-                   s=80, marker='s', color='gray', edgecolors='black', 
+                   s=40, marker='o', color='gray', edgecolors='black', 
                    linewidths=1.5, zorder=5, label='External ref.')  # type: ignore
         # Add labels for external points (use point index from original list)
         n_timestamps = len(selected_ts_window)
@@ -16551,7 +16670,7 @@ with tab_static:
                     y=ext_pts_arr[:, 1],
                     mode='markers+text',
                     name='Original (external)',
-                    marker=dict(size=10, symbol='square', color='gray', line=dict(color='black', width=1.5)),
+                    marker=dict(size=5, symbol='circle', color='gray', line=dict(color='black', width=1.5)),
                     text=text_labels_ext,
                     textposition="top center",
                     legendgroup='Original',
@@ -16619,7 +16738,7 @@ with tab_static:
                         y=ext_pts_arr[:, 1],
                         mode='markers',
                         name=f'{config_label} (external)',
-                        marker=dict(size=8, symbol='square-open', color='gray', line=dict(color='black', width=1)),
+                        marker=dict(size=4, symbol='circle-open', color='gray', line=dict(color='black', width=1)),
                         legendgroup=f'{variant}_C{config_num}',
                         hovertemplate='%{hovertext}<extra></extra>',
                         hovertext=hover_texts_ext,
