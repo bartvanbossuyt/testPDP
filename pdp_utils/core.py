@@ -271,6 +271,19 @@ class IncrementalPDPChecker:
             return avg >= self.match_threshold, avg >= self.match_threshold
         return d1_pct >= self.match_threshold, d2_pct >= self.match_threshold
 
+    def get_match_pct(self) -> dict:
+        """Return current PDP match percentages and mismatch counts for diagnostics."""
+        d1_pct = 1.0 - (self._d1_mismatches / self._d1_total) if self._d1_total > 0 else 1.0
+        d2_pct = 1.0 - (self._d2_mismatches / self._d2_total) if self._d2_total > 0 else 1.0
+        return {
+            "d1_pct": d1_pct,
+            "d2_pct": d2_pct,
+            "d1_mismatches": self._d1_mismatches,
+            "d2_mismatches": self._d2_mismatches,
+            "d1_total": self._d1_total,
+            "d2_total": self._d2_total,
+        }
+
     def save_state_for_indices(self, original_indices: list) -> dict:
         """Save current state for specified original indices. O(k·N)."""
         exp_set: list = []

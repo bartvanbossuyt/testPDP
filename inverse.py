@@ -4399,7 +4399,7 @@ def _check_stagnation(successful_points: list[SuccessfulPoint], n_points_per_ite
 # ============= Helper: Multi-point generation iteration ============
 def run_multipoint_iteration(
     current_points: np.ndarray,
-    successful_points: list[SuccessfulPoint],
+    successful_points,  # list[SuccessfulPoint] or dict[int, SuccessfulPoint]
     pdp_variant: str,
     buffer_x: float,
     buffer_y: float,
@@ -4407,39 +4407,90 @@ def run_multipoint_iteration(
     rough_y: float,
     max_search_steps: int = 10,
     pdp_checker: Optional[IncrementalPDPChecker] = None,
-) -> tuple[list[SuccessfulPoint], bool]:
+    sa_temperature: float = 1.0,
+    soft_pdp_threshold: float = 1.0,
+    coordinated_move_prob: float = 0.0,
+):
     """
     Run one iteration of multi-point generation.
     
     Selects points based on selection mode, generates movement vectors,
     and uses exponential search (halving vectors on failure) until PDP matches.
     
+    Args:
+        successful_points: Either a list[SuccessfulPoint] (legacy) or
+            dict[int, SuccessfulPoint] keyed by original_parent_idx (optimized).
+            When a dict is passed, a dict is returned; when a list is passed,
+            a list is returned — preserving caller expectations.
+        sa_temperature: Simulated annealing temperature (0..1]. Scales the base
+            step distance. 1.0 = full step (no annealing), 0.05 = 5% of maxdist.
+        soft_pdp_threshold: Minimum PDP match fraction required to accept a move.
+            1.0 = strict (100% match required, legacy behavior).
+            Values < 1.0 accept partial matches (e.g. 0.95 = 95% match ok).
+        coordinated_move_prob: Probability (0..1) that this iteration moves ALL
+            moveable points together in the same direction (global shift).
+            0.0 = never (existing behavior).
+    
     Returns:
-        (new_successful_points, success): Updated list and whether iteration succeeded
+        (new_successful_points, success, diagnostics): Updated collection (same type
+        as input), whether iteration succeeded, and a diagnostics dict.
     """
+    # --- Normalize to dict internally for O(1) lookups ---
+    if isinstance(successful_points, dict):
+        _sp_dict: dict[int, SuccessfulPoint] = successful_points
+        _return_as_list = False
+    else:
+        _sp_dict = {}
+        for sp in successful_points:
+            _sp_dict[int(sp["original_parent_idx"])] = sp
+        _return_as_list = True
+    _sp_count_at_start = len(_sp_dict)
+
+    diagnostics: dict = {
+        "accepted_halving_level": -1,
+        "accepted_step_size": 0.0,
+        "pdp_match_pct": {"d1_pct": 1.0, "d2_pct": 1.0},
+        "n_halvings_tried": 0,
+        "sa_temperature": sa_temperature,
+    }
     # Select which points to move this iteration
     selected_indices = select_points_for_iteration()
     if not selected_indices:
-        return successful_points, False
+        _result = list(_sp_dict.values()) if _return_as_list else _sp_dict
+        return _result, False, diagnostics
+
+    # Coordinated move override: with probability p, move ALL moveable points together
+    _is_coordinated = False
+    if coordinated_move_prob > 0.0 and np.random.random() < coordinated_move_prob:
+        _all_moveable = get_movable_indices()
+        if len(_all_moveable) > 1:
+            selected_indices = _all_moveable
+            _is_coordinated = True
+    diagnostics["coordinated_move"] = _is_coordinated
     
-    # Generate initial movement vectors
-    base_distance = maxdist
-    movement_vectors = generate_movement_vectors(selected_indices, base_distance)
+    # Generate initial movement vectors (scaled by SA temperature)
+    base_distance = maxdist * sa_temperature
+    if _is_coordinated:
+        # Force "Same direction" for coordinated moves
+        _prev_dir = st.session_state.get("cfg_movement_direction", "Same direction")
+        st.session_state["_override_movement_direction"] = "Same direction"
+        movement_vectors = generate_movement_vectors(selected_indices, base_distance)
+        # Restore original setting
+        if "_override_movement_direction" in st.session_state:
+            del st.session_state["_override_movement_direction"]
+    else:
+        movement_vectors = generate_movement_vectors(selected_indices, base_distance)
     
     # Build current configuration with already-accepted points
     def build_current_config(additional_positions: dict[int, np.ndarray] = {}) -> np.ndarray:
         """Build configuration from original + successful + additional positions."""
         config = current_points.copy()
-        # Apply successful points
-        latest_by_idx: dict[int, np.ndarray] = {}
-        for sp in successful_points:
-            orig_idx = int(sp["original_parent_idx"])
-            latest_by_idx[orig_idx] = sp["point"]
+        # Apply successful points (O(K) where K = unique moved points)
+        for idx, sp in _sp_dict.items():
+            if 0 <= idx < len(config):
+                config[idx] = sp["point"]
         # Apply additional positions (candidate points)
         for idx, pt in additional_positions.items():
-            latest_by_idx[idx] = pt
-        # Update config
-        for idx, pt in latest_by_idx.items():
             if 0 <= idx < len(config):
                 config[idx] = pt
         return config
@@ -4451,18 +4502,14 @@ def run_multipoint_iteration(
         # Scale vectors
         scaled_vectors = scale_movement_vectors(movement_vectors, current_scale)
         
-        # Get parent points (either from successful_points or original)
-        parent_positions: dict[int, np.ndarray] = {}
+        # Get parent points via O(1) dict lookup (was O(I) reversed scan)
+        parent_positions = {}
         for idx in selected_indices:
-            # Find most recent position for this index
-            latest_pos = None
-            for sp in reversed(successful_points):
-                if int(sp["original_parent_idx"]) == idx:
-                    latest_pos = sp["point"]
-                    break
-            if latest_pos is None:
-                latest_pos = current_points[idx] if 0 <= idx < len(current_points) else np.array([0.0, 0.0])
-            parent_positions[idx] = latest_pos
+            sp = _sp_dict.get(idx)
+            if sp is not None:
+                parent_positions[idx] = sp["point"]
+            else:
+                parent_positions[idx] = current_points[idx] if 0 <= idx < len(current_points) else np.array([0.0, 0.0])
         
         # Apply movements from parent positions
         candidate_positions: dict[int, np.ndarray] = {}
@@ -4479,6 +4526,11 @@ def run_multipoint_iteration(
             pdp_checker.update_points(candidate_positions)
             same_d1, same_d2 = pdp_checker.check_match()
             success = same_d1 and same_d2
+            # Soft PDP scoring: accept partial matches when threshold < 1.0
+            if not success and soft_pdp_threshold < 1.0:
+                _soft_pct = pdp_checker.get_match_pct()
+                if _soft_pct["d1_pct"] >= soft_pdp_threshold and _soft_pct["d2_pct"] >= soft_pdp_threshold:
+                    success = True  # accept despite not being a perfect match
             if not success:
                 pdp_checker.restore_saved(_pdp_saved)
         else:
@@ -4511,12 +4563,20 @@ def run_multipoint_iteration(
                 )
             success = same_d1 and same_d2
         
+        # Record PDP match % at this halving level (before accept/reject)
+        if pdp_checker is not None:
+            _diag_pct = pdp_checker.get_match_pct()
+            diagnostics["pdp_match_pct"] = _diag_pct
+        diagnostics["n_halvings_tried"] = search_step + 1
+
         if success:
-            # Success! Add all candidate points to successful_points (with damping applied)
+            # Success! Add all candidate points via dict assignment (was append)
+            diagnostics["accepted_halving_level"] = search_step
+            diagnostics["accepted_step_size"] = float(base_distance * current_scale)
             if pdp_checker is not None:
                 # Undo candidate positions, apply damped positions instead
                 pdp_checker.restore_saved(_pdp_saved)
-            iteration_num = len(successful_points) // max(1, len(selected_indices))
+            iteration_num = _sp_count_at_start + 1
             damped_map: dict[int, np.ndarray] = {}
             for idx, new_pt in candidate_positions.items():
                 parent_pt = parent_positions[idx]
@@ -4530,10 +4590,11 @@ def run_multipoint_iteration(
                     "original_parent_idx": idx,
                     "iteration": iteration_num,
                 }
-                successful_points.append(sp)
+                _sp_dict[idx] = sp  # O(1) dict assignment replaces append
             if pdp_checker is not None:
                 pdp_checker.update_points(damped_map)
-            return successful_points, True
+            _result = list(_sp_dict.values()) if _return_as_list else _sp_dict
+            return _result, True, diagnostics
         
         # PDP check failed - halve the vectors
         current_scale *= 0.5
@@ -4555,7 +4616,8 @@ def run_multipoint_iteration(
     # Do NOT append zero-movement "successful" points; let the caller retry
     # with a different random point/direction selection.
     logger.debug("[DEBUG RUN_MULTIPOINT] Max search steps (%d) reached — no PDP-preserving move found", max_search_steps)
-    return successful_points, False
+    _result = list(_sp_dict.values()) if _return_as_list else _sp_dict
+    return _result, False, diagnostics
 
 
 def generate_exp_multipoint() -> None:
@@ -4611,7 +4673,7 @@ def generate_exp_multipoint() -> None:
                     text=f"Config {config_num}/{num_configs} · Iteration {iteration + 1}/{num_iterations} ({n_total} points)"
                 )
                 
-                successful_points, success = run_multipoint_iteration(
+                successful_points, success, _ = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -5811,7 +5873,7 @@ if st.session_state.get("_generate_30_requested", False) and not st.session_stat
         
         # Run iterations
         for iteration in range(current_iterations):
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=pdp_variant,
@@ -5903,7 +5965,7 @@ if st.session_state.get("_generate_5000_requested", False) and not st.session_st
             status_text.text(
                 f"Generating configuration {config_idx + 1}/5 | iteration {iteration + 1}/{current_iterations}..."
             )
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=pdp_variant,
@@ -6143,7 +6205,7 @@ def _run_full_ts_generation(
                     _status += f" {_status_suffix}"
                 status_text.text(_status + "...")
                 _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
+                successful_points, success, _ = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -6267,7 +6329,7 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
             status_text.text(
                 f"Generating configuration {config_idx + 1}/200 | iteration {iteration + 1}/{current_iterations}..."
             )
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=pdp_variant,
@@ -6482,7 +6544,7 @@ if st.session_state.get("_generate_ext30_half_requested", False) and not st.sess
         for iteration in range(_ext30h_iterations):
             status_text.text(f"½-ts — config {config_idx + 1}/{_ext30h_num_configs} | iter {iteration + 1}/{_ext30h_iterations}")
             _sp_before = len(successful_points)
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=pdp_variant,
@@ -6696,7 +6758,7 @@ if st.session_state.get("_generate_recursive_6event_requested", False) and not s
                         f"iter {_it + 1}/{NUM_ITER_PER_CONFIG}"
                     )
                     _sp_before = len(_sp)
-                    _sp, _ok = run_multipoint_iteration(
+                    _sp, _ok, _ = run_multipoint_iteration(
                         current_points=_cur_pts_copy,
                         successful_points=_sp,
                         pdp_variant=_6ev_pdp,
@@ -6923,7 +6985,7 @@ def _run_filtered_ts_generation(
                     f"| iter {iteration + 1}/{num_iterations}"
                 )
                 _sp_before = len(successful_points)
-                successful_points, success = run_multipoint_iteration(
+                successful_points, success, _ = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -7125,6 +7187,108 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                      "Only used by rough/bufferrough/realistic variants.",
             )
 
+        # --- Simulated annealing settings ---
+        st.markdown("---")
+        _6evs_sa_col1, _6evs_sa_col2, _6evs_sa_col3 = st.columns([1, 1, 1], gap="small")
+        with _6evs_sa_col1:
+            _6evs_sa_enabled = st.checkbox(
+                "🌡️ Simulated annealing",
+                value=st.session_state.get("_6evs_sa_enabled", False),
+                key="_6evs_sa_enabled",
+                help="Enable temperature-based step size decay. "
+                     "Early iterations explore broadly (large steps); "
+                     "later iterations refine (small steps). "
+                     "Uses T = T_initial × cooling_rate^iteration.",
+            )
+        with _6evs_sa_col2:
+            _6evs_sa_cooling = st.number_input(
+                "Cooling rate",
+                min_value=0.900, max_value=0.999,
+                value=st.session_state.get("_6evs_sa_cooling", 0.980),
+                step=0.005, format="%.3f",
+                key="_6evs_sa_cooling",
+                help="Temperature multiplier per iteration (0.95 = fast cooling, 0.995 = slow cooling). "
+                     "At cooling=0.98, step size halves every ~35 iterations.",
+            )
+        with _6evs_sa_col3:
+            _6evs_sa_min_temp = st.number_input(
+                "Min temperature",
+                min_value=0.01, max_value=1.0,
+                value=st.session_state.get("_6evs_sa_min_temp", 0.05),
+                step=0.01, format="%.2f",
+                key="_6evs_sa_min_temp",
+                help="Temperature floor — step size won't shrink below maxdist × min_temp. "
+                     "Prevents the walk from freezing completely.",
+            )
+
+        # Soft PDP scoring: accept partial matches
+        _6evs_soft_col1, _6evs_soft_col2 = st.columns([1, 2], gap="small")
+        with _6evs_soft_col1:
+            _6evs_soft_pdp_enabled = st.checkbox(
+                "🎯 Soft PDP scoring",
+                value=st.session_state.get("_6evs_soft_pdp_enabled", False),
+                key="_6evs_soft_pdp_enabled",
+                help="Accept moves that partially preserve PDP order. "
+                     "Instead of requiring 100% match, accept if match % ≥ threshold. "
+                     "Allows more exploration at the cost of slight order violations.",
+            )
+        with _6evs_soft_col2:
+            _6evs_soft_pdp_thresh = st.number_input(
+                "Min PDP match %",
+                min_value=0.80, max_value=1.00,
+                value=st.session_state.get("_6evs_soft_pdp_thresh", 0.95),
+                step=0.01, format="%.2f",
+                key="_6evs_soft_pdp_thresh",
+                disabled=not st.session_state.get("_6evs_soft_pdp_enabled", False),
+                help="Minimum fraction of PDP comparisons that must match (both d1 and d2). "
+                     "0.95 = accept if ≥95% of pairs match. Higher = stricter.",
+            )
+
+        # Population-based search
+        _6evs_pop_col1, _6evs_pop_col2 = st.columns([1, 2], gap="small")
+        with _6evs_pop_col1:
+            _6evs_pop_enabled = st.checkbox(
+                "👥 Population search",
+                value=st.session_state.get("_6evs_pop_enabled", False),
+                key="_6evs_pop_enabled",
+                help="Maintain multiple parallel configurations (population). "
+                     "Each gets iterations in round-robin; the best member "
+                     "(lowest perpendicular variance) is selected at the end.",
+            )
+        with _6evs_pop_col2:
+            _6evs_pop_size = st.number_input(
+                "Population size",
+                min_value=2, max_value=10,
+                value=st.session_state.get("_6evs_pop_size", 3),
+                step=1,
+                key="_6evs_pop_size",
+                disabled=not st.session_state.get("_6evs_pop_enabled", False),
+                help="Number of parallel configurations to maintain. "
+                     "Total iterations are split across members (e.g. 50 iters / 5 pop = 10 each).",
+            )
+
+        # Multi-point coordinated moves
+        _6evs_coord_col1, _6evs_coord_col2 = st.columns([1, 2], gap="small")
+        with _6evs_coord_col1:
+            _6evs_coord_enabled = st.checkbox(
+                "🔗 Coordinated moves",
+                value=st.session_state.get("_6evs_coord_enabled", False),
+                key="_6evs_coord_enabled",
+                help="Occasionally move ALL moveable points together in the same direction "
+                     "(global shift). Preserves relative ordering while exploring the config space.",
+            )
+        with _6evs_coord_col2:
+            _6evs_coord_prob = st.number_input(
+                "Coordinated move probability",
+                min_value=0.05, max_value=1.00,
+                value=st.session_state.get("_6evs_coord_prob", 0.20),
+                step=0.05, format="%.2f",
+                key="_6evs_coord_prob",
+                disabled=not st.session_state.get("_6evs_coord_enabled", False),
+                help="Probability per iteration that all moveable points are moved together "
+                     "instead of just one/few. 0.20 = 20% of iterations are coordinated.",
+            )
+
     _6evs_settings = {
         "PDP variant": _6evs_pdp_variant,
     }
@@ -7223,20 +7387,19 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             # Recover previous results list so we can append
             _6evs_existing_results = list(st.session_state.get("_6evs_prev_results_backup", []))
             # Build starting points from the previous config's generated points
-            _prev_sp = _prev_cfg.get("successful_points", [])
-            _prev_gen_map: dict[int, np.ndarray] = {}
-            for sp in _prev_sp:
-                _prev_gen_map[int(sp["original_parent_idx"])] = sp["point"]
+            _prev_sp_list = _prev_cfg.get("successful_points", [])
+            # Convert list → dict keyed by original_parent_idx (O(1) lookups)
+            sp_dict: dict[int, SuccessfulPoint] = {}
+            for sp in _prev_sp_list:
+                sp_dict[int(sp["original_parent_idx"])] = sp
             current_points = _6evs_pts_flat.copy()
-            for fidx, pt in _prev_gen_map.items():
+            for fidx, sp in sp_dict.items():
                 if 0 <= fidx < len(current_points):
-                    current_points[fidx] = pt
-            # Carry over the accumulated successful_points from the previous config
-            successful_points: list[SuccessfulPoint] = list(_prev_sp)
+                    current_points[fidx] = sp["point"]
             _next_cnum = _prev_cnum + 1
         else:
             current_points = _6evs_pts_flat.copy()
-            successful_points: list[SuccessfulPoint] = []
+            sp_dict: dict[int, SuccessfulPoint] = {}
             _next_cnum = 1
 
         # How many iterations to run in this batch (default 1)
@@ -7254,10 +7417,8 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             max_mismatches=max_mismatch_val if mode != "Percentage" else None,
         )
         # Apply already-accepted successful_points to the checker base state
-        if successful_points:
-            _sp_base_map: dict[int, np.ndarray] = {}
-            for _sp_item in successful_points:
-                _sp_base_map[int(_sp_item["original_parent_idx"])] = _sp_item["point"]
+        if sp_dict:
+            _sp_base_map: dict[int, np.ndarray] = {idx: sp["point"] for idx, sp in sp_dict.items()}
             _6evs_pdp_checker.update_points(_sp_base_map)
 
         # Compute road edges for distance tracking
@@ -7271,36 +7432,137 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
         _6evs_iters_completed = 0
         _6evs_iters_failed = 0
+        # Diagnostics tracking for random walk analysis
+        _6evs_iter_diagnostics: list[dict] = list(st.session_state.get("_6evs_iter_diagnostics", []))
+
+        # Trajectory tracking: position of each moveable point per iteration
+        # dict[point_idx, list[np.ndarray]]  — carried over from previous batches
+        _6evs_trajectories: dict[int, list] = {
+            int(k): [np.array(p) for p in v]
+            for k, v in st.session_state.get("_6evs_trajectories", {}).items()
+        }
+        # Identify moveable (non-fixed) indices
+        _6evs_moveable_idxs = [
+            i for i in range(len(_6evs_pts_flat))
+            if i < len(_6evs_is_fixed_flat) and not _6evs_is_fixed_flat[i]
+        ]
+        # Record initial positions if no trajectory history yet
+        if not _6evs_trajectories:
+            for _mi in _6evs_moveable_idxs:
+                _6evs_trajectories[_mi] = [_6evs_pts_flat[_mi].copy()]
+
+        # Simulated annealing configuration
+        _sa_enabled = st.session_state.get("_6evs_sa_enabled", False)
+        _sa_cooling = st.session_state.get("_6evs_sa_cooling", 0.980)
+        _sa_min_temp = st.session_state.get("_6evs_sa_min_temp", 0.05)
+        # Total accumulated iterations (including from previous batches) for SA schedule
+        _sa_total_iter_start = _next_cnum - 1  # iterations already done before this batch
+
+        # Soft PDP scoring
+        _soft_pdp_enabled = st.session_state.get("_6evs_soft_pdp_enabled", False)
+        _soft_pdp_thresh = st.session_state.get("_6evs_soft_pdp_thresh", 0.95) if _soft_pdp_enabled else 1.0
+
+        # Multi-point coordinated moves
+        _coord_enabled = st.session_state.get("_6evs_coord_enabled", False)
+        _coord_prob = st.session_state.get("_6evs_coord_prob", 0.20) if _coord_enabled else 0.0
+
+        # Population-based search setup
+        _pop_enabled = st.session_state.get("_6evs_pop_enabled", False)
+        _pop_size = int(st.session_state.get("_6evs_pop_size", 3)) if _pop_enabled else 1
+        if _pop_size > 1:
+            # Create N copies of sp_dict and N independent checkers
+            _pop_dicts: list[dict[int, SuccessfulPoint]] = [dict(sp_dict) for _ in range(_pop_size)]
+            _pop_checkers: list[IncrementalPDPChecker] = []
+            _pop_current_pts: list[np.ndarray] = [current_points.copy() for _ in range(_pop_size)]
+            for _pi in range(_pop_size):
+                _pc = IncrementalPDPChecker(
+                    original_points=_6evs_pts_flat,
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0,
+                    buffer_y=buffer_y if pdp_variant in ("buffer", "bufferrough") else 0.0,
+                    rough_x=rough_x if pdp_variant in ("rough", "bufferrough") else 0.0,
+                    rough_y=rough_y if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0,
+                    match_threshold=pct_threshold,
+                    max_mismatches=max_mismatch_val if mode != "Percentage" else None,
+                )
+                if _pop_dicts[_pi]:
+                    _pc.update_points({idx: sp["point"] for idx, sp in _pop_dicts[_pi].items()})
+                _pop_checkers.append(_pc)
+        else:
+            # Single member — just wrap existing variables
+            _pop_dicts = [sp_dict]
+            _pop_checkers = [_6evs_pdp_checker]
+            _pop_current_pts = [current_points]
+
         for _6evs_cfg_i in range(_6evs_batch_count):
+            # Select population member (round-robin)
+            _member = _6evs_cfg_i % _pop_size
+            sp_dict = _pop_dicts[_member]
+            current_points = _pop_current_pts[_member]
+            _active_checker = _pop_checkers[_member]
+
+            # Compute SA temperature for this iteration
+            _sa_iter_global = _sa_total_iter_start + _6evs_cfg_i
+            if _sa_enabled:
+                _sa_temp = max(_sa_min_temp, _sa_cooling ** _sa_iter_global)
+            else:
+                _sa_temp = 1.0
+
             status_text.text(
                 f"6-event — iteration #{_next_cnum} "
                 f"{'step ' + str(_6evs_cfg_i + 1) + '/' + str(_6evs_batch_count) + ' | ' if _6evs_batch_count > 1 else ''}"
+                f"{'T=' + f'{_sa_temp:.3f} | ' if _sa_enabled else ''}"
+                f"{'[pop ' + str(_member + 1) + '/' + str(_pop_size) + '] | ' if _pop_size > 1 else ''}"
                 f"trying …"
             )
             progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
 
             # ONE attempt: pick random point + direction, max 10 halvings.
             # If PDP fails, point stays at start.
-            successful_points_candidate, _6evs_ok = run_multipoint_iteration(
+            sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
                 current_points=current_points,
-                successful_points=list(successful_points),
+                successful_points=dict(sp_dict),  # pass dict copy (dict path, O(1) lookups)
                 pdp_variant=pdp_variant,
                 buffer_x=buffer_x,
                 buffer_y=buffer_y,
                 rough_x=rough_x,
                 rough_y=rough_y,
-                pdp_checker=_6evs_pdp_checker,
+                pdp_checker=_active_checker,
+                sa_temperature=_sa_temp,
+                soft_pdp_threshold=_soft_pdp_thresh,
+                coordinated_move_prob=_coord_prob,
             )
 
             if _6evs_ok:
-                successful_points = successful_points_candidate
+                sp_dict = sp_dict_candidate
+                _pop_dicts[_member] = sp_dict  # write back to population
             else:
                 _6evs_iters_failed += 1
 
+            # Record diagnostics for this iteration
+            _6evs_iter_diagnostics.append({
+                "iteration": _next_cnum,
+                "success": _6evs_ok,
+                "halving_level": _6evs_iter_diag.get("accepted_halving_level", -1),
+                "step_size": _6evs_iter_diag.get("accepted_step_size", 0.0),
+                "d1_pct": _6evs_iter_diag.get("pdp_match_pct", {}).get("d1_pct", 1.0),
+                "d2_pct": _6evs_iter_diag.get("pdp_match_pct", {}).get("d2_pct", 1.0),
+                "n_halvings_tried": _6evs_iter_diag.get("n_halvings_tried", 0),
+                "sa_temperature": _6evs_iter_diag.get("sa_temperature", 1.0),
+            })
+
+            # Record current positions for trajectory smoothness tracking
+            for _mi in _6evs_moveable_idxs:
+                _traj_pt = sp_dict[_mi]["point"].copy() if _mi in sp_dict else current_points[_mi].copy()
+                if _mi not in _6evs_trajectories:
+                    _6evs_trajectories[_mi] = []
+                _6evs_trajectories[_mi].append(_traj_pt)
+
             # Always record the iteration (successful or not)
             _6evs_iters_completed += 1
+            _sp_list_for_storage = list(sp_dict.values())  # serialize as list for config_data
             config_data = {
-                "successful_points": list(successful_points),
+                "successful_points": _sp_list_for_storage,
                 "config_number": _next_cnum,
                 "pdp_variant": pdp_variant,
                 "iterations": _next_cnum,
@@ -7309,17 +7571,14 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 "threshold_mode": mode, "max_threshold": max_threshold,
                 "move_succeeded": _6evs_ok,
             }
-            pv = _perpendicular_variance(_6evs_points_plot, successful_points)
+            pv = _perpendicular_variance(_6evs_points_plot, _sp_list_for_storage)
             _6evs_existing_results.append((_next_cnum, pv, config_data))
 
             # ---- Track closest distance of each object to road edge ----
-            _6evs_gen_map_dist: dict[int, np.ndarray] = {}
-            for _sp_d in successful_points:
-                _6evs_gen_map_dist[int(_sp_d["original_parent_idx"])] = _sp_d["point"]
             _6evs_iter_gen_pts = _6evs_pts_flat.copy()
-            for _fidx_d, _pt_d in _6evs_gen_map_dist.items():
+            for _fidx_d, _sp_d in sp_dict.items():
                 if 0 <= _fidx_d < len(_6evs_iter_gen_pts):
-                    _6evs_iter_gen_pts[_fidx_d] = _pt_d
+                    _6evs_iter_gen_pts[_fidx_d] = _sp_d["point"]
             # Only non-fixed (moveable) points — use car rectangle face, not centroid
             _6evs_half_car_w = _CAR_WIDTH / 2.0
             _6evs_moveable_y = [
@@ -7350,14 +7609,27 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             })
 
             # Prepare for next iteration in the batch: update current_points
-            _prev_gen_map_batch: dict[int, np.ndarray] = {}
-            for _sp in successful_points:
-                _prev_gen_map_batch[int(_sp["original_parent_idx"])] = _sp["point"]
             current_points = _6evs_pts_flat.copy()
-            for _fidx, _pt in _prev_gen_map_batch.items():
+            for _fidx, _sp in sp_dict.items():
                 if 0 <= _fidx < len(current_points):
-                    current_points[_fidx] = _pt
+                    current_points[_fidx] = _sp["point"]
+            _pop_current_pts[_member] = current_points  # write back to population
             _next_cnum += 1
+
+        # --- Population selection: pick best member ---
+        if _pop_size > 1:
+            _best_member = 0
+            _best_pv = float('inf')
+            for _pi in range(_pop_size):
+                _pv_i = _perpendicular_variance(_6evs_points_plot, list(_pop_dicts[_pi].values()))
+                if _pv_i < _best_pv:
+                    _best_pv = _pv_i
+                    _best_member = _pi
+            sp_dict = _pop_dicts[_best_member]
+            current_points = _pop_current_pts[_best_member]
+        else:
+            sp_dict = _pop_dicts[0]
+            current_points = _pop_current_pts[0]
 
         progress_bar.empty()
         status_text.empty()
@@ -7368,13 +7640,18 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             "iters_completed": _6evs_iters_completed,
             "iters_failed": _6evs_iters_failed,
             "batch_requested": _6evs_batch_count,
-            "accumulated_sp": len(successful_points),
+            "accumulated_sp": len(sp_dict),
             "maxdist_used": maxdist,
         }
 
         st.session_state["_generate_6ev_single_results"] = _6evs_existing_results
         st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
         st.session_state["_6evs_edge_distances"] = _6evs_edge_distances
+        st.session_state["_6evs_iter_diagnostics"] = _6evs_iter_diagnostics
+        st.session_state["_6evs_trajectories"] = {
+            k: [p.tolist() if hasattr(p, 'tolist') else list(p) for p in v]
+            for k, v in _6evs_trajectories.items()
+        }
         st.session_state["_6evs_points_plot"] = _6evs_points_plot
         st.session_state["_6evs_vals_plot"] = _6evs_vals_plot
         # Jump to the last generated config (+1 because index 0 = original)
@@ -7475,7 +7752,7 @@ if st.session_state.get("_generate_four_ts_requested", False) and not st.session
             successful_points: list[SuccessfulPoint] = []
             for iteration in range(_fts_iterations):
                 status_text.text(f"4-ts filtered — config {config_idx + 1}/{_fts_num_configs} | iter {iteration + 1}/{_fts_iterations}")
-                successful_points, success = run_multipoint_iteration(
+                successful_points, success, _ = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -7613,7 +7890,7 @@ if st.session_state.get("_generate_two_ts_requested", False) and not st.session_
             successful_points: list[SuccessfulPoint] = []
             for iteration in range(_tts_iterations):
                 status_text.text(f"2-ts filtered — config {config_idx + 1}/{_tts_num_configs} | iter {iteration + 1}/{_tts_iterations}")
-                successful_points, success = run_multipoint_iteration(
+                successful_points, success, _ = run_multipoint_iteration(
                     current_points=current_points,
                     successful_points=successful_points,
                     pdp_variant=pdp_variant,
@@ -7704,7 +7981,7 @@ if st.session_state.get("_generate_c68r_requested", False) and not st.session_st
         for iteration in range(_c68r_iters):
             status_text.text(f"C68 Realistic — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68r_iters}")
             _sp_before = len(successful_points)
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=_c68r_pdp,
@@ -7799,7 +8076,7 @@ if st.session_state.get("_generate_c68f_requested", False) and not st.session_st
         for iteration in range(_c68f_iters):
             status_text.text(f"C68 Fundamental — config {config_idx + 1}/{MAX_FILTER_CONFIGS} | iter {iteration + 1}/{_c68f_iters}")
             _sp_before = len(successful_points)
-            successful_points, success = run_multipoint_iteration(
+            successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
                 pdp_variant=_c68f_pdp,
@@ -12887,6 +13164,165 @@ if st.session_state.get("_generate_6ev_single_results", None):
             mime="text/csv",
             key="_6evs_edge_dist_csv_dl",
         )
+
+    # ---- Random Walk Diagnostics (acceptance rate, PDP match %, step size) ----
+    _6evs_diag_data = st.session_state.get("_6evs_iter_diagnostics", [])
+    if _6evs_diag_data and len(_6evs_diag_data) >= 2:
+        with st.expander("📊 Random walk diagnostics", expanded=False):
+            _diag_iters = [d["iteration"] for d in _6evs_diag_data]
+            _diag_success = [d["success"] for d in _6evs_diag_data]
+            _diag_d1 = [d["d1_pct"] for d in _6evs_diag_data]
+            _diag_d2 = [d["d2_pct"] for d in _6evs_diag_data]
+            _diag_step = [d["step_size"] for d in _6evs_diag_data]
+            _diag_halving = [d["halving_level"] for d in _6evs_diag_data]
+            _diag_sa_temp = [d.get("sa_temperature", 1.0) for d in _6evs_diag_data]
+            _sa_active = any(t < 0.99 for t in _diag_sa_temp)
+
+            # --- 1. Acceptance rate (rolling window) ---
+            _roll_window = min(10, len(_diag_success))
+            _rolling_accept = []
+            for _ri in range(len(_diag_success)):
+                _window_start = max(0, _ri - _roll_window + 1)
+                _window = _diag_success[_window_start:_ri + 1]
+                _rolling_accept.append(sum(_window) / len(_window))
+
+            fig_diag = Figure(figsize=(14.0, 12.0), dpi=150)
+
+            # Panel 1: Acceptance rate
+            ax1 = fig_diag.add_subplot(4, 1, 1)
+            ax1.plot(_diag_iters, _rolling_accept, color='#2ca02c', linewidth=1.5, label=f'Rolling acceptance (w={_roll_window})')
+            ax1.axhline(0.5, color='orange', linewidth=1.0, linestyle='--', alpha=0.6, label='50% line')
+            ax1.axhline(0.05, color='red', linewidth=1.0, linestyle='--', alpha=0.6, label='5% (stuck threshold)')
+            # Scatter individual successes/failures
+            for _si, (_sx, _ss) in enumerate(zip(_diag_iters, _diag_success)):
+                ax1.scatter([_sx], [1.0 if _ss else 0.0], c='#2ca02c' if _ss else '#d62728',
+                           s=8, alpha=0.4, zorder=2)
+            ax1.set_ylabel("Acceptance rate", fontsize=9)
+            ax1.set_title("Acceptance rate per iteration (biased random walk)", fontsize=10)
+            ax1.set_ylim(-0.05, 1.05)
+            ax1.legend(loc='upper right', fontsize=7)
+            ax1.grid(True, alpha=0.3)
+            ax1.tick_params(labelsize=8)
+            # Overlay SA temperature curve if active
+            if _sa_active:
+                ax1_twin = ax1.twinx()
+                ax1_twin.plot(_diag_iters, _diag_sa_temp, color='#9467bd', linewidth=1.5,
+                             linestyle='-.', alpha=0.7, label='SA Temperature')
+                ax1_twin.set_ylabel("Temperature", fontsize=9, color='#9467bd')
+                ax1_twin.set_ylim(-0.05, 1.05)
+                ax1_twin.tick_params(labelsize=8, axis='y', labelcolor='#9467bd')
+                ax1_twin.legend(loc='upper left', fontsize=7)
+
+            # Panel 2: PDP match % (d1 and d2)
+            ax2 = fig_diag.add_subplot(4, 1, 2)
+            ax2.plot(_diag_iters, [d * 100 for d in _diag_d1], color='#1f77b4', linewidth=1.0, alpha=0.7, label='d1 (x) match %')
+            ax2.plot(_diag_iters, [d * 100 for d in _diag_d2], color='#ff7f0e', linewidth=1.0, alpha=0.7, label='d2 (y) match %')
+            ax2.axhline(100, color='green', linewidth=0.8, linestyle=':', alpha=0.5)
+            ax2.set_ylabel("PDP match %", fontsize=9)
+            ax2.set_title("PDP match percentage at acceptance/final halving", fontsize=10)
+            ax2.set_ylim(max(0, min(min(_diag_d1), min(_diag_d2)) * 100 - 5), 102)
+            ax2.legend(loc='lower right', fontsize=7)
+            ax2.grid(True, alpha=0.3)
+            ax2.tick_params(labelsize=8)
+
+            # Panel 3: Step size histogram (accepted steps only)
+            ax3 = fig_diag.add_subplot(4, 1, 3)
+            _accepted_steps = [s for s, ok in zip(_diag_step, _diag_success) if ok and s > 0]
+            _accepted_halvings = [h for h, ok in zip(_diag_halving, _diag_success) if ok and h >= 0]
+            if _accepted_steps:
+                ax3_twin = ax3.twinx()
+                # Histogram of accepted step sizes
+                ax3.hist(_accepted_steps, bins=min(30, max(5, len(_accepted_steps) // 3)),
+                        color='steelblue', alpha=0.7, edgecolor='black', linewidth=0.5)
+                ax3.set_xlabel("Accepted step size (m)", fontsize=9)
+                ax3.set_ylabel("Count", fontsize=9, color='steelblue')
+                ax3.set_title(f"Step size distribution ({len(_accepted_steps)} accepted / {len(_diag_success)} total)", fontsize=10)
+                ax3.tick_params(labelsize=8)
+                # Overlay: halving level distribution
+                if _accepted_halvings:
+                    _halv_counts = {}
+                    for _h in _accepted_halvings:
+                        _halv_counts[_h] = _halv_counts.get(_h, 0) + 1
+                    _halv_levels = sorted(_halv_counts.keys())
+                    _halv_vals = [_halv_counts[h] for h in _halv_levels]
+                    ax3_twin.bar([h + 0.3 for h in _halv_levels], _halv_vals, width=0.4,
+                                color='#ff7f0e', alpha=0.6, label='Halving level')
+                    ax3_twin.set_ylabel("Count (halving level)", fontsize=9, color='#ff7f0e')
+                    ax3_twin.tick_params(labelsize=8, axis='y', labelcolor='#ff7f0e')
+                    # Add halving level labels
+                    ax3_twin.set_xticks(range(10))
+                    ax3_twin.set_xticklabels([f'h{i}' for i in range(10)], fontsize=6)
+            else:
+                ax3.text(0.5, 0.5, "No accepted steps yet", ha='center', va='center',
+                        transform=ax3.transAxes, fontsize=12, color='gray')
+                ax3.set_title("Step size distribution (no accepted steps)", fontsize=10)
+            ax3.grid(True, alpha=0.3)
+
+            # Panel 4: Trajectory smoothness (tortuosity per moveable point)
+            ax4 = fig_diag.add_subplot(4, 1, 4)
+            _traj_data = st.session_state.get("_6evs_trajectories", {})
+            if _traj_data:
+                _tort_labels = []
+                _tort_vals = []
+                _disp_vals = []
+                _path_vals = []
+                for _tidx_str, _tpts in sorted(_traj_data.items(), key=lambda x: int(x[0])):
+                    _tpts_arr = [np.array(p) for p in _tpts]
+                    if len(_tpts_arr) < 2:
+                        continue
+                    # Path length = sum of step distances
+                    _path_len = sum(np.linalg.norm(_tpts_arr[i+1] - _tpts_arr[i]) for i in range(len(_tpts_arr) - 1))
+                    # Displacement = distance from start to end
+                    _displacement = float(np.linalg.norm(_tpts_arr[-1] - _tpts_arr[0]))
+                    # Tortuosity = path_length / displacement (1.0 = straight line, higher = more zigzag)
+                    _tortuosity = _path_len / _displacement if _displacement > 1e-9 else float('inf')
+                    _tort_labels.append(f"pt {_tidx_str}")
+                    _tort_vals.append(min(_tortuosity, 50.0))  # cap for display
+                    _disp_vals.append(_displacement)
+                    _path_vals.append(_path_len)
+
+                if _tort_vals:
+                    _bar_x = range(len(_tort_labels))
+                    _bar_colors = ['#d62728' if t > 10 else '#ff7f0e' if t > 3 else '#2ca02c' for t in _tort_vals]
+                    ax4.bar(_bar_x, _tort_vals, color=_bar_colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+                    ax4.set_xticks(list(_bar_x))
+                    ax4.set_xticklabels(_tort_labels, fontsize=7, rotation=45, ha='right')
+                    ax4.axhline(1.0, color='green', linewidth=1.0, linestyle='--', alpha=0.6, label='Straight line (1.0)')
+                    ax4.axhline(3.0, color='orange', linewidth=1.0, linestyle='--', alpha=0.5, label='Moderate zigzag (3.0)')
+                    ax4.axhline(10.0, color='red', linewidth=1.0, linestyle='--', alpha=0.4, label='Severe zigzag (10.0)')
+                    ax4.set_ylabel("Tortuosity (path/displacement)", fontsize=9)
+                    ax4.set_title("Trajectory smoothness per point (lower = more efficient exploration)", fontsize=10)
+                    ax4.legend(loc='upper right', fontsize=7)
+                    ax4.tick_params(labelsize=8)
+                else:
+                    ax4.text(0.5, 0.5, "Insufficient trajectory data", ha='center', va='center',
+                            transform=ax4.transAxes, fontsize=12, color='gray')
+                    ax4.set_title("Trajectory smoothness", fontsize=10)
+            else:
+                ax4.text(0.5, 0.5, "No trajectory data recorded", ha='center', va='center',
+                        transform=ax4.transAxes, fontsize=12, color='gray')
+                ax4.set_title("Trajectory smoothness", fontsize=10)
+            ax4.grid(True, alpha=0.3)
+
+            fig_diag.tight_layout()
+            st.pyplot(fig_diag)
+
+            # Summary statistics
+            _n_total_diag = len(_diag_success)
+            _n_accepted = sum(_diag_success)
+            _accept_rate = _n_accepted / _n_total_diag if _n_total_diag > 0 else 0
+            _avg_step = sum(_accepted_steps) / len(_accepted_steps) if _accepted_steps else 0
+            _avg_tort_str = ""
+            if _traj_data and _tort_vals:
+                _avg_tort = sum(_tort_vals) / len(_tort_vals)
+                _avg_tort_str = f" · avg tortuosity: {_avg_tort:.2f}"
+            st.caption(
+                f"**Summary**: {_n_accepted}/{_n_total_diag} accepted ({_accept_rate:.1%}) · "
+                f"avg step size: {_avg_step:.4f}m · "
+                f"avg d1: {sum(_diag_d1)/len(_diag_d1)*100:.1f}% · "
+                f"avg d2: {sum(_diag_d2)/len(_diag_d2)*100:.1f}%"
+                f"{_avg_tort_str}"
+            )
 
     # ---- PDP Inequality Matrices (d0 & d1, original vs generated) ----
     # Build flat original and generated point arrays for this config
