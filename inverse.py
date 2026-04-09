@@ -12766,6 +12766,192 @@ if st.session_state.get("_generate_6ev_single_results", None):
             + "\n- ".join(_6evs_sharp)
         )
 
+    # ========================================================================
+    # CHECK 5 — Speed Consistency: implied velocity between consecutive
+    #           6-event timestamps must not exceed a physical maximum
+    # ========================================================================
+    _sc_max_speed_kmh = 200.0  # km/h — absolute physical maximum
+    _sc_speed: list[str] = []
+    for idx_sp, oid_sp in enumerate(_6evs_sorted_oids):
+        _orig_sp, _gen_sp, _ts_sp = _6evs_plot_data[idx_sp]
+        lbl_sp = OBJECT_LABELS[int(oid_sp) % len(OBJECT_LABELS)]
+        n_sp = _gen_sp.shape[0]
+        if n_sp < 2:
+            continue
+        for li_sp in range(n_sp - 1):
+            _dt = abs(float(_ts_sp[li_sp + 1]) - float(_ts_sp[li_sp]))
+            if _dt < 1e-9:
+                continue
+            _dist = float(np.linalg.norm(_gen_sp[li_sp + 1] - _gen_sp[li_sp]))
+            _speed_ms = _dist / _dt
+            _speed_kmh = _speed_ms * 3.6
+            if _speed_kmh > _sc_max_speed_kmh:
+                _sc_speed.append(
+                    f"**{lbl_sp}** t={int(_ts_sp[li_sp])}→{int(_ts_sp[li_sp+1])}: "
+                    f"{_speed_kmh:.0f} km/h ({_dist:.1f}m in {_dt:.0f}s)"
+                )
+            elif _speed_kmh < 0:
+                _sc_speed.append(
+                    f"**{lbl_sp}** t={int(_ts_sp[li_sp])}→{int(_ts_sp[li_sp+1])}: "
+                    f"negative implied speed (backward movement)"
+                )
+    if _sc_speed:
+        _6evs_alerts.append(
+            f"🏎️ **Unrealistic speed!** Implied velocity > {_sc_max_speed_kmh:.0f} km/h "
+            f"between consecutive timestamps:\n- "
+            + "\n- ".join(_sc_speed)
+        )
+
+    # ========================================================================
+    # CHECK 6 — Acceleration Bounds: implied acceleration between consecutive
+    #           positions should not exceed physical limits
+    # ========================================================================
+    _sc_max_accel = 10.0  # m/s² — roughly the limit of emergency braking / sports car acceleration
+    _sc_accel: list[str] = []
+    for idx_ac, oid_ac in enumerate(_6evs_sorted_oids):
+        _orig_ac, _gen_ac, _ts_ac = _6evs_plot_data[idx_ac]
+        lbl_ac = OBJECT_LABELS[int(oid_ac) % len(OBJECT_LABELS)]
+        n_ac = _gen_ac.shape[0]
+        if n_ac < 3:
+            continue
+        _speeds_ac: list[tuple[float, float]] = []  # (speed_m/s, timestamp)
+        for li_ac in range(n_ac - 1):
+            _dt_ac = abs(float(_ts_ac[li_ac + 1]) - float(_ts_ac[li_ac]))
+            if _dt_ac < 1e-9:
+                _speeds_ac.append((0.0, float(_ts_ac[li_ac])))
+                continue
+            _d_ac = float(np.linalg.norm(_gen_ac[li_ac + 1] - _gen_ac[li_ac]))
+            _speeds_ac.append((_d_ac / _dt_ac, float(_ts_ac[li_ac])))
+        for li_ac2 in range(len(_speeds_ac) - 1):
+            _dt_between = abs(float(_ts_ac[li_ac2 + 1]) - float(_ts_ac[li_ac2]))
+            if _dt_between < 1e-9:
+                continue
+            _dv = abs(_speeds_ac[li_ac2 + 1][0] - _speeds_ac[li_ac2][0])
+            _accel = _dv / _dt_between
+            if _accel > _sc_max_accel:
+                _sc_accel.append(
+                    f"**{lbl_ac}** t={int(_ts_ac[li_ac2])}→{int(_ts_ac[li_ac2+1])}: "
+                    f"{_accel:.1f} m/s² (Δv={_dv:.1f} m/s in {_dt_between:.0f}s)"
+                )
+    if _sc_accel:
+        _6evs_alerts.append(
+            f"⚡ **Unrealistic acceleration!** Implied acceleration > {_sc_max_accel:.0f} m/s²:\n- "
+            + "\n- ".join(_sc_accel)
+        )
+
+    # ========================================================================
+    # CHECK 7 — Minimum Inter-Vehicle Gap: longitudinal gap at shared
+    #           timestamps should exceed one car length for safe overtaking
+    # ========================================================================
+    _sc_min_gap = _CAR_LENGTH  # 4.5 m — at least one car length
+    _sc_gap: list[str] = []
+    if len(_6evs_sorted_oids) >= 2:
+        _g0_idx = 0; _g1_idx = 1
+        _g_gen0 = _6evs_plot_data[_g0_idx][1]
+        _g_ts0 = _6evs_plot_data[_g0_idx][2]
+        _g_gen1 = _6evs_plot_data[_g1_idx][1]
+        _g_ts1 = _6evs_plot_data[_g1_idx][2]
+        _g_lbl0 = OBJECT_LABELS[int(_6evs_sorted_oids[_g0_idx]) % len(OBJECT_LABELS)]
+        _g_lbl1 = OBJECT_LABELS[int(_6evs_sorted_oids[_g1_idx]) % len(OBJECT_LABELS)]
+        _g_ts0_list = [float(t) for t in _g_ts0]
+        _g_ts1_list = [float(t) for t in _g_ts1]
+        for _gpi, _gt0 in enumerate(_g_ts0_list):
+            if _gt0 in _g_ts1_list:
+                _gpi1 = _g_ts1_list.index(_gt0)
+                _gx0 = float(_g_gen0[_gpi, 0])
+                _gx1 = float(_g_gen1[_gpi1, 0])
+                _long_gap = abs(_gx0 - _gx1) - _CAR_LENGTH  # gap between bumpers
+                if _long_gap < _sc_min_gap and _long_gap >= 0:
+                    _sc_gap.append(
+                        f"t={int(_gt0)}: gap {_long_gap:.2f}m — less than 1 car length "
+                        f"({_g_lbl0} x={_gx0:.1f} vs {_g_lbl1} x={_gx1:.1f})"
+                    )
+                elif _long_gap < 0:
+                    pass  # already covered by CHECK 2 (collision)
+    if _sc_gap:
+        _6evs_alerts.append(
+            f"🚗 **Insufficient inter-vehicle gap!** Longitudinal gap < {_sc_min_gap:.1f}m "
+            f"(1 car length) at shared timestamps:\n- "
+            + "\n- ".join(_sc_gap)
+        )
+
+    # ========================================================================
+    # CHECK 8 — Lane Occupancy Duration: time spent outside own starting lane
+    #           should be bounded (too long = unrealistic manoeuvre)
+    # ========================================================================
+    _sc_max_outside_frac = 0.6  # warn if > 60% of timestamps are outside starting lane
+    _sc_lane_occ: list[str] = []
+    for idx_lo, oid_lo in enumerate(_6evs_sorted_oids):
+        _orig_lo, _gen_lo, _ts_lo = _6evs_plot_data[idx_lo]
+        lbl_lo = OBJECT_LABELS[int(oid_lo) % len(OBJECT_LABELS)]
+        if _gen_lo.shape[0] < 2:
+            continue
+        # Determine starting lane from first generated y-coordinate
+        _y_start = float(_gen_lo[0, 1])
+        _start_lane_center = _sc_l1c if abs(_y_start - _sc_l1c) < abs(_y_start - _sc_l2c) else _sc_l2c
+        _half_lw = _sc_lw / 2
+        # Count timestamps outside starting lane
+        _n_outside = 0
+        for li_lo in range(_gen_lo.shape[0]):
+            _y_lo = float(_gen_lo[li_lo, 1])
+            if abs(_y_lo - _start_lane_center) > _half_lw:
+                _n_outside += 1
+        _frac_outside = _n_outside / _gen_lo.shape[0]
+        if _frac_outside > _sc_max_outside_frac:
+            _sc_lane_occ.append(
+                f"**{lbl_lo}**: {_n_outside}/{_gen_lo.shape[0]} timestamps "
+                f"({_frac_outside:.0%}) outside starting lane "
+                f"(center={_start_lane_center:.1f}m)"
+            )
+    if _sc_lane_occ:
+        _6evs_alerts.append(
+            f"🛣️ **Excessive lane departure!** Vehicle spends > {_sc_max_outside_frac:.0%} "
+            f"of timestamps outside its starting lane:\n- "
+            + "\n- ".join(_sc_lane_occ)
+        )
+
+    # ========================================================================
+    # CHECK 9 — Lateral Position Envelope: verify the overtaker follows a
+    #           plausible lane-change pattern (starts in lane → crosses → returns)
+    # ========================================================================
+    _sc_envelope: list[str] = []
+    for idx_env, oid_env in enumerate(_6evs_sorted_oids):
+        _orig_env, _gen_env, _ts_env = _6evs_plot_data[idx_env]
+        lbl_env = OBJECT_LABELS[int(oid_env) % len(OBJECT_LABELS)]
+        n_env = _gen_env.shape[0]
+        if n_env < 3:
+            continue
+        # Check: first and last y-coordinate should be in the same lane (returns to own lane)
+        _y_first = float(_gen_env[0, 1])
+        _y_last = float(_gen_env[-1, 1])
+        _start_lc = _sc_l1c if abs(_y_first - _sc_l1c) < abs(_y_first - _sc_l2c) else _sc_l2c
+        _end_lc = _sc_l1c if abs(_y_last - _sc_l1c) < abs(_y_last - _sc_l2c) else _sc_l2c
+        if _start_lc != _end_lc:
+            _sc_envelope.append(
+                f"**{lbl_env}**: starts in lane at y={_y_first:.1f}m "
+                f"(center={_start_lc:.1f}) but ends in different lane "
+                f"at y={_y_last:.1f}m (center={_end_lc:.1f}) — doesn't return"
+            )
+        # Check monotonicity during departure and return phases
+        _y_vals = [float(_gen_env[i, 1]) for i in range(n_env)]
+        _direction_changes = 0
+        for _ei in range(1, len(_y_vals) - 1):
+            _d1_env = _y_vals[_ei] - _y_vals[_ei - 1]
+            _d2_env = _y_vals[_ei + 1] - _y_vals[_ei]
+            if _d1_env * _d2_env < 0 and abs(_d1_env) > 0.1 and abs(_d2_env) > 0.1:
+                _direction_changes += 1
+        if _direction_changes > 2:
+            _sc_envelope.append(
+                f"**{lbl_env}**: {_direction_changes} lateral direction changes — "
+                f"erratic lane-change pattern (expected ≤ 2: depart + return)"
+            )
+    if _sc_envelope:
+        _6evs_alerts.append(
+            f"↔️ **Implausible lane-change envelope!** Lateral movement doesn't follow "
+            f"a clean depart-cross-return pattern:\n- "
+            + "\n- ".join(_sc_envelope)
+        )
+
     # ---- Pre-scan all iterations for safety issues (road departure) ----
     _6evs_wrong_iters: list[int] = []
     for _scan_idx in range(1, _6evs_n_iters):
@@ -13562,6 +13748,99 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 f"{_avg_tort_str}"
             )
 
+            # ---- Convergence Plateau Detection ----
+            _plateau_window = min(50, _n_total_diag // 3) if _n_total_diag >= 15 else _n_total_diag
+            if _plateau_window >= 10:
+                _recent_accept = _diag_success[-_plateau_window:]
+                _recent_rate = sum(_recent_accept) / len(_recent_accept)
+                # Check if PDP match % has been flat (no improvement) in recent window
+                _recent_d1 = _diag_d1[-_plateau_window:]
+                _recent_d2 = _diag_d2[-_plateau_window:]
+                _d1_range = max(_recent_d1) - min(_recent_d1)
+                _d2_range = max(_recent_d2) - min(_recent_d2)
+                _pdp_flat = _d1_range < 0.005 and _d2_range < 0.005  # less than 0.5% variation
+                _is_plateau = _recent_rate < 0.05 or (_recent_rate < 0.15 and _pdp_flat)
+                if _is_plateau:
+                    _plateau_parts = []
+                    if _recent_rate < 0.05:
+                        _plateau_parts.append(f"acceptance rate is very low ({_recent_rate:.1%} in last {_plateau_window} iterations)")
+                    if _pdp_flat and _recent_rate < 0.15:
+                        _plateau_parts.append(f"PDP match % is stagnant (d0 range: {_d1_range*100:.2f}%, d1 range: {_d2_range*100:.2f}%)")
+                    st.warning(
+                        f"⚠️ **Convergence plateau detected** — {'; '.join(_plateau_parts)}. "
+                        "Consider: reducing step size (lower maxdist multiplier), enabling simulated annealing, "
+                        "switching point selection mode, or enabling coordinated moves."
+                    )
+                elif _recent_rate < 0.20:
+                    st.info(
+                        f"ℹ️ Acceptance rate in last {_plateau_window} iterations: {_recent_rate:.1%}. "
+                        "The walk is slowing down. Consider adjusting generation parameters."
+                    )
+
+            # ---- Direction Entropy (from trajectory data) ----
+            if _traj_data and len(_traj_data) >= 2:
+                import math as _math_ent
+                _n_sectors = 8  # divide 360° into 8 sectors of 45°
+                _all_angles: list[float] = []
+                _sector_counts = [0] * _n_sectors
+                for _tidx_str, _tpts in _traj_data.items():
+                    _tpts_arr = [np.array(p) for p in _tpts]
+                    for _ai in range(len(_tpts_arr) - 1):
+                        _delta = _tpts_arr[_ai + 1] - _tpts_arr[_ai]
+                        _dist = float(np.linalg.norm(_delta))
+                        if _dist < 1e-9:
+                            continue
+                        _angle = float(np.arctan2(_delta[1], _delta[0]))  # radians [-π, π]
+                        _all_angles.append(_angle)
+                        _sector_idx = int((_angle + _math_ent.pi) / (2 * _math_ent.pi) * _n_sectors) % _n_sectors
+                        _sector_counts[_sector_idx] += 1
+
+                if _all_angles:
+                    _total_moves = sum(_sector_counts)
+                    _sector_probs = [c / _total_moves for c in _sector_counts]
+                    _entropy = -sum(p * _math_ent.log2(p) for p in _sector_probs if p > 0)
+                    _max_entropy = _math_ent.log2(_n_sectors)  # uniform distribution
+                    _norm_entropy = _entropy / _max_entropy if _max_entropy > 0 else 0.0
+
+                    # Polar bar chart of direction distribution
+                    _sector_labels = ['E (0°)', 'NE (45°)', 'N (90°)', 'NW (135°)',
+                                      'W (180°)', 'SW (225°)', 'S (270°)', 'SE (315°)']
+                    _theta = np.linspace(0, 2 * np.pi, _n_sectors, endpoint=False)
+                    _widths = np.full(_n_sectors, 2 * np.pi / _n_sectors)
+
+                    fig_ent = Figure(figsize=(5.0, 5.0), dpi=120)
+                    ax_ent = fig_ent.add_subplot(111, projection='polar')
+                    _bar_colors = plt.cm.viridis(np.array(_sector_probs) / max(_sector_probs) if max(_sector_probs) > 0 else np.zeros(_n_sectors))
+                    ax_ent.bar(_theta, _sector_counts, width=_widths, bottom=0, color=_bar_colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+                    ax_ent.set_xticks(_theta)
+                    ax_ent.set_xticklabels(_sector_labels, fontsize=7)
+                    ax_ent.set_title("Movement direction distribution", fontsize=10, pad=15)
+                    fig_ent.tight_layout()
+
+                    st.markdown("##### Movement direction entropy")
+                    _ent_c1, _ent_c2 = st.columns([1, 2])
+                    with _ent_c1:
+                        st.pyplot(fig_ent, use_container_width=True)
+                        plt.close(fig_ent)
+                    with _ent_c2:
+                        _ent_quality = "excellent" if _norm_entropy > 0.9 else "good" if _norm_entropy > 0.7 else "moderate" if _norm_entropy > 0.5 else "poor"
+                        _ent_color = "green" if _norm_entropy > 0.7 else "orange" if _norm_entropy > 0.5 else "red"
+                        st.markdown(
+                            f"**Shannon entropy**: {_entropy:.2f} / {_max_entropy:.2f} bits "
+                            f"(normalised: {_norm_entropy:.2f})\n\n"
+                            f"**Exploration quality**: :{_ent_color}[{_ent_quality}]\n\n"
+                            f"**Total directional moves**: {_total_moves}\n\n"
+                            "A normalised entropy close to 1.0 means movement directions are uniformly "
+                            "distributed (good exploration). Low entropy indicates the walk prefers "
+                            "certain directions — consider switching to 'Random direction' movement mode "
+                            "or enabling coordinated moves to break out of preferred channels."
+                        )
+                        # Show dominant direction if entropy is low
+                        if _norm_entropy < 0.7:
+                            _dom_idx = _sector_counts.index(max(_sector_counts))
+                            _dom_pct = _sector_counts[_dom_idx] / _total_moves * 100
+                            st.markdown(f"**Dominant direction**: {_sector_labels[_dom_idx]} ({_dom_pct:.0f}% of moves)")
+
     # ---- PDP Inequality Matrices (d0 & d1, original vs generated) ----
     # Build flat original and generated point arrays for this config
     _6evs_orig_flat_list: list[np.ndarray] = []
@@ -13738,6 +14017,59 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 plt.close(_fig4)
 
         st.caption("Legend: 🟩 Green (0) = j > i | 🟨 Yellow (1) = j ≈ i | 🟥 Red (2) = j < i | ▪ Border = differs from original")
+
+        # ---- PDP Mismatch Heatmap (binary diff: where orig != gen) ----
+        if _6evs_orig_d1 is not None and _6evs_gen_d1 is not None and _6evs_orig_d2 is not None and _6evs_gen_d2 is not None:
+            _mm_d1 = (_6evs_orig_d1 != _6evs_gen_d1).astype(int)
+            _mm_d2 = (_6evs_orig_d2 != _6evs_gen_d2).astype(int)
+            _mm_combined = np.clip(_mm_d1 + _mm_d2, 0, 2)  # 0=both match, 1=one differs, 2=both differ
+            from matplotlib.colors import ListedColormap as _LCM_mm
+            _mm_cmap = _LCM_mm(['#FFFFFF', '#FFAA00', '#CC0000'])  # white=match, orange=1 mismatch, red=both
+
+            def _create_mm_heatmap(matrix: np.ndarray, title: str, cmap, vmax: int = 2) -> Figure:
+                display_mm = _6evs_reorder_matrix(matrix)
+                n = matrix.shape[0]
+                fig_mm, ax_mm = plt.subplots(figsize=(3.5, 3.5))
+                ax_mm.imshow(display_mm, cmap=cmap, vmin=0, vmax=vmax, aspect='equal')
+                if len(_6evs_reorder_labels) == n and n <= 24:
+                    ax_mm.set_xticks(range(n))
+                    ax_mm.set_yticks(range(n))
+                    _fs = 5 if n <= 16 else 4
+                    ax_mm.set_xticklabels(_6evs_reorder_labels, fontsize=_fs, rotation=90)
+                    ax_mm.set_yticklabels(_6evs_reorder_labels, fontsize=_fs)
+                else:
+                    ax_mm.set_xticks([])
+                    ax_mm.set_yticks([])
+                ax_mm.set_title(title, fontsize=9, fontweight='bold')
+                fig_mm.tight_layout()
+                return fig_mm
+
+            st.markdown("##### PDP Mismatch Map")
+            _mmc1, _mmc2, _mmc3 = st.columns(3, gap="small")
+            with _mmc1:
+                _fig_mm1 = _create_mm_heatmap(_mm_d1, "d0 (x) mismatches", _LCM_mm(['#FFFFFF', '#CC0000']), vmax=1)
+                st.pyplot(_fig_mm1, use_container_width=True)
+                plt.close(_fig_mm1)
+            with _mmc2:
+                _fig_mm2 = _create_mm_heatmap(_mm_d2, "d1 (y) mismatches", _LCM_mm(['#FFFFFF', '#CC0000']), vmax=1)
+                st.pyplot(_fig_mm2, use_container_width=True)
+                plt.close(_fig_mm2)
+            with _mmc3:
+                _fig_mm3 = _create_mm_heatmap(_mm_combined, "Combined mismatches", _mm_cmap)
+                st.pyplot(_fig_mm3, use_container_width=True)
+                plt.close(_fig_mm3)
+
+            _n_cells = _mm_d1.shape[0] ** 2
+            _n_mm_d1 = int(_mm_d1.sum())
+            _n_mm_d2 = int(_mm_d2.sum())
+            _n_mm_both = int((_mm_d1 & _mm_d2).sum())
+            st.caption(
+                f"**Mismatch cells**: d0: {_n_mm_d1}/{_n_cells} ({_n_mm_d1/_n_cells*100:.1f}%) · "
+                f"d1: {_n_mm_d2}/{_n_cells} ({_n_mm_d2/_n_cells*100:.1f}%) · "
+                f"both: {_n_mm_both}/{_n_cells} ({_n_mm_both/_n_cells*100:.1f}%)\n\n"
+                "White = ordering preserved, orange/red = ordering changed. "
+                "Persistent clusters indicate point-pairs that the random walk struggles to match."
+            )
 
     # ---- Data table ----
     with st.expander("📊 Point coordinates", expanded=False):
