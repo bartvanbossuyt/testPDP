@@ -12838,7 +12838,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             )
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
-    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4 = st.columns([2, 1, 2, 2])
+    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4, _6evs_btn_col5 = st.columns([2, 1, 2, 2, 2])
     with _6evs_btn_col1:
         if st.button("🔄 Next iteration (+1)", key="_6evs_gen_next", type="primary",
                      help="Pick a random point and move it (1 iteration), starting from the current state"):
@@ -12868,6 +12868,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _6evs_cur = _6evs_results[_6evs_browse_idx]
             st.session_state["_6evs_continue_from"] = _6evs_cur
             st.session_state["_6evs_batch_count"] = 50
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
+    with _6evs_btn_col5:
+        if st.button("🚀 1000 more iterations", key="_6evs_gen_batch_1000",
+                     help="Run 1000 iterations in one go, each moving 1 random point"):
+            _6evs_cur = _6evs_results[_6evs_browse_idx]
+            st.session_state["_6evs_continue_from"] = _6evs_cur
+            st.session_state["_6evs_batch_count"] = 1000
             st.session_state["_generate_6ev_single_requested"] = True
             st.session_state["_generate_6ev_single_results"] = None
             st.rerun()
