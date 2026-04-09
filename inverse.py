@@ -13635,34 +13635,40 @@ if st.session_state.get("_generate_6ev_single_results", None):
             ax3 = fig_diag.add_subplot(4, 1, 3)
             _accepted_steps = [s for s, ok in zip(_diag_step, _diag_success) if ok and s > 0]
             _accepted_halvings = [h for h, ok in zip(_diag_halving, _diag_success) if ok and h >= 0]
-            if _accepted_steps:
-                ax3_twin = ax3.twinx()
-                # Histogram of accepted step sizes
-                ax3.hist(_accepted_steps, bins=min(30, max(5, len(_accepted_steps) // 3)),
-                        color='steelblue', alpha=0.7, edgecolor='black', linewidth=0.5)
-                ax3.set_xlabel("Accepted step size (m)", fontsize=9)
-                ax3.set_ylabel("Count", fontsize=9, color='steelblue')
-                ax3.set_title(f"Step size distribution ({len(_accepted_steps)} accepted / {len(_diag_success)} total)", fontsize=10)
+            if _accepted_halvings:
+                # Halving level bar chart — shows how many halvings were needed before acceptance
+                # h0 = accepted on first try (full step), h1 = one halving (½ step), etc.
+                _halv_counts = {}
+                for _h in _accepted_halvings:
+                    _halv_counts[_h] = _halv_counts.get(_h, 0) + 1
+                _max_halv = max(_accepted_halvings) if _accepted_halvings else 0
+                _halv_range = range(_max_halv + 1)
+                _halv_vals = [_halv_counts.get(h, 0) for h in _halv_range]
+                # Colour gradient: green (h0) → orange → red (high halvings)
+                _halv_colors = [plt.cm.RdYlGn_r(h / max(_max_halv, 1)) for h in _halv_range]
+                ax3.bar(_halv_range, _halv_vals, color=_halv_colors, alpha=0.85,
+                        edgecolor='black', linewidth=0.5)
+                ax3.set_xticks(list(_halv_range))
+                ax3.set_xticklabels([f'h{h}' for h in _halv_range], fontsize=8)
+                ax3.set_xlabel("Halving level (h0 = full step, h1 = ½, h2 = ¼, …)", fontsize=9)
+                ax3.set_ylabel("Count (accepted iterations)", fontsize=9)
+                # Annotate bar values
+                for _bx, _bv in zip(_halv_range, _halv_vals):
+                    if _bv > 0:
+                        ax3.text(_bx, _bv + max(_halv_vals) * 0.02, str(_bv),
+                                ha='center', va='bottom', fontsize=7, fontweight='bold')
+                # Compute median step size for subtitle
+                _median_step = sorted(_accepted_steps)[len(_accepted_steps) // 2] if _accepted_steps else 0
+                ax3.set_title(
+                    f"Halving levels ({len(_accepted_halvings)} accepted / {len(_diag_success)} total, "
+                    f"median step: {_median_step:.4f} m)",
+                    fontsize=10)
                 ax3.tick_params(labelsize=8)
-                # Overlay: halving level distribution
-                if _accepted_halvings:
-                    _halv_counts = {}
-                    for _h in _accepted_halvings:
-                        _halv_counts[_h] = _halv_counts.get(_h, 0) + 1
-                    _halv_levels = sorted(_halv_counts.keys())
-                    _halv_vals = [_halv_counts[h] for h in _halv_levels]
-                    ax3_twin.bar([h + 0.3 for h in _halv_levels], _halv_vals, width=0.4,
-                                color='#ff7f0e', alpha=0.6, label='Halving level')
-                    ax3_twin.set_ylabel("Count (halving level)", fontsize=9, color='#ff7f0e')
-                    ax3_twin.tick_params(labelsize=8, axis='y', labelcolor='#ff7f0e')
-                    # Add halving level labels
-                    ax3_twin.set_xticks(range(10))
-                    ax3_twin.set_xticklabels([f'h{i}' for i in range(10)], fontsize=6)
             else:
                 ax3.text(0.5, 0.5, "No accepted steps yet", ha='center', va='center',
                         transform=ax3.transAxes, fontsize=12, color='gray')
-                ax3.set_title("Step size distribution (no accepted steps)", fontsize=10)
-            ax3.grid(True, alpha=0.3)
+                ax3.set_title("Halving levels (no accepted steps)", fontsize=10)
+            ax3.grid(True, alpha=0.3, axis='y')
 
             # Panel 4: Trajectory smoothness (tortuosity per moveable point)
             ax4 = fig_diag.add_subplot(4, 1, 4)
@@ -13722,9 +13728,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 "2. **PDP match %** — what percentage of point-pair orderings (d1 = x-axis, d2 = y-axis) are "
                 "preserved at each iteration. 100% = perfect PDP match. With *soft PDP scoring* enabled, "
                 "values slightly below 100% can still be accepted.\n\n"
-                "3. **Step size distribution** — histogram of accepted step sizes (blue bars) and how many "
-                "halvings were needed before acceptance (orange bars). Many halvings (h5–h9) suggest the "
-                "initial step size is too large for the current configuration.\n\n"
+                "3. **Halving levels** — for each accepted iteration, how many times the step vector had to be "
+                "halved before PDP was preserved. h0 = accepted on the first try (full step), h1 = one halving "
+                "(½ step), h2 = two halvings (¼ step), etc. Many high halvings mean the initial step size is "
+                "too large; consider lowering the maxdist multiplier.\n\n"
                 "4. **Trajectory smoothness** — tortuosity = total path length ÷ net displacement for each "
                 "moveable point. A value of 1.0 means the point moved in a straight line; higher values "
                 "indicate zigzag / back-and-forth motion. Green (< 3) = efficient, orange (3–10) = moderate, "
