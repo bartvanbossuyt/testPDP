@@ -9,16 +9,31 @@ CLASS_NAMES = {
     0: "Person",
     1: "Bicycle",
     2: "Motorcycle",
+    3: "MotorcyclePlus",
+    4: "VRU",
     5: "Car",
+    6: "SmallVehicle",
     7: "Van",
+    8: "LargeVehicle",
+    9: "Vehicle",
     10: "SmallTruck",
+    11: "MiddleTruck",
     12: "LargeTruck",
+    13: "Truck",
     14: "Bus",
+    15: "DoubleBus",
+    16: "CarTrailer",
+    17: "Box",
+    18: "Cone",
+    19: "ObjectOfInterest",
     20: "CarAndTrailer",
     21: "VanAndTrailer",
+    22: "TruckTrailer",
+    23: "TruckHead",
     24: "TruckAndTrailer",
     25: "Scooter",
-    26: "Unknown"
+    26: "MiddleTruckSmall",
+    27: "MiddleTruckLarge"
 }
 
 CLASS_COLORS = {
@@ -162,7 +177,7 @@ for scenario in scenarios:
     scenario_data = combined_df[combined_df['scenario'] == scenario]
     files_in_scenario = sorted(scenario_data['file_name'].unique())
     
-    print(f"\n📁 Processing {scenario}...")
+    print(f"\nProcessing {scenario}...")
     
     # --------------------------------------------------------------------------
     # Figure 1: All files in scenario combined (overview)
@@ -180,7 +195,7 @@ for scenario in scenarios:
     plt.tight_layout()
     fig.savefig(output_folder / f'{scenario}_overview.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✅ {scenario}_overview.png")
+    print(f"  {scenario}_overview.png")
     
     # --------------------------------------------------------------------------
     # Figure 2: Each file in scenario as separate subplot
@@ -209,7 +224,7 @@ for scenario in scenarios:
     plt.tight_layout()
     fig.savefig(output_folder / f'{scenario}_by_file.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✅ {scenario}_by_file.png")
+    print(f"  {scenario}_by_file.png")
     
     # --------------------------------------------------------------------------
     # Figure 3: Heatmap for this scenario
@@ -238,7 +253,7 @@ for scenario in scenarios:
     plt.tight_layout()
     fig.savefig(output_folder / f'{scenario}_heatmap.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✅ {scenario}_heatmap.png")
+    print(f"  {scenario}_heatmap.png")
     
     # --------------------------------------------------------------------------
     # Figure 4: Scene view with camera reference
@@ -325,7 +340,7 @@ for scenario in scenarios:
     plt.tight_layout()
     fig.savefig(output_folder / f'{scenario}_scene.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✅ {scenario}_scene.png")
+    print(f"  {scenario}_scene.png")
 
 # ============================================================================
 # Summary figure comparing all scenarios (SKIPPED - causes timeout)
@@ -348,8 +363,8 @@ for scenario in scenarios:
 # print("✅ all_scenarios_comparison.png")
 
 print("\n" + "=" * 60)
-print(f"✅ All visualizations saved to: {output_folder}")
+print(f"All visualizations saved to: {output_folder}")
 print("=" * 60)
 print("\nGenerated files:")
 for f in sorted(output_folder.glob('*.png')):
-    print(f"  📄 {f.name}")
+    print(f"  {f.name}")
