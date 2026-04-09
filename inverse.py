@@ -7128,6 +7128,118 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
     # ------ User-tuneable generation parameters ------
     with st.expander("⚙️ Generation settings", expanded=False):
+        # ── Core walk parameters (adjustable before running) ──
+        _6evs_core_col1, _6evs_core_col2, _6evs_core_col3, _6evs_core_col4 = st.columns([1, 1, 1, 1], gap="small")
+        with _6evs_core_col1:
+            _6evs_max_halvings = st.number_input(
+                "Max halving steps",
+                min_value=1, max_value=30,
+                value=int(st.session_state.get("_6evs_max_halvings", 10)),
+                step=1,
+                key="_6evs_max_halvings",
+                help="Number of vector-halving attempts per iteration before giving up. "
+                     "Higher = more likely to find a PDP-preserving move but slower. Default: 10.",
+            )
+        with _6evs_core_col2:
+            _6evs_point_sel_options = ["Single point", "Multiple random points", "Consecutive time stamps"]
+            _6evs_point_selection = st.selectbox(
+                "Point selection",
+                options=_6evs_point_sel_options,
+                index=_6evs_point_sel_options.index(
+                    st.session_state.get("_6evs_point_selection", "Single point")
+                ),
+                key="_6evs_point_selection",
+                help="How many points are moved per iteration.\n\n"
+                     "• **Single point**: one random moveable point\n"
+                     "• **Multiple random points**: N random points together\n"
+                     "• **Consecutive time stamps**: adjacent timestamps of one object",
+            )
+        with _6evs_core_col3:
+            _6evs_move_dir_options = ["Same direction", "Random directions"]
+            _6evs_move_direction = st.selectbox(
+                "Movement direction",
+                options=_6evs_move_dir_options,
+                index=_6evs_move_dir_options.index(
+                    st.session_state.get("_6evs_move_direction", "Same direction")
+                ),
+                key="_6evs_move_direction",
+                help="How movement vectors are assigned when multiple points move.\n\n"
+                     "• **Same direction**: all selected points share one random angle\n"
+                     "• **Random directions**: each point gets its own random angle",
+            )
+        with _6evs_core_col4:
+            _6evs_maxdist_mult = st.number_input(
+                "Maxdist multiplier",
+                min_value=0.10, max_value=5.00,
+                value=float(st.session_state.get("_6evs_maxdist_mult", 1.00)),
+                step=0.10, format="%.2f",
+                key="_6evs_maxdist_mult",
+                help=f"Multiply the auto-computed maxdist ({maxdist:.2f} m) by this factor. "
+                     "< 1 = smaller steps (fine-tuning), > 1 = larger steps (exploration).",
+            )
+        # Second row: damping & auto-stop
+        _6evs_core2_col1, _6evs_core2_col2, _6evs_core2_col3, _6evs_core2_col4 = st.columns([1, 1, 1, 1], gap="small")
+        with _6evs_core2_col1:
+            _6evs_damping_enabled = st.checkbox(
+                "🔽 Damping",
+                value=st.session_state.get("_6evs_damping_enabled", False),
+                key="_6evs_damping_enabled",
+                help="Apply a random damping factor to each step. "
+                     "Movement distance is multiplied by a uniform random value between min and max.",
+            )
+        with _6evs_core2_col2:
+            _6evs_damping_min = st.number_input(
+                "Damping min",
+                min_value=0.00, max_value=1.00,
+                value=float(st.session_state.get("_6evs_damping_min", 0.00)),
+                step=0.05, format="%.2f",
+                key="_6evs_damping_min",
+                disabled=not st.session_state.get("_6evs_damping_enabled", False),
+                help="Lower bound of the damping factor (0 = movement can be reduced to zero).",
+            )
+        with _6evs_core2_col3:
+            _6evs_damping_max = st.number_input(
+                "Damping max",
+                min_value=0.00, max_value=1.00,
+                value=float(st.session_state.get("_6evs_damping_max", 1.00)),
+                step=0.05, format="%.2f",
+                key="_6evs_damping_max",
+                disabled=not st.session_state.get("_6evs_damping_enabled", False),
+                help="Upper bound of the damping factor (1 = no damping at the upper end).",
+            )
+        with _6evs_core2_col4:
+            _6evs_auto_stop = st.checkbox(
+                "🛑 Auto-stop",
+                value=st.session_state.get("_6evs_auto_stop", False),
+                key="_6evs_auto_stop",
+                help="Automatically stop the batch when the rolling acceptance rate "
+                     "drops below the threshold (the walk is no longer making progress).",
+            )
+        # Auto-stop threshold (only visible when auto-stop is enabled)
+        if st.session_state.get("_6evs_auto_stop", False):
+            _6evs_as_col1, _6evs_as_col2, _ = st.columns([1, 1, 2], gap="small")
+            with _6evs_as_col1:
+                _6evs_auto_stop_thresh = st.number_input(
+                    "Auto-stop threshold",
+                    min_value=0.00, max_value=1.00,
+                    value=float(st.session_state.get("_6evs_auto_stop_thresh", 0.05)),
+                    step=0.01, format="%.2f",
+                    key="_6evs_auto_stop_thresh",
+                    help="Stop when the rolling acceptance rate (last 20 iters) falls below this value. "
+                         "0.05 = stop when fewer than 5% of recent moves succeed.",
+                )
+            with _6evs_as_col2:
+                _6evs_auto_stop_window = st.number_input(
+                    "Rolling window",
+                    min_value=5, max_value=100,
+                    value=int(st.session_state.get("_6evs_auto_stop_window", 20)),
+                    step=5,
+                    key="_6evs_auto_stop_window",
+                    help="Number of recent iterations to average for the acceptance rate check.",
+                )
+
+        st.markdown("---")
+        # ── PDP variant & tolerance controls ──
         _6evs_pcol1, _6evs_pcol2, _6evs_pcol2b, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1, 1], gap="small")
         with _6evs_pcol1:
             _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
@@ -7300,8 +7412,20 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _6evs_settings["Rough Y"] = _6evs_rough_y
     _6evs_settings.update({
         "Strategy": "exponential",
+        "Max halving steps": int(st.session_state.get("_6evs_max_halvings", 10)),
         "Timestamps": [0, 34, 67, 183, 213, 249],
-        "Point selection": "Single point (random)",
+        "Point selection": st.session_state.get("_6evs_point_selection", "Single point"),
+        "Movement direction": st.session_state.get("_6evs_move_direction", "Same direction"),
+        "Maxdist multiplier": float(st.session_state.get("_6evs_maxdist_mult", 1.0)),
+        "Maxdist (effective)": round(maxdist * float(st.session_state.get("_6evs_maxdist_mult", 1.0)), 2),
+        "Damping": st.session_state.get("_6evs_damping_enabled", False),
+        "Damping range": [
+            float(st.session_state.get("_6evs_damping_min", 0.0)),
+            float(st.session_state.get("_6evs_damping_max", 1.0)),
+        ] if st.session_state.get("_6evs_damping_enabled", False) else "disabled",
+        "Auto-stop": st.session_state.get("_6evs_auto_stop", False),
+        "Auto-stop threshold": float(st.session_state.get("_6evs_auto_stop_thresh", 0.05))
+            if st.session_state.get("_6evs_auto_stop", False) else "disabled",
         "Y-axis range": "[-10, +10]",
         "X-axis": "data range + 20% margin",
         "Equal aspect": False,
@@ -7466,6 +7590,35 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _coord_enabled = st.session_state.get("_6evs_coord_enabled", False)
         _coord_prob = st.session_state.get("_6evs_coord_prob", 0.20) if _coord_enabled else 0.0
 
+        # ── Core walk parameters (from top-of-expander controls) ──
+        _6evs_cfg_max_halvings = int(st.session_state.get("_6evs_max_halvings", 10))
+        _6evs_cfg_point_sel = st.session_state.get("_6evs_point_selection", "Single point")
+        _6evs_cfg_move_dir = st.session_state.get("_6evs_move_direction", "Same direction")
+        _6evs_cfg_maxdist_mult = float(st.session_state.get("_6evs_maxdist_mult", 1.00))
+        _6evs_cfg_damping_on = bool(st.session_state.get("_6evs_damping_enabled", False))
+        _6evs_cfg_damping_lo = float(st.session_state.get("_6evs_damping_min", 0.00))
+        _6evs_cfg_damping_hi = float(st.session_state.get("_6evs_damping_max", 1.00))
+        _6evs_cfg_auto_stop = bool(st.session_state.get("_6evs_auto_stop", False))
+        _6evs_cfg_auto_stop_thresh = float(st.session_state.get("_6evs_auto_stop_thresh", 0.05))
+        _6evs_cfg_auto_stop_window = int(st.session_state.get("_6evs_auto_stop_window", 20))
+
+        # Apply maxdist multiplier globally for this batch
+        _effective_maxdist = maxdist * _6evs_cfg_maxdist_mult
+        # Temporarily set overrides so select_points_for_iteration / generate_movement_vectors pick them up
+        _saved_point_sel = st.session_state.get("cfg_point_selection_mode")
+        _saved_move_dir = st.session_state.get("cfg_movement_direction")
+        _saved_damping = st.session_state.get("cfg_use_damping")
+        _saved_damping_min = st.session_state.get("cfg_damping_min")
+        _saved_damping_max = st.session_state.get("cfg_damping_max")
+        st.session_state["cfg_point_selection_mode"] = _6evs_cfg_point_sel
+        st.session_state["cfg_movement_direction"] = _6evs_cfg_move_dir
+        st.session_state["cfg_use_damping"] = _6evs_cfg_damping_on
+        st.session_state["cfg_damping_min"] = _6evs_cfg_damping_lo
+        st.session_state["cfg_damping_max"] = _6evs_cfg_damping_hi
+
+        # Rolling acceptance window for auto-stop
+        _auto_stop_recent: list[bool] = []
+
         # Population-based search setup
         _pop_enabled = st.session_state.get("_6evs_pop_enabled", False)
         _pop_size = int(st.session_state.get("_6evs_pop_size", 3)) if _pop_enabled else 1
@@ -7495,6 +7648,17 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             _pop_current_pts = [current_points]
 
         for _6evs_cfg_i in range(_6evs_batch_count):
+            # ── Auto-stop check ──
+            if _6evs_cfg_auto_stop and len(_auto_stop_recent) >= _6evs_cfg_auto_stop_window:
+                _rolling_rate = sum(_auto_stop_recent[-_6evs_cfg_auto_stop_window:]) / _6evs_cfg_auto_stop_window
+                if _rolling_rate < _6evs_cfg_auto_stop_thresh:
+                    status_text.text(
+                        f"🛑 Auto-stopped after {_6evs_cfg_i} iterations — "
+                        f"acceptance rate {_rolling_rate:.1%} < {_6evs_cfg_auto_stop_thresh:.0%} "
+                        f"(window={_6evs_cfg_auto_stop_window})"
+                    )
+                    break
+
             # Select population member (round-robin)
             _member = _6evs_cfg_i % _pop_size
             sp_dict = _pop_dicts[_member]
@@ -7517,7 +7681,11 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             )
             progress_bar.progress((_6evs_cfg_i + 1) / _6evs_batch_count if _6evs_batch_count > 1 else 0.5)
 
-            # ONE attempt: pick random point + direction, max 10 halvings.
+            # Temporarily override global maxdist with multiplied value
+            _saved_maxdist = maxdist
+            globals()["maxdist"] = _effective_maxdist
+
+            # ONE attempt: pick random point + direction, configurable halvings.
             # If PDP fails, point stays at start.
             sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
                 current_points=current_points,
@@ -7527,17 +7695,24 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 buffer_y=buffer_y,
                 rough_x=rough_x,
                 rough_y=rough_y,
+                max_search_steps=_6evs_cfg_max_halvings,
                 pdp_checker=_active_checker,
                 sa_temperature=_sa_temp,
                 soft_pdp_threshold=_soft_pdp_thresh,
                 coordinated_move_prob=_coord_prob,
             )
 
+            # Restore global maxdist
+            globals()["maxdist"] = _saved_maxdist
+
             if _6evs_ok:
                 sp_dict = sp_dict_candidate
                 _pop_dicts[_member] = sp_dict  # write back to population
             else:
                 _6evs_iters_failed += 1
+
+            # Track for auto-stop rolling window
+            _auto_stop_recent.append(_6evs_ok)
 
             # Record diagnostics for this iteration
             _6evs_iter_diagnostics.append({
@@ -7587,17 +7762,15 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 if _mi < len(_6evs_is_fixed_flat) and not _6evs_is_fixed_flat[_mi]
             ]
             if _6evs_moveable_y:
-                # Distance from the car's top face to the road top edge
-                _dist_face_to_top = [(y + _6evs_half_car_w) - _6evs_iter_road_top
-                                     if (y + _6evs_half_car_w) > _6evs_iter_road_top
-                                     else _6evs_iter_road_top - (y + _6evs_half_car_w)
-                                     for y in _6evs_moveable_y]
-                # Distance from the car's bottom face to the road bottom edge
-                _dist_face_to_bot = [_6evs_iter_road_bot - (y - _6evs_half_car_w)
-                                     if (y - _6evs_half_car_w) < _6evs_iter_road_bot
-                                     else (y - _6evs_half_car_w) - _6evs_iter_road_bot
-                                     for y in _6evs_moveable_y]
-                _closest_edge_dist = min(min(_dist_face_to_top), min(_dist_face_to_bot))
+                # Signed margin: positive = car face inside road, negative = outside
+                # Top margin: how far the car's top face is below the road top edge
+                _margin_top = [_6evs_iter_road_top - (y + _6evs_half_car_w)
+                               for y in _6evs_moveable_y]
+                # Bottom margin: how far the car's bottom face is above the road bottom edge
+                _margin_bot = [(y - _6evs_half_car_w) - _6evs_iter_road_bot
+                               for y in _6evs_moveable_y]
+                # Most critical margin across all cars (smallest = closest to leaving / already out)
+                _closest_edge_dist = min(min(_margin_top), min(_margin_bot))
             else:
                 _closest_edge_dist = float('nan')
             _6evs_edge_distances.append({
@@ -7615,6 +7788,18 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     current_points[_fidx] = _sp["point"]
             _pop_current_pts[_member] = current_points  # write back to population
             _next_cnum += 1
+
+        # ── Restore session state overrides ──
+        if _saved_point_sel is not None:
+            st.session_state["cfg_point_selection_mode"] = _saved_point_sel
+        if _saved_move_dir is not None:
+            st.session_state["cfg_movement_direction"] = _saved_move_dir
+        if _saved_damping is not None:
+            st.session_state["cfg_use_damping"] = _saved_damping
+        if _saved_damping_min is not None:
+            st.session_state["cfg_damping_min"] = _saved_damping_min
+        if _saved_damping_max is not None:
+            st.session_state["cfg_damping_max"] = _saved_damping_max
 
         # --- Population selection: pick best member ---
         if _pop_size > 1:
@@ -13141,18 +13326,31 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 ax_ed.axvline(_ed_iters[_cur_idx_in_ed], color='orange', linewidth=1.5, linestyle='--', alpha=0.7, zorder=1)
                 ax_ed.scatter([_ed_iters[_cur_idx_in_ed]], [_ed_dists[_cur_idx_in_ed]],
                               s=80, marker='D', color='orange', edgecolors='black', linewidths=1.0, zorder=4)
+        # Zero line — the road edge itself
+        ax_ed.axhline(0.0, color='black', linewidth=1.5, linestyle='-', alpha=0.9, zorder=1,
+                      label='Road edge (0 m)')
         # Threshold line (road-departure warning margin)
         _ed_threshold = 0.3  # metres — same as _sc_road_margin in safety checks
-        ax_ed.axhline(_ed_threshold, color='red', linewidth=1.5, linestyle='-', alpha=0.8, zorder=1,
-                      label=f'Threshold ({_ed_threshold} m)')
+        ax_ed.axhline(_ed_threshold, color='red', linewidth=1.5, linestyle='--', alpha=0.8, zorder=1,
+                      label=f'Safety margin ({_ed_threshold} m)')
+        # Shade the danger zone (below 0 = car outside road)
+        _ed_ymin = min(min(_ed_dists) - 0.1, -0.2)
+        ax_ed.axhspan(_ed_ymin, 0.0, color='#d62728', alpha=0.08, zorder=0)
         ax_ed.legend(loc='upper right', fontsize=7)
         ax_ed.set_xlabel("Iteration", fontsize=9)
-        ax_ed.set_ylabel("Closest car face to road edge (m)", fontsize=9)
-        ax_ed.set_title("Min. distance of any car face to road edge per iteration", fontsize=10)
+        ax_ed.set_ylabel("Signed margin to road edge (m)", fontsize=9)
+        ax_ed.set_title("Min. margin of any car face to road edge per iteration", fontsize=10)
+        ax_ed.set_ylim(_ed_ymin, max(max(_ed_dists) + 0.1, 1.0))
         ax_ed.grid(True, alpha=0.3)
         ax_ed.tick_params(labelsize=8)
         fig_ed.tight_layout()
         st.pyplot(fig_ed)
+        st.caption(
+            "**Signed margin**: positive = car face is inside the road, "
+            "negative = car face sticks out beyond the road edge. "
+            "The red shaded area indicates configurations where a car has left the road. "
+            "Green dots = successful PDP moves, red dots = failed (position unchanged)."
+        )
 
         # CSV download for edge distances
         _ed_df = pd.DataFrame(_6evs_edge_dist_data)
@@ -13169,6 +13367,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_diag_data = st.session_state.get("_6evs_iter_diagnostics", [])
     if _6evs_diag_data and len(_6evs_diag_data) >= 2:
         with st.expander("📊 Random walk diagnostics", expanded=False):
+            st.markdown(
+                "These charts diagnose the behaviour of the random walk that generates new configurations. "
+                "They help identify whether the search is exploring efficiently or getting stuck."
+            )
             _diag_iters = [d["iteration"] for d in _6evs_diag_data]
             _diag_success = [d["success"] for d in _6evs_diag_data]
             _diag_d1 = [d["d1_pct"] for d in _6evs_diag_data]
@@ -13306,6 +13508,24 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
             fig_diag.tight_layout()
             st.pyplot(fig_diag)
+
+            st.markdown(
+                "**How to read these panels:**\n\n"
+                "1. **Acceptance rate** — fraction of recent iterations where the proposed move was accepted "
+                "(PDP order preserved). A rate dropping below 5% means the walk is stuck and step sizes "
+                "are too large. If simulated annealing (SA) is enabled, the purple temperature curve shows "
+                "how the step size shrinks over time.\n\n"
+                "2. **PDP match %** — what percentage of point-pair orderings (d1 = x-axis, d2 = y-axis) are "
+                "preserved at each iteration. 100% = perfect PDP match. With *soft PDP scoring* enabled, "
+                "values slightly below 100% can still be accepted.\n\n"
+                "3. **Step size distribution** — histogram of accepted step sizes (blue bars) and how many "
+                "halvings were needed before acceptance (orange bars). Many halvings (h5–h9) suggest the "
+                "initial step size is too large for the current configuration.\n\n"
+                "4. **Trajectory smoothness** — tortuosity = total path length ÷ net displacement for each "
+                "moveable point. A value of 1.0 means the point moved in a straight line; higher values "
+                "indicate zigzag / back-and-forth motion. Green (< 3) = efficient, orange (3–10) = moderate, "
+                "red (> 10) = severe zigzag."
+            )
 
             # Summary statistics
             _n_total_diag = len(_diag_success)
