@@ -13343,6 +13343,19 @@ if st.session_state.get("_generate_6ev_single_results", None):
             "Green dots = successful PDP moves, red dots = failed (position unchanged)."
         )
 
+        # Statistics: threshold crossings and road leaves
+        _ed_total = len(_ed_dists)
+        _ed_n_below_threshold = sum(1 for d in _ed_dists if d < _ed_threshold)
+        _ed_n_road_leave = sum(1 for d in _ed_dists if d < 0.0)
+        _ed_pct_below = (_ed_n_below_threshold / _ed_total * 100) if _ed_total else 0.0
+        _ed_pct_leave = (_ed_n_road_leave / _ed_total * 100) if _ed_total else 0.0
+        st.markdown(
+            f"- **Configurations below safety margin** (< {_ed_threshold} m): "
+            f"**{_ed_n_below_threshold}** / {_ed_total} ({_ed_pct_below:.1f}%)  \n"
+            f"- **Configurations with road leave** (< 0 m): "
+            f"**{_ed_n_road_leave}** / {_ed_total} ({_ed_pct_leave:.1f}%)"
+        )
+
         # CSV download for edge distances
         _ed_df = pd.DataFrame(_6evs_edge_dist_data)
         _ed_csv_text = _ed_df.to_csv(index=False)
