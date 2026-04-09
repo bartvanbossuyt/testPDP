@@ -13358,11 +13358,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _ed_n_road_leave = sum(1 for d in _ed_dists if d < 0.0)
         _ed_pct_below = (_ed_n_below_threshold / _ed_total * 100) if _ed_total else 0.0
         _ed_pct_leave = (_ed_n_road_leave / _ed_total * 100) if _ed_total else 0.0
+        # First occurrence iteration numbers
+        _ed_first_below = next((d["iteration"] for d in _6evs_edge_dist_data if d["closest_distance_to_edge"] < _ed_threshold), None)
+        _ed_first_leave = next((d["iteration"] for d in _6evs_edge_dist_data if d["closest_distance_to_edge"] < 0.0), None)
+        _ed_first_below_str = f" — first at iteration **#{_ed_first_below}**" if _ed_first_below is not None else ""
+        _ed_first_leave_str = f" — first at iteration **#{_ed_first_leave}**" if _ed_first_leave is not None else ""
         st.markdown(
             f"- **Configurations below safety margin** (< {_ed_threshold} m): "
-            f"**{_ed_n_below_threshold}** / {_ed_total} ({_ed_pct_below:.1f}%)  \n"
+            f"**{_ed_n_below_threshold}** / {_ed_total} ({_ed_pct_below:.1f}%){_ed_first_below_str}  \n"
             f"- **Configurations with road leave** (< 0 m): "
-            f"**{_ed_n_road_leave}** / {_ed_total} ({_ed_pct_leave:.1f}%)"
+            f"**{_ed_n_road_leave}** / {_ed_total} ({_ed_pct_leave:.1f}%){_ed_first_leave_str}"
         )
 
         # CSV download for edge distances
