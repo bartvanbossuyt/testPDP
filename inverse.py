@@ -3363,12 +3363,12 @@ def apply_damping_factor(parent_pt: np.ndarray, child_pt: np.ndarray) -> np.ndar
     Returns:
         New child point coordinates, with distance reduced by the damping factor
     """
-    use_damping = st.session_state.get("cfg_use_damping", False)
+    use_damping = st.session_state.get("_override_use_damping", st.session_state.get("cfg_use_damping", False))
     if not use_damping:
         return child_pt
     
-    damping_min = float(st.session_state.get("cfg_damping_min", 0.0))
-    damping_max = float(st.session_state.get("cfg_damping_max", 1.0))
+    damping_min = float(st.session_state.get("_override_damping_min", st.session_state.get("cfg_damping_min", 0.0)))
+    damping_max = float(st.session_state.get("_override_damping_max", st.session_state.get("cfg_damping_max", 1.0)))
     
     # Ensure min <= max
     if damping_min > damping_max:
@@ -7604,17 +7604,13 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
         # Apply maxdist multiplier globally for this batch
         _effective_maxdist = maxdist * _6evs_cfg_maxdist_mult
-        # Temporarily set overrides so select_points_for_iteration / generate_movement_vectors pick them up
-        _saved_point_sel = st.session_state.get("cfg_point_selection_mode")
-        _saved_move_dir = st.session_state.get("cfg_movement_direction")
-        _saved_damping = st.session_state.get("cfg_use_damping")
-        _saved_damping_min = st.session_state.get("cfg_damping_min")
-        _saved_damping_max = st.session_state.get("cfg_damping_max")
-        st.session_state["cfg_point_selection_mode"] = _6evs_cfg_point_sel
-        st.session_state["cfg_movement_direction"] = _6evs_cfg_move_dir
-        st.session_state["cfg_use_damping"] = _6evs_cfg_damping_on
-        st.session_state["cfg_damping_min"] = _6evs_cfg_damping_lo
-        st.session_state["cfg_damping_max"] = _6evs_cfg_damping_hi
+        # Use _override_ keys so select_points_for_iteration / generate_movement_vectors
+        # pick them up without touching widget-bound cfg_ keys (which Streamlit forbids)
+        st.session_state["_override_point_selection_mode"] = _6evs_cfg_point_sel
+        st.session_state["_override_movement_direction"] = _6evs_cfg_move_dir
+        st.session_state["_override_use_damping"] = _6evs_cfg_damping_on
+        st.session_state["_override_damping_min"] = _6evs_cfg_damping_lo
+        st.session_state["_override_damping_max"] = _6evs_cfg_damping_hi
 
         # Rolling acceptance window for auto-stop
         _auto_stop_recent: list[bool] = []
@@ -7789,17 +7785,12 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             _pop_current_pts[_member] = current_points  # write back to population
             _next_cnum += 1
 
-        # ── Restore session state overrides ──
-        if _saved_point_sel is not None:
-            st.session_state["cfg_point_selection_mode"] = _saved_point_sel
-        if _saved_move_dir is not None:
-            st.session_state["cfg_movement_direction"] = _saved_move_dir
-        if _saved_damping is not None:
-            st.session_state["cfg_use_damping"] = _saved_damping
-        if _saved_damping_min is not None:
-            st.session_state["cfg_damping_min"] = _saved_damping_min
-        if _saved_damping_max is not None:
-            st.session_state["cfg_damping_max"] = _saved_damping_max
+        # ── Clean up temporary override keys ──
+        st.session_state.pop("_override_point_selection_mode", None)
+        st.session_state.pop("_override_movement_direction", None)
+        st.session_state.pop("_override_use_damping", None)
+        st.session_state.pop("_override_damping_min", None)
+        st.session_state.pop("_override_damping_max", None)
 
         # --- Population selection: pick best member ---
         if _pop_size > 1:
