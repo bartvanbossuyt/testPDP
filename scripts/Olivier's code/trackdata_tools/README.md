@@ -19,16 +19,31 @@ CLASS_NAMES = {
     0: "Person",
     1: "Bicycle",
     2: "Motorcycle",
+    3: "MotorcyclePlus",
+    4: "VRU",
     5: "Car",
+    6: "SmallVehicle",
     7: "Van",
+    8: "LargeVehicle",
+    9: "Vehicle",
     10: "SmallTruck",
+    11: "MiddleTruck",
     12: "LargeTruck",
+    13: "Truck",
     14: "Bus",
+    15: "DoubleBus",
+    16: "CarTrailer",
+    17: "Box",
+    18: "Cone",
+    19: "ObjectOfInterest",
     20: "CarAndTrailer",
     21: "VanAndTrailer",
+    22: "TruckTrailer",
+    23: "TruckHead",
     24: "TruckAndTrailer",
     25: "Scooter",
-    26: "Unknown"
+    26: "MiddleTruckSmall",
+    27: "MiddleTruckLarge"
 }
 ```
 

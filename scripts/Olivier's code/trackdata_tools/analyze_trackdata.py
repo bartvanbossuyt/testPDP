@@ -7,16 +7,31 @@ CLASS_NAMES = {
     0: "Person",
     1: "Bicycle",
     2: "Motorcycle",
+    3: "MotorcyclePlus",
+    4: "VRU",
     5: "Car",
+    6: "SmallVehicle",
     7: "Van",
+    8: "LargeVehicle",
+    9: "Vehicle",
     10: "SmallTruck",
+    11: "MiddleTruck",
     12: "LargeTruck",
+    13: "Truck",
     14: "Bus",
+    15: "DoubleBus",
+    16: "CarTrailer",
+    17: "Box",
+    18: "Cone",
+    19: "ObjectOfInterest",
     20: "CarAndTrailer",
     21: "VanAndTrailer",
+    22: "TruckTrailer",
+    23: "TruckHead",
     24: "TruckAndTrailer",
     25: "Scooter",
-    26: "Unknown"
+    26: "MiddleTruckSmall",
+    27: "MiddleTruckLarge"
 }
 
 # Find all CSV files in TrackData_csv folder
@@ -39,7 +54,7 @@ for csv_file in csv_files:
 
 combined_df = pd.concat(all_data, ignore_index=True)
 
-print(f"\n📊 OVERALL DATA SUMMARY")
+print(f"\nOVERALL DATA SUMMARY")
 print("-" * 40)
 print(f"Total data points (rows): {len(combined_df):,}")
 print(f"Total unique track IDs: {combined_df['id'].nunique()}")
@@ -48,7 +63,7 @@ print(f"Columns: {list(combined_df.columns)}")
 # ============================================================================
 # OBJECT CLASS ANALYSIS
 # ============================================================================
-print(f"\n\n📦 OBJECT CLASS DISTRIBUTION")
+print(f"\n\nOBJECT CLASS DISTRIBUTION")
 print("=" * 80)
 
 # Get unique tracks with their class (one row per track)
@@ -70,28 +85,28 @@ unique_tracks['class_name'] = unique_tracks['class_id'].map(CLASS_NAMES).fillna(
 unique_tracks['duration'] = unique_tracks['time_end'] - unique_tracks['time_start']
 
 # Overall class counts
-print("\n🔢 Total unique objects by class (across all scenarios):")
+print("\nTotal unique objects by class (across all scenarios):")
 class_counts = unique_tracks['class_name'].value_counts()
 for class_name, count in class_counts.items():
     print(f"  {class_name}: {count}")
 
 # Per scenario breakdown
-print("\n📁 Objects per scenario:")
+print("\nObjects per scenario:")
 scenario_class = unique_tracks.groupby(['scenario', 'class_name']).size().unstack(fill_value=0)
 print(scenario_class.to_string())
 
 # ============================================================================
 # SPATIAL ANALYSIS
 # ============================================================================
-print(f"\n\n🗺️ SPATIAL ANALYSIS")
+print(f"\n\nSPATIAL ANALYSIS")
 print("=" * 80)
 
-print("\n📍 World coordinate ranges (all data):")
+print("\nWorld coordinate ranges (all data):")
 print(f"  world_x: {combined_df['world_x'].min():.2f} to {combined_df['world_x'].max():.2f}")
 print(f"  world_y: {combined_df['world_y'].min():.2f} to {combined_df['world_y'].max():.2f}")
 print(f"  world_z: {combined_df['world_z'].min():.2f} to {combined_df['world_z'].max():.2f}")
 
-print("\n📍 Coordinate ranges per scenario:")
+print("\nCoordinate ranges per scenario:")
 for scenario in sorted(combined_df['scenario'].unique()):
     scenario_data = combined_df[combined_df['scenario'] == scenario]
     print(f"\n  {scenario}:")
@@ -100,12 +115,12 @@ for scenario in sorted(combined_df['scenario'].unique()):
 
 # Check if GPS data is available
 gps_valid = combined_df[(combined_df['gps_latitude'] != 0) | (combined_df['gps_longitude'] != 0)]
-print(f"\n🌍 GPS data available: {len(gps_valid)} rows with non-zero GPS coordinates")
+print(f"\nGPS data available: {len(gps_valid)} rows with non-zero GPS coordinates")
 
 # ============================================================================
 # ARE OBJECTS IN THE SAME SPACE?
 # ============================================================================
-print(f"\n\n🔍 SPATIAL OVERLAP ANALYSIS")
+print(f"\n\nSPATIAL OVERLAP ANALYSIS")
 print("=" * 80)
 
 # Calculate bounding boxes per scenario
@@ -124,7 +139,7 @@ for scenario in sorted(combined_df['scenario'].unique()):
     print(f"  {scenario}: X[{bbox['x_min']:.1f}, {bbox['x_max']:.1f}], Y[{bbox['y_min']:.1f}, {bbox['y_max']:.1f}] (area: {area:.1f} m²)")
 
 # Check overlap between scenarios
-print("\n🔗 Checking if scenarios share the same space:")
+print("\nChecking if scenarios share the same space:")
 scenarios = sorted(bounding_boxes.keys())
 for i, s1 in enumerate(scenarios):
     for s2 in scenarios[i+1:]:
@@ -134,22 +149,22 @@ for i, s1 in enumerate(scenarios):
         y_overlap = max(0, min(b1['y_max'], b2['y_max']) - max(b1['y_min'], b2['y_min']))
         overlap_area = x_overlap * y_overlap
         if overlap_area > 0:
-            print(f"  ✅ {s1} & {s2}: OVERLAP (area: {overlap_area:.1f} m²)")
+            print(f"  {s1} & {s2}: OVERLAP (area: {overlap_area:.1f} m²)")
         else:
-            print(f"  ❌ {s1} & {s2}: NO OVERLAP")
+            print(f"  {s1} & {s2}: NO OVERLAP")
 
 # ============================================================================
 # SPEED & MOVEMENT ANALYSIS
 # ============================================================================
-print(f"\n\n🚀 SPEED & MOVEMENT ANALYSIS")
+print(f"\n\nSPEED & MOVEMENT ANALYSIS")
 print("=" * 80)
 
-print("\n📈 Average speed by class:")
+print("\nAverage speed by class:")
 speed_by_class = unique_tracks.groupby('class_name')['avg_speed'].agg(['mean', 'min', 'max', 'std'])
 for class_name, row in speed_by_class.iterrows():
     print(f"  {class_name}: avg={row['mean']:.2f} m/s, range=[{row['min']:.2f}, {row['max']:.2f}]")
 
-print("\n⏱️ Track duration statistics by class:")
+print("\nTrack duration statistics by class:")
 duration_by_class = unique_tracks.groupby('class_name')['duration'].agg(['mean', 'min', 'max'])
 for class_name, row in duration_by_class.iterrows():
     print(f"  {class_name}: avg={row['mean']:.1f}s, range=[{row['min']:.1f}s, {row['max']:.1f}s]")
@@ -157,7 +172,7 @@ for class_name, row in duration_by_class.iterrows():
 # ============================================================================
 # PER-FILE BREAKDOWN
 # ============================================================================
-print(f"\n\n📁 DETAILED FILE BREAKDOWN")
+print(f"\n\nDETAILED FILE BREAKDOWN")
 print("=" * 80)
 
 file_summary = unique_tracks.groupby(['scenario', 'file_name']).agg({
@@ -174,7 +189,7 @@ for _, row in file_summary.iterrows():
 # ============================================================================
 # VISUALIZATION
 # ============================================================================
-print(f"\n\n📊 GENERATING VISUALIZATIONS...")
+print(f"\n\nGENERATING VISUALIZATIONS...")
 print("=" * 80)
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -226,10 +241,10 @@ ax4.tick_params(axis='x', rotation=45)
 
 plt.tight_layout()
 plt.savefig(Path(__file__).parent / 'trackdata_analysis.png', dpi=150)
-print("✅ Saved visualization to: trackdata_analysis.png")
+print("Saved visualization to: trackdata_analysis.png")
 
 plt.show()
 
 print("\n" + "=" * 80)
-print("✅ ANALYSIS COMPLETE")
+print("ANALYSIS COMPLETE")
 print("=" * 80)

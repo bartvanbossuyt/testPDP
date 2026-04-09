@@ -1,0 +1,2 @@
+df_name n_pts eff_pts_thr_factor rgb_thr lidar thr rgb_init_thr lidar_init_thr
+tracks_df_1.csv 100 0.2 0.1 0.05 0.4 0.2
