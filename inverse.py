@@ -3204,9 +3204,33 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     
     For multi-point mode, ensures that the chosen direction keeps ALL points within bounds.
     If after max_attempts no valid direction is found, uses the best direction found.
+    
+    Directional scaling (optional): step size varies with angle using
+        scale(θ) = lateral_min + (1 - lateral_min) × cos²(θ)
+    where θ is measured from the X/longitudinal axis.  At θ=0 (along road)
+    scale=1.0; at θ=π/2 (across lanes) scale=lateral_min (default 0.20).
     """
     if not selected_indices:
         return {}
+
+    # ── Directional scaling ──
+    _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
+    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+
+    def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
+        """Return (dx, dy) with optional direction-dependent distance scaling.
+
+        scale(θ) = lat_min + (1 - lat_min) · cos²(θ)
+        At θ=0  → along X (longitudinal) → scale = 1.0  (full step)
+        At θ=π/2 → along Y (lateral)      → scale = lat_min
+        """
+        if _dir_scaling_on:
+            cos2 = np.cos(angle) ** 2
+            s = _dir_lat_min + (1.0 - _dir_lat_min) * cos2
+            d = dist * s
+        else:
+            d = dist
+        return (d * np.cos(angle), d * np.sin(angle))
     
     # Check for temporary override first (used by preset buttons), then fall back to widget key
     movement_direction = st.session_state.get("_override_movement_direction", st.session_state.get("cfg_movement_direction", "Same direction"))
@@ -3267,8 +3291,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
         
         for _ in range(max_attempts):
             angle = float(np.random.uniform(0, 2 * np.pi))
-            delta_x = base_distance * np.cos(angle)
-            delta_y = base_distance * np.sin(angle)
+            delta_x, delta_y = _scaled_deltas(angle, base_distance)
             
             # Check if all points would be in bounds with this direction
             in_bounds_count = 0
@@ -3293,14 +3316,12 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
         
         # Use best direction found (may not keep all points in bounds, but maximizes in-bounds count)
         if best_angle is not None:
-            delta_x = base_distance * np.cos(best_angle)
-            delta_y = base_distance * np.sin(best_angle)
+            delta_x, delta_y = _scaled_deltas(best_angle, base_distance)
             return {int(idx): (delta_x, delta_y) for idx in selected_indices}
         
         # Fallback: use first random angle
         angle = float(np.random.uniform(0, 2 * np.pi))
-        delta_x = base_distance * np.cos(angle)
-        delta_y = base_distance * np.sin(angle)
+        delta_x, delta_y = _scaled_deltas(angle, base_distance)
         return {int(idx): (delta_x, delta_y) for idx in selected_indices}
     
     else:  # Random directions
@@ -3314,8 +3335,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             
             for _ in range(max_attempts):
                 angle = float(np.random.uniform(0, 2 * np.pi))
-                delta_x = base_distance * np.cos(angle)
-                delta_y = base_distance * np.sin(angle)
+                delta_x, delta_y = _scaled_deltas(angle, base_distance)
                 
                 new_x = parent_pt[0] + delta_x
                 new_y = parent_pt[1] + delta_y
@@ -3328,14 +3348,12 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             else:
                 # No valid angle found after max_attempts, use first angle tried
                 if best_angle is not None:
-                    delta_x = base_distance * np.cos(best_angle)
-                    delta_y = base_distance * np.sin(best_angle)
+                    delta_x, delta_y = _scaled_deltas(best_angle, base_distance)
                     vectors[int(idx)] = (delta_x, delta_y)
                 else:
                     # Complete fallback
                     angle = float(np.random.uniform(0, 2 * np.pi))
-                    delta_x = base_distance * np.cos(angle)
-                    delta_y = base_distance * np.sin(angle)
+                    delta_x, delta_y = _scaled_deltas(angle, base_distance)
                     vectors[int(idx)] = (delta_x, delta_y)
         
         return vectors
@@ -7080,6 +7098,329 @@ if st.session_state.get("_generate_sixteenth_ts_requested", False) and not st.se
         external_ts_for_window=external_ts_for_window,
     )
 
+# ============= 6-Event Generation Settings (always visible) ============
+# Sync from general sidebar BEFORE widget instantiation so the
+# selectbox/number_input defaults match the sidebar every render.
+_6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+_cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
+_gen_variant = "fundamental"
+for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
+    if _cv_g in _6evs_pv_opts:
+        _gen_variant = _cv_g
+        break
+_gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
+_gen_by = st.session_state.get("cfg_buffer_y", 0.0)
+_gen_rx = st.session_state.get("cfg_rough_x", 0.0)
+_gen_ry = st.session_state.get("cfg_rough_y", 0.30)
+_gen_sig = (_gen_variant, _gen_bx, _gen_by, _gen_rx, _gen_ry)
+st.session_state["_6evs_pdp_variant"] = _gen_variant
+st.session_state["_6evs_buffer_x"] = _gen_bx
+st.session_state["_6evs_buffer_y"] = _gen_by
+st.session_state["_6evs_rough_x"] = _gen_rx
+st.session_state["_6evs_rough_y"] = _gen_ry
+st.session_state["_6evs_prev_general_sig"] = _gen_sig
+st.session_state["_6evs_prev_general_variant"] = _gen_variant
+
+with st.expander("⚙️ 6-Event generation settings", expanded=False):
+    # ── Core walk parameters (adjustable before running) ──
+    _6evs_core_col1, _6evs_core_col2, _6evs_core_col3, _6evs_core_col4 = st.columns([1, 1, 1, 1], gap="small")
+    with _6evs_core_col1:
+        _6evs_max_halvings = st.number_input(
+            "Max halving steps",
+            min_value=1, max_value=30,
+            value=int(st.session_state.get("_6evs_max_halvings", 10)),
+            step=1,
+            key="_6evs_max_halvings",
+            help="Number of vector-halving attempts per iteration before giving up. "
+                 "Higher = more likely to find a PDP-preserving move but slower. Default: 10.",
+        )
+    with _6evs_core_col2:
+        _6evs_point_sel_options = ["Single point", "Multiple random points", "Consecutive time stamps"]
+        _6evs_point_selection = st.selectbox(
+            "Point selection",
+            options=_6evs_point_sel_options,
+            index=_6evs_point_sel_options.index(
+                st.session_state.get("_6evs_point_selection", "Single point")
+            ),
+            key="_6evs_point_selection",
+            help="How many points are moved per iteration.\n\n"
+                 "• **Single point**: one random moveable point\n"
+                 "• **Multiple random points**: N random points together\n"
+                 "• **Consecutive time stamps**: adjacent timestamps of one object",
+        )
+    with _6evs_core_col3:
+        _6evs_move_dir_options = ["Same direction", "Random directions"]
+        _6evs_move_direction = st.selectbox(
+            "Movement direction",
+            options=_6evs_move_dir_options,
+            index=_6evs_move_dir_options.index(
+                st.session_state.get("_6evs_move_direction", "Same direction")
+            ),
+            key="_6evs_move_direction",
+            help="How movement vectors are assigned when multiple points move.\n\n"
+                 "• **Same direction**: all selected points share one random angle\n"
+                 "• **Random directions**: each point gets its own random angle",
+        )
+    with _6evs_core_col4:
+        _6evs_maxdist_mult = st.number_input(
+            "Maxdist multiplier",
+            min_value=0.10, max_value=5.00,
+            value=float(st.session_state.get("_6evs_maxdist_mult", 1.00)),
+            step=0.10, format="%.2f",
+            key="_6evs_maxdist_mult",
+            help=f"Multiply the auto-computed maxdist ({maxdist:.2f} m) by this factor. "
+                 "< 1 = smaller steps (fine-tuning), > 1 = larger steps (exploration).",
+        )
+    # Second row: damping & auto-stop
+    _6evs_core2_col1, _6evs_core2_col2, _6evs_core2_col3, _6evs_core2_col4 = st.columns([1, 1, 1, 1], gap="small")
+    with _6evs_core2_col1:
+        _6evs_damping_enabled = st.checkbox(
+            "🔽 Damping",
+            value=st.session_state.get("_6evs_damping_enabled", False),
+            key="_6evs_damping_enabled",
+            help="Apply a random damping factor to each step. "
+                 "Movement distance is multiplied by a uniform random value between min and max.",
+        )
+    with _6evs_core2_col2:
+        _6evs_damping_min = st.number_input(
+            "Damping min",
+            min_value=0.00, max_value=1.00,
+            value=float(st.session_state.get("_6evs_damping_min", 0.00)),
+            step=0.05, format="%.2f",
+            key="_6evs_damping_min",
+            disabled=not st.session_state.get("_6evs_damping_enabled", False),
+            help="Lower bound of the damping factor (0 = movement can be reduced to zero).",
+        )
+    with _6evs_core2_col3:
+        _6evs_damping_max = st.number_input(
+            "Damping max",
+            min_value=0.00, max_value=1.00,
+            value=float(st.session_state.get("_6evs_damping_max", 1.00)),
+            step=0.05, format="%.2f",
+            key="_6evs_damping_max",
+            disabled=not st.session_state.get("_6evs_damping_enabled", False),
+            help="Upper bound of the damping factor (1 = no damping at the upper end).",
+        )
+    with _6evs_core2_col4:
+        _6evs_auto_stop = st.checkbox(
+            "🛑 Auto-stop",
+            value=st.session_state.get("_6evs_auto_stop", False),
+            key="_6evs_auto_stop",
+            help="Automatically stop the batch when the rolling acceptance rate "
+                 "drops below the threshold (the walk is no longer making progress).",
+        )
+    # Auto-stop threshold (only visible when auto-stop is enabled)
+    if st.session_state.get("_6evs_auto_stop", False):
+        _6evs_as_col1, _6evs_as_col2, _ = st.columns([1, 1, 2], gap="small")
+        with _6evs_as_col1:
+            _6evs_auto_stop_thresh = st.number_input(
+                "Auto-stop threshold",
+                min_value=0.00, max_value=1.00,
+                value=float(st.session_state.get("_6evs_auto_stop_thresh", 0.05)),
+                step=0.01, format="%.2f",
+                key="_6evs_auto_stop_thresh",
+                help="Stop when the rolling acceptance rate (last 20 iters) falls below this value. "
+                     "0.05 = stop when fewer than 5% of recent moves succeed.",
+            )
+        with _6evs_as_col2:
+            _6evs_auto_stop_window = st.number_input(
+                "Rolling window",
+                min_value=5, max_value=100,
+                value=int(st.session_state.get("_6evs_auto_stop_window", 20)),
+                step=5,
+                key="_6evs_auto_stop_window",
+                help="Number of recent iterations to average for the acceptance rate check.",
+            )
+
+    st.markdown("---")
+    # ── PDP variant & tolerance controls ──
+    _6evs_pcol1, _6evs_pcol2, _6evs_pcol2b, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1, 1], gap="small")
+    with _6evs_pcol1:
+        _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+        # Sync already happened before generation (unconditional sync block above)
+
+        _6evs_pdp_variant = st.selectbox(
+            "PDP variant",
+            options=_6evs_pdp_variant_options,
+            key="_6evs_pdp_variant",
+            help="PDP variant used to accept/reject moves.\n\n"
+                 "• **fundamental**: strict ordering, no tolerance\n"
+                 "• **realistic**: buffer on d0 + roughness on d1 (recommended for traffic)\n"
+                 "• **buffer/rough/bufferrough**: manual control",
+        )
+    with _6evs_pcol2:
+        _6evs_buffer_x = st.number_input(
+            "Buffer X (d0)",
+            min_value=0.0, max_value=100.0,
+            value=st.session_state.get("_6evs_buffer_x", 1.5),
+            step=0.1, format="%.1f",
+            key="_6evs_buffer_x",
+            help="Tolerance on longitudinal (driving-direction) ordering. "
+                 "Points within this distance are considered equivalent in d0. "
+                 "Only used by buffer/bufferrough variants.",
+        )
+    with _6evs_pcol2b:
+        _6evs_buffer_y = st.number_input(
+            "Buffer Y (d1)",
+            min_value=0.0, max_value=100.0,
+            value=st.session_state.get("_6evs_buffer_y", 0.0),
+            step=0.1, format="%.1f",
+            key="_6evs_buffer_y",
+            help="Tolerance on lateral (cross-lane) ordering. "
+                 "Points within this distance are considered equivalent in d1. "
+                 "Only used by buffer/bufferrough variants.",
+        )
+    with _6evs_pcol3:
+        _6evs_rough_x = st.number_input(
+            "Rough X (d0)",
+            min_value=0.0, max_value=100.0,
+            value=st.session_state.get("_6evs_rough_x", 0.0),
+            step=0.05, format="%.2f",
+            key="_6evs_rough_x",
+            help="Equality tolerance on longitudinal ordering. "
+                 "Points within this distance are treated as equal in d0. "
+                 "Only used by rough/bufferrough variants.",
+        )
+    with _6evs_pcol4:
+        _6evs_rough_y = st.number_input(
+            "Rough Y (d1)",
+            min_value=0.0, max_value=100.0,
+            value=st.session_state.get("_6evs_rough_y", 0.30),
+            step=0.05, format="%.2f",
+            key="_6evs_rough_y",
+            help="Equality tolerance on lateral ordering. "
+                 "Points within this distance are treated as equal in d1. "
+                 "Only used by rough/bufferrough/realistic variants.",
+        )
+
+    # --- Directional scaling settings ---
+    st.markdown("---")
+    _6evs_ds_col1, _6evs_ds_col2 = st.columns([1, 1], gap="small")
+    with _6evs_ds_col1:
+        _6evs_dir_scaling_enabled = st.checkbox(
+            "↔️ Directional scaling",
+            value=st.session_state.get("_6evs_dir_scaling_enabled", True),
+            key="_6evs_dir_scaling_enabled",
+            help="Scale step size by movement direction using cos²(θ). "
+                 "Longitudinal moves (along road / X) get 100% of maxdist; "
+                 "lateral moves (across lanes / Y) get the minimum %. "
+                 "Intermediate angles are smoothly interpolated.",
+        )
+    with _6evs_ds_col2:
+        _6evs_dir_lat_min = st.number_input(
+            "Lateral scale min",
+            min_value=0.01, max_value=1.00,
+            value=float(st.session_state.get("_6evs_dir_lat_min", 0.20)),
+            step=0.05, format="%.2f",
+            key="_6evs_dir_lat_min",
+            disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
+            help="Step size fraction for pure lateral (Y-axis) moves. "
+                 "0.20 = lateral moves are 20% of maxdist. "
+                 "Formula: scale(θ) = lat_min + (1 − lat_min) · cos²(θ).",
+        )
+
+    # --- Simulated annealing settings ---
+    st.markdown("---")
+    _6evs_sa_col1, _6evs_sa_col2, _6evs_sa_col3 = st.columns([1, 1, 1], gap="small")
+    with _6evs_sa_col1:
+        _6evs_sa_enabled = st.checkbox(
+            "🌡️ Simulated annealing",
+            value=st.session_state.get("_6evs_sa_enabled", False),
+            key="_6evs_sa_enabled",
+            help="Enable temperature-based step size decay. "
+                 "Early iterations explore broadly (large steps); "
+                 "later iterations refine (small steps). "
+                 "Uses T = T_initial × cooling_rate^iteration.",
+        )
+    with _6evs_sa_col2:
+        _6evs_sa_cooling = st.number_input(
+            "Cooling rate",
+            min_value=0.900, max_value=0.999,
+            value=st.session_state.get("_6evs_sa_cooling", 0.980),
+            step=0.005, format="%.3f",
+            key="_6evs_sa_cooling",
+            help="Temperature multiplier per iteration (0.95 = fast cooling, 0.995 = slow cooling). "
+                 "At cooling=0.98, step size halves every ~35 iterations.",
+        )
+    with _6evs_sa_col3:
+        _6evs_sa_min_temp = st.number_input(
+            "Min temperature",
+            min_value=0.01, max_value=1.0,
+            value=st.session_state.get("_6evs_sa_min_temp", 0.05),
+            step=0.01, format="%.2f",
+            key="_6evs_sa_min_temp",
+            help="Temperature floor — step size won't shrink below maxdist × min_temp. "
+                 "Prevents the walk from freezing completely.",
+        )
+
+    # Soft PDP scoring: accept partial matches
+    _6evs_soft_col1, _6evs_soft_col2 = st.columns([1, 2], gap="small")
+    with _6evs_soft_col1:
+        _6evs_soft_pdp_enabled = st.checkbox(
+            "🎯 Soft PDP scoring",
+            value=st.session_state.get("_6evs_soft_pdp_enabled", False),
+            key="_6evs_soft_pdp_enabled",
+            help="Accept moves that partially preserve PDP order. "
+                 "Instead of requiring 100% match, accept if match % ≥ threshold. "
+                 "Allows more exploration at the cost of slight order violations.",
+        )
+    with _6evs_soft_col2:
+        _6evs_soft_pdp_thresh = st.number_input(
+            "Min PDP match %",
+            min_value=0.80, max_value=1.00,
+            value=st.session_state.get("_6evs_soft_pdp_thresh", 0.95),
+            step=0.01, format="%.2f",
+            key="_6evs_soft_pdp_thresh",
+            disabled=not st.session_state.get("_6evs_soft_pdp_enabled", False),
+            help="Minimum fraction of PDP comparisons that must match (both d1 and d2). "
+                 "0.95 = accept if ≥95% of pairs match. Higher = stricter.",
+        )
+
+    # Population-based search
+    _6evs_pop_col1, _6evs_pop_col2 = st.columns([1, 2], gap="small")
+    with _6evs_pop_col1:
+        _6evs_pop_enabled = st.checkbox(
+            "👥 Population search",
+            value=st.session_state.get("_6evs_pop_enabled", False),
+            key="_6evs_pop_enabled",
+            help="Maintain multiple parallel configurations (population). "
+                 "Each gets iterations in round-robin; the best member "
+                 "(lowest perpendicular variance) is selected at the end.",
+        )
+    with _6evs_pop_col2:
+        _6evs_pop_size = st.number_input(
+            "Population size",
+            min_value=2, max_value=10,
+            value=st.session_state.get("_6evs_pop_size", 3),
+            step=1,
+            key="_6evs_pop_size",
+            disabled=not st.session_state.get("_6evs_pop_enabled", False),
+            help="Number of parallel configurations to maintain. "
+                 "Total iterations are split across members (e.g. 50 iters / 5 pop = 10 each).",
+        )
+
+    # Multi-point coordinated moves
+    _6evs_coord_col1, _6evs_coord_col2 = st.columns([1, 2], gap="small")
+    with _6evs_coord_col1:
+        _6evs_coord_enabled = st.checkbox(
+            "🔗 Coordinated moves",
+            value=st.session_state.get("_6evs_coord_enabled", False),
+            key="_6evs_coord_enabled",
+            help="Occasionally move ALL moveable points together in the same direction "
+                 "(global shift). Preserves relative ordering while exploring the config space.",
+        )
+    with _6evs_coord_col2:
+        _6evs_coord_prob = st.number_input(
+            "Coordinated move probability",
+            min_value=0.05, max_value=1.00,
+            value=st.session_state.get("_6evs_coord_prob", 0.20),
+            step=0.05, format="%.2f",
+            key="_6evs_coord_prob",
+            disabled=not st.session_state.get("_6evs_coord_enabled", False),
+            help="Probability per iteration that all moveable points are moved together "
+                 "instead of just one/few. 0.20 = 20% of iterations are coordinated.",
+        )
+
 # ============= 6-Event Single Iteration (ts 0, 34, 67, 183, 213, 249) ============
 if st.session_state.get("_generate_6ev_single_requested", False) and not st.session_state.get("_generate_6ev_single_results", None):
     st.markdown("---")
@@ -7100,302 +7441,11 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _6evs_n_ts_total = sum(_6evs_n_ts_per_obj.values())
     _6evs_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _6evs_n_ts_per_obj.items())
 
-    # ---- Always sync from general sidebar BEFORE widget instantiation ----
-    _6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-    _cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
-    _gen_variant = "fundamental"
-    for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
-        if _cv_g in _6evs_pv_opts:
-            _gen_variant = _cv_g
-            break
-    _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
-    _gen_by = st.session_state.get("cfg_buffer_y", 0.0)
-    _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
-    _gen_ry = st.session_state.get("cfg_rough_y", 0.30)
-    _gen_sig = (_gen_variant, _gen_bx, _gen_by, _gen_rx, _gen_ry)
-    # ALWAYS write: ensures the selectbox starts with the sidebar value.
-    st.session_state["_6evs_pdp_variant"] = _gen_variant
-    st.session_state["_6evs_buffer_x"] = _gen_bx
-    st.session_state["_6evs_buffer_y"] = _gen_by
-    st.session_state["_6evs_rough_x"] = _gen_rx
-    st.session_state["_6evs_rough_y"] = _gen_ry
-    st.session_state["_6evs_prev_general_sig"] = _gen_sig
-    st.session_state["_6evs_prev_general_variant"] = _gen_variant
-
-    # ------ User-tuneable generation parameters ------
-    with st.expander("⚙️ Generation settings", expanded=False):
-        # ── Core walk parameters (adjustable before running) ──
-        _6evs_core_col1, _6evs_core_col2, _6evs_core_col3, _6evs_core_col4 = st.columns([1, 1, 1, 1], gap="small")
-        with _6evs_core_col1:
-            _6evs_max_halvings = st.number_input(
-                "Max halving steps",
-                min_value=1, max_value=30,
-                value=int(st.session_state.get("_6evs_max_halvings", 10)),
-                step=1,
-                key="_6evs_max_halvings",
-                help="Number of vector-halving attempts per iteration before giving up. "
-                     "Higher = more likely to find a PDP-preserving move but slower. Default: 10.",
-            )
-        with _6evs_core_col2:
-            _6evs_point_sel_options = ["Single point", "Multiple random points", "Consecutive time stamps"]
-            _6evs_point_selection = st.selectbox(
-                "Point selection",
-                options=_6evs_point_sel_options,
-                index=_6evs_point_sel_options.index(
-                    st.session_state.get("_6evs_point_selection", "Single point")
-                ),
-                key="_6evs_point_selection",
-                help="How many points are moved per iteration.\n\n"
-                     "• **Single point**: one random moveable point\n"
-                     "• **Multiple random points**: N random points together\n"
-                     "• **Consecutive time stamps**: adjacent timestamps of one object",
-            )
-        with _6evs_core_col3:
-            _6evs_move_dir_options = ["Same direction", "Random directions"]
-            _6evs_move_direction = st.selectbox(
-                "Movement direction",
-                options=_6evs_move_dir_options,
-                index=_6evs_move_dir_options.index(
-                    st.session_state.get("_6evs_move_direction", "Same direction")
-                ),
-                key="_6evs_move_direction",
-                help="How movement vectors are assigned when multiple points move.\n\n"
-                     "• **Same direction**: all selected points share one random angle\n"
-                     "• **Random directions**: each point gets its own random angle",
-            )
-        with _6evs_core_col4:
-            _6evs_maxdist_mult = st.number_input(
-                "Maxdist multiplier",
-                min_value=0.10, max_value=5.00,
-                value=float(st.session_state.get("_6evs_maxdist_mult", 1.00)),
-                step=0.10, format="%.2f",
-                key="_6evs_maxdist_mult",
-                help=f"Multiply the auto-computed maxdist ({maxdist:.2f} m) by this factor. "
-                     "< 1 = smaller steps (fine-tuning), > 1 = larger steps (exploration).",
-            )
-        # Second row: damping & auto-stop
-        _6evs_core2_col1, _6evs_core2_col2, _6evs_core2_col3, _6evs_core2_col4 = st.columns([1, 1, 1, 1], gap="small")
-        with _6evs_core2_col1:
-            _6evs_damping_enabled = st.checkbox(
-                "🔽 Damping",
-                value=st.session_state.get("_6evs_damping_enabled", False),
-                key="_6evs_damping_enabled",
-                help="Apply a random damping factor to each step. "
-                     "Movement distance is multiplied by a uniform random value between min and max.",
-            )
-        with _6evs_core2_col2:
-            _6evs_damping_min = st.number_input(
-                "Damping min",
-                min_value=0.00, max_value=1.00,
-                value=float(st.session_state.get("_6evs_damping_min", 0.00)),
-                step=0.05, format="%.2f",
-                key="_6evs_damping_min",
-                disabled=not st.session_state.get("_6evs_damping_enabled", False),
-                help="Lower bound of the damping factor (0 = movement can be reduced to zero).",
-            )
-        with _6evs_core2_col3:
-            _6evs_damping_max = st.number_input(
-                "Damping max",
-                min_value=0.00, max_value=1.00,
-                value=float(st.session_state.get("_6evs_damping_max", 1.00)),
-                step=0.05, format="%.2f",
-                key="_6evs_damping_max",
-                disabled=not st.session_state.get("_6evs_damping_enabled", False),
-                help="Upper bound of the damping factor (1 = no damping at the upper end).",
-            )
-        with _6evs_core2_col4:
-            _6evs_auto_stop = st.checkbox(
-                "🛑 Auto-stop",
-                value=st.session_state.get("_6evs_auto_stop", False),
-                key="_6evs_auto_stop",
-                help="Automatically stop the batch when the rolling acceptance rate "
-                     "drops below the threshold (the walk is no longer making progress).",
-            )
-        # Auto-stop threshold (only visible when auto-stop is enabled)
-        if st.session_state.get("_6evs_auto_stop", False):
-            _6evs_as_col1, _6evs_as_col2, _ = st.columns([1, 1, 2], gap="small")
-            with _6evs_as_col1:
-                _6evs_auto_stop_thresh = st.number_input(
-                    "Auto-stop threshold",
-                    min_value=0.00, max_value=1.00,
-                    value=float(st.session_state.get("_6evs_auto_stop_thresh", 0.05)),
-                    step=0.01, format="%.2f",
-                    key="_6evs_auto_stop_thresh",
-                    help="Stop when the rolling acceptance rate (last 20 iters) falls below this value. "
-                         "0.05 = stop when fewer than 5% of recent moves succeed.",
-                )
-            with _6evs_as_col2:
-                _6evs_auto_stop_window = st.number_input(
-                    "Rolling window",
-                    min_value=5, max_value=100,
-                    value=int(st.session_state.get("_6evs_auto_stop_window", 20)),
-                    step=5,
-                    key="_6evs_auto_stop_window",
-                    help="Number of recent iterations to average for the acceptance rate check.",
-                )
-
-        st.markdown("---")
-        # ── PDP variant & tolerance controls ──
-        _6evs_pcol1, _6evs_pcol2, _6evs_pcol2b, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1, 1], gap="small")
-        with _6evs_pcol1:
-            _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-            # Sync already happened before generation (unconditional sync block above)
-
-            _6evs_pdp_variant = st.selectbox(
-                "PDP variant",
-                options=_6evs_pdp_variant_options,
-                key="_6evs_pdp_variant",
-                help="PDP variant used to accept/reject moves.\n\n"
-                     "• **fundamental**: strict ordering, no tolerance\n"
-                     "• **realistic**: buffer on d0 + roughness on d1 (recommended for traffic)\n"
-                     "• **buffer/rough/bufferrough**: manual control",
-            )
-        with _6evs_pcol2:
-            _6evs_buffer_x = st.number_input(
-                "Buffer X (d0)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_buffer_x", 1.5),
-                step=0.1, format="%.1f",
-                key="_6evs_buffer_x",
-                help="Tolerance on longitudinal (driving-direction) ordering. "
-                     "Points within this distance are considered equivalent in d0. "
-                     "Only used by buffer/bufferrough variants.",
-            )
-        with _6evs_pcol2b:
-            _6evs_buffer_y = st.number_input(
-                "Buffer Y (d1)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_buffer_y", 0.0),
-                step=0.1, format="%.1f",
-                key="_6evs_buffer_y",
-                help="Tolerance on lateral (cross-lane) ordering. "
-                     "Points within this distance are considered equivalent in d1. "
-                     "Only used by buffer/bufferrough variants.",
-            )
-        with _6evs_pcol3:
-            _6evs_rough_x = st.number_input(
-                "Rough X (d0)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_rough_x", 0.0),
-                step=0.05, format="%.2f",
-                key="_6evs_rough_x",
-                help="Equality tolerance on longitudinal ordering. "
-                     "Points within this distance are treated as equal in d0. "
-                     "Only used by rough/bufferrough variants.",
-            )
-        with _6evs_pcol4:
-            _6evs_rough_y = st.number_input(
-                "Rough Y (d1)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_rough_y", 0.30),
-                step=0.05, format="%.2f",
-                key="_6evs_rough_y",
-                help="Equality tolerance on lateral ordering. "
-                     "Points within this distance are treated as equal in d1. "
-                     "Only used by rough/bufferrough/realistic variants.",
-            )
-
-        # --- Simulated annealing settings ---
-        st.markdown("---")
-        _6evs_sa_col1, _6evs_sa_col2, _6evs_sa_col3 = st.columns([1, 1, 1], gap="small")
-        with _6evs_sa_col1:
-            _6evs_sa_enabled = st.checkbox(
-                "🌡️ Simulated annealing",
-                value=st.session_state.get("_6evs_sa_enabled", True),
-                key="_6evs_sa_enabled",
-                help="Enable temperature-based step size decay. "
-                     "Early iterations explore broadly (large steps); "
-                     "later iterations refine (small steps). "
-                     "Uses T = T_initial × cooling_rate^iteration.",
-            )
-        with _6evs_sa_col2:
-            _6evs_sa_cooling = st.number_input(
-                "Cooling rate",
-                min_value=0.900, max_value=0.999,
-                value=st.session_state.get("_6evs_sa_cooling", 0.980),
-                step=0.005, format="%.3f",
-                key="_6evs_sa_cooling",
-                help="Temperature multiplier per iteration (0.95 = fast cooling, 0.995 = slow cooling). "
-                     "At cooling=0.98, step size halves every ~35 iterations.",
-            )
-        with _6evs_sa_col3:
-            _6evs_sa_min_temp = st.number_input(
-                "Min temperature",
-                min_value=0.01, max_value=1.0,
-                value=st.session_state.get("_6evs_sa_min_temp", 0.05),
-                step=0.01, format="%.2f",
-                key="_6evs_sa_min_temp",
-                help="Temperature floor — step size won't shrink below maxdist × min_temp. "
-                     "Prevents the walk from freezing completely.",
-            )
-
-        # Soft PDP scoring: accept partial matches
-        _6evs_soft_col1, _6evs_soft_col2 = st.columns([1, 2], gap="small")
-        with _6evs_soft_col1:
-            _6evs_soft_pdp_enabled = st.checkbox(
-                "🎯 Soft PDP scoring",
-                value=st.session_state.get("_6evs_soft_pdp_enabled", False),
-                key="_6evs_soft_pdp_enabled",
-                help="Accept moves that partially preserve PDP order. "
-                     "Instead of requiring 100% match, accept if match % ≥ threshold. "
-                     "Allows more exploration at the cost of slight order violations.",
-            )
-        with _6evs_soft_col2:
-            _6evs_soft_pdp_thresh = st.number_input(
-                "Min PDP match %",
-                min_value=0.80, max_value=1.00,
-                value=st.session_state.get("_6evs_soft_pdp_thresh", 0.95),
-                step=0.01, format="%.2f",
-                key="_6evs_soft_pdp_thresh",
-                disabled=not st.session_state.get("_6evs_soft_pdp_enabled", False),
-                help="Minimum fraction of PDP comparisons that must match (both d1 and d2). "
-                     "0.95 = accept if ≥95% of pairs match. Higher = stricter.",
-            )
-
-        # Population-based search
-        _6evs_pop_col1, _6evs_pop_col2 = st.columns([1, 2], gap="small")
-        with _6evs_pop_col1:
-            _6evs_pop_enabled = st.checkbox(
-                "👥 Population search",
-                value=st.session_state.get("_6evs_pop_enabled", False),
-                key="_6evs_pop_enabled",
-                help="Maintain multiple parallel configurations (population). "
-                     "Each gets iterations in round-robin; the best member "
-                     "(lowest perpendicular variance) is selected at the end.",
-            )
-        with _6evs_pop_col2:
-            _6evs_pop_size = st.number_input(
-                "Population size",
-                min_value=2, max_value=10,
-                value=st.session_state.get("_6evs_pop_size", 3),
-                step=1,
-                key="_6evs_pop_size",
-                disabled=not st.session_state.get("_6evs_pop_enabled", False),
-                help="Number of parallel configurations to maintain. "
-                     "Total iterations are split across members (e.g. 50 iters / 5 pop = 10 each).",
-            )
-
-        # Multi-point coordinated moves
-        _6evs_coord_col1, _6evs_coord_col2 = st.columns([1, 2], gap="small")
-        with _6evs_coord_col1:
-            _6evs_coord_enabled = st.checkbox(
-                "🔗 Coordinated moves",
-                value=st.session_state.get("_6evs_coord_enabled", False),
-                key="_6evs_coord_enabled",
-                help="Occasionally move ALL moveable points together in the same direction "
-                     "(global shift). Preserves relative ordering while exploring the config space.",
-            )
-        with _6evs_coord_col2:
-            _6evs_coord_prob = st.number_input(
-                "Coordinated move probability",
-                min_value=0.05, max_value=1.00,
-                value=st.session_state.get("_6evs_coord_prob", 0.20),
-                step=0.05, format="%.2f",
-                key="_6evs_coord_prob",
-                disabled=not st.session_state.get("_6evs_coord_enabled", False),
-                help="Probability per iteration that all moveable points are moved together "
-                     "instead of just one/few. 0.20 = 20% of iterations are coordinated.",
-            )
+    _6evs_pdp_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
+    _6evs_buffer_x = st.session_state.get("_6evs_buffer_x", 1.5)
+    _6evs_buffer_y = st.session_state.get("_6evs_buffer_y", 0.0)
+    _6evs_rough_x = st.session_state.get("_6evs_rough_x", 0.0)
+    _6evs_rough_y = st.session_state.get("_6evs_rough_y", 0.30)
 
     _6evs_settings = {
         "PDP variant": _6evs_pdp_variant,
@@ -7414,6 +7464,9 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         "Movement direction": st.session_state.get("_6evs_move_direction", "Same direction"),
         "Maxdist multiplier": float(st.session_state.get("_6evs_maxdist_mult", 1.0)),
         "Maxdist (effective)": round(maxdist * float(st.session_state.get("_6evs_maxdist_mult", 1.0)), 2),
+        "Directional scaling": bool(st.session_state.get("_6evs_dir_scaling_enabled", True)),
+        "Lateral scale min": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+            if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
         "Damping": st.session_state.get("_6evs_damping_enabled", False),
         "Damping range": [
             float(st.session_state.get("_6evs_damping_min", 0.0)),
