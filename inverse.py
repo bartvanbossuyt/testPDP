@@ -1885,7 +1885,7 @@ with st.expander("PDP Variant Configuration", expanded=False):
     pdp_variants_selected = st.multiselect(
         "PDP Variants to calculate",
         options=["fundamental", "buffer", "rough", "bufferrough", "realistic", "frenet"],
-        default=["bufferrough"],
+        default=["rough"],
         key="cfg_pdp_variants",
         help="""Select PDP variants for configuration generation:
 
@@ -1976,7 +1976,7 @@ with st.expander("PDP Variant Configuration", expanded=False):
                         st.info("ℹï¸ 'realistic' uses buffer on x instead of roughness")
                 
                 # Show rough_y for all rough variants including realistic
-                rough_y_default = 0.4 if needs_realistic else 0.8
+                rough_y_default = 0.4 if needs_realistic else 0.30
                 rough_y = st.number_input(
                     "Roughness Y (d1)",
                     min_value=0.0,
@@ -1997,8 +1997,8 @@ with st.expander("PDP Variant Configuration", expanded=False):
 
 # External (fixed) reference points - in expander for compactness
 with st.expander("External Reference Points", expanded=False):
-    # Default: True for presets, False for custom uploads (but respect user's choice if already set)
-    _ext_default = st.session_state.get("use_external_points", not _is_custom_upload)
+    # Default: unchecked (user enables manually when needed)
+    _ext_default = st.session_state.get("use_external_points", False)
     use_external_points = st.checkbox(
         "Use external reference points",
         value=_ext_default,
@@ -2018,16 +2018,10 @@ with st.expander("External Reference Points", expanded=False):
 
         # Initialize external points if not present: place one point per lane center at x=0
         if "external_points" not in st.session_state:
-            _ext_lane_cfg = LANE_CONFIGURATIONS.get(selected_c_int, {})
-            _ext_lw = float(_ext_lane_cfg.get("lane_width", 3.0))
-            _ext_ys = [float(config_df[config_df['o'] == o]['y'].mean()) for o in all_object_ids]
-            _ext_y_span = (max(_ext_ys) - min(_ext_ys)) if len(_ext_ys) > 1 else 0.0
-            _ext_nlanes = 3 if _ext_y_span > 1.5 * _ext_lw else 2
-            _ext_center_y = float(config_df['y'].mean())
-            _ext_hw = (_ext_lw * _ext_nlanes) / 2.0
+            # Default: road origin (0,0) and opposite lane center (0, -3.7)
             st.session_state["external_points"] = [
-                (500.0, round(_ext_center_y - _ext_hw + (i + 0.5) * _ext_lw, 3))
-                for i in range(_ext_nlanes)
+                (0.0, 0.0),
+                (0.0, -3.7),
             ]
 
         # Sync external_points list → individual number_input keys (needed after
@@ -2545,7 +2539,8 @@ with advanced_col2:
         key="btn_generate_6ev_single",
         type="primary",
         help="Selects 6 event timestamps (0, 34, 67, 183, 213, 249). "
-             "Generates 1 config × 1 iteration using exponential strategy + fundamental PDP variant. "
+             "Generates 1000 iterations using exponential strategy + PDP variant from settings. "
+             "Simulated annealing is enabled by default for exploration→exploitation cooling. "
              "Moves a single random point per iteration. Y-axis fixed at [-10, +10]."
     )
 
@@ -5798,6 +5793,7 @@ if generate_recursive_6event_btn:
 if generate_6ev_single_btn:
     st.session_state["_generate_6ev_single_requested"] = True
     st.session_state["_generate_6ev_single_results"] = None
+    st.session_state["_6evs_batch_count"] = 1000  # start with 1000 iterations
     st.session_state.pop("_6evs_points_plot", None)
     st.session_state.pop("_6evs_vals_plot", None)
 
@@ -7115,7 +7111,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
     _gen_by = st.session_state.get("cfg_buffer_y", 0.0)
     _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
-    _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
+    _gen_ry = st.session_state.get("cfg_rough_y", 0.30)
     _gen_sig = (_gen_variant, _gen_bx, _gen_by, _gen_rx, _gen_ry)
     # ALWAYS write: ensures the selectbox starts with the sidebar value.
     st.session_state["_6evs_pdp_variant"] = _gen_variant
@@ -7291,7 +7287,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             _6evs_rough_y = st.number_input(
                 "Rough Y (d1)",
                 min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_rough_y", 0.4),
+                value=st.session_state.get("_6evs_rough_y", 0.30),
                 step=0.05, format="%.2f",
                 key="_6evs_rough_y",
                 help="Equality tolerance on lateral ordering. "
@@ -7305,7 +7301,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         with _6evs_sa_col1:
             _6evs_sa_enabled = st.checkbox(
                 "🌡️ Simulated annealing",
-                value=st.session_state.get("_6evs_sa_enabled", False),
+                value=st.session_state.get("_6evs_sa_enabled", True),
                 key="_6evs_sa_enabled",
                 help="Enable temperature-based step size decay. "
                      "Early iterations explore broadly (large steps); "
@@ -13614,10 +13610,22 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 ax1_twin = ax1.twinx()
                 ax1_twin.plot(_diag_iters, _diag_sa_temp, color='#9467bd', linewidth=1.5,
                              linestyle='-.', alpha=0.7, label='SA Temperature')
-                ax1_twin.set_ylabel("Temperature", fontsize=9, color='#9467bd')
+                # Effective step size = accepted_step_size (already reflects T scaling)
+                # Show as fraction of maxdist for readability
+                _eff_steps_all = [d["step_size"] for d in _6evs_diag_data]
+                _maxdist_est = max(_eff_steps_all) if _eff_steps_all and max(_eff_steps_all) > 0 else 1.0
+                _eff_norm = [s / _maxdist_est for s in _eff_steps_all]
+                ax1_twin.plot(_diag_iters, _eff_norm, color='#e377c2', linewidth=1.0,
+                             linestyle=':', alpha=0.5, label='Step size / maxdist')
+                ax1_twin.set_ylabel("Temperature / step fraction", fontsize=9, color='#9467bd')
                 ax1_twin.set_ylim(-0.05, 1.05)
                 ax1_twin.tick_params(labelsize=8, axis='y', labelcolor='#9467bd')
                 ax1_twin.legend(loc='upper left', fontsize=7)
+            else:
+                # No SA — note this on the chart
+                ax1.annotate("SA disabled — step size is constant (maxdist)",
+                            xy=(0.5, 0.02), xycoords='axes fraction',
+                            fontsize=8, color='gray', ha='center', style='italic')
 
             # Panel 2: PDP match % (d1 and d2)
             ax2 = fig_diag.add_subplot(4, 1, 2)
