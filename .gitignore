@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 settings.json
 
+# Video files (too large for GitHub)
+*.mp4
+
 # Node.js dependencies
 node_modules/
 package-lock.json
