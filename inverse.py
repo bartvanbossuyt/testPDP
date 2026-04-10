@@ -3206,27 +3206,28 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     If after max_attempts no valid direction is found, uses the best direction found.
     
     Directional scaling (optional): step size varies with angle using
-        scale(θ) = lateral_min + (1 - lateral_min) × cos²(θ)
+        scale(θ) = d0 + (d1 - d0) × cos²(θ)
     where θ is measured from the X/longitudinal axis.  At θ=0 (along road)
-    scale=1.0; at θ=π/2 (across lanes) scale=lateral_min (default 0.20).
+    scale=d1 (default 1.0); at θ=π/2 (across lanes) scale=d0 (default 0.20).
     """
     if not selected_indices:
         return {}
 
     # ── Directional scaling ──
     _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
-    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))   # d0
+    _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1
 
     def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
         """Return (dx, dy) with optional direction-dependent distance scaling.
 
-        scale(θ) = lat_min + (1 - lat_min) · cos²(θ)
-        At θ=0  → along X (longitudinal) → scale = 1.0  (full step)
-        At θ=π/2 → along Y (lateral)      → scale = lat_min
+        scale(θ) = d0 + (d1 - d0) · cos²(θ)
+        At θ=0  → along X (longitudinal) → scale = d1
+        At θ=π/2 → along Y (lateral)      → scale = d0
         """
         if _dir_scaling_on:
             cos2 = np.cos(angle) ** 2
-            s = _dir_lat_min + (1.0 - _dir_lat_min) * cos2
+            s = _dir_lat_min + (_dir_long_max - _dir_lat_min) * cos2
             d = dist * s
         else:
             d = dist
@@ -7108,7 +7109,7 @@ for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
     if _cv_g in _6evs_pv_opts:
         _gen_variant = _cv_g
         break
-_gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
+_gen_bx = st.session_state.get("cfg_buffer_x", 0.0)
 _gen_by = st.session_state.get("cfg_buffer_y", 0.0)
 _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
 _gen_ry = st.session_state.get("cfg_rough_y", 0.30)
@@ -7252,12 +7253,12 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
         _6evs_buffer_x = st.number_input(
             "Buffer X (d0)",
             min_value=0.0, max_value=100.0,
-            value=st.session_state.get("_6evs_buffer_x", 1.5),
+            value=st.session_state.get("_6evs_buffer_x", 0.0),
             step=0.1, format="%.1f",
             key="_6evs_buffer_x",
             help="Tolerance on longitudinal (driving-direction) ordering. "
                  "Points within this distance are considered equivalent in d0. "
-                 "Only used by buffer/bufferrough variants.",
+                 "Only used by buffer/bufferrough/realistic variants.",
         )
     with _6evs_pcol2b:
         _6evs_buffer_y = st.number_input(
@@ -7268,7 +7269,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             key="_6evs_buffer_y",
             help="Tolerance on lateral (cross-lane) ordering. "
                  "Points within this distance are considered equivalent in d1. "
-                 "Only used by buffer/bufferrough variants.",
+                 "Only used by buffer/bufferrough/realistic variants.",
         )
     with _6evs_pcol3:
         _6evs_rough_x = st.number_input(
@@ -7279,7 +7280,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             key="_6evs_rough_x",
             help="Equality tolerance on longitudinal ordering. "
                  "Points within this distance are treated as equal in d0. "
-                 "Only used by rough/bufferrough variants.",
+                 "Only used by rough/bufferrough/realistic variants.",
         )
     with _6evs_pcol4:
         _6evs_rough_y = st.number_input(
@@ -7295,131 +7296,150 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
 
     # --- Directional scaling settings ---
     st.markdown("---")
-    _6evs_ds_col1, _6evs_ds_col2 = st.columns([1, 1], gap="small")
+    _6evs_ds_col1, _6evs_ds_col2, _6evs_ds_col3 = st.columns([1, 1, 1], gap="small")
     with _6evs_ds_col1:
         _6evs_dir_scaling_enabled = st.checkbox(
             "↔️ Directional scaling",
             value=st.session_state.get("_6evs_dir_scaling_enabled", True),
             key="_6evs_dir_scaling_enabled",
             help="Scale step size by movement direction using cos²(θ). "
-                 "Longitudinal moves (along road / X) get 100% of maxdist; "
-                 "lateral moves (across lanes / Y) get the minimum %. "
+                 "Longitudinal moves (along road / X) get d1 × maxdist; "
+                 "lateral moves (across lanes / Y) get d0 × maxdist. "
                  "Intermediate angles are smoothly interpolated.",
         )
     with _6evs_ds_col2:
         _6evs_dir_lat_min = st.number_input(
-            "Lateral scale min",
-            min_value=0.01, max_value=1.00,
+            "d0 – Lateral scale min",
+            min_value=0.01, max_value=2.00,
             value=float(st.session_state.get("_6evs_dir_lat_min", 0.20)),
             step=0.05, format="%.2f",
             key="_6evs_dir_lat_min",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
-            help="Step size fraction for pure lateral (Y-axis) moves. "
+            help="Step size fraction for pure lateral (Y-axis) moves (d0). "
                  "0.20 = lateral moves are 20% of maxdist. "
-                 "Formula: scale(θ) = lat_min + (1 − lat_min) · cos²(θ).",
+                 "Formula: scale(θ) = d0 + (d1 − d0) · cos²(θ).",
         )
-
-    # --- Simulated annealing settings ---
-    st.markdown("---")
-    _6evs_sa_col1, _6evs_sa_col2, _6evs_sa_col3 = st.columns([1, 1, 1], gap="small")
-    with _6evs_sa_col1:
-        _6evs_sa_enabled = st.checkbox(
-            "🌡️ Simulated annealing",
-            value=st.session_state.get("_6evs_sa_enabled", False),
-            key="_6evs_sa_enabled",
-            help="Enable temperature-based step size decay. "
-                 "Early iterations explore broadly (large steps); "
-                 "later iterations refine (small steps). "
-                 "Uses T = T_initial × cooling_rate^iteration.",
-        )
-    with _6evs_sa_col2:
-        _6evs_sa_cooling = st.number_input(
-            "Cooling rate",
-            min_value=0.900, max_value=0.999,
-            value=st.session_state.get("_6evs_sa_cooling", 0.980),
-            step=0.005, format="%.3f",
-            key="_6evs_sa_cooling",
-            help="Temperature multiplier per iteration (0.95 = fast cooling, 0.995 = slow cooling). "
-                 "At cooling=0.98, step size halves every ~35 iterations.",
-        )
-    with _6evs_sa_col3:
-        _6evs_sa_min_temp = st.number_input(
-            "Min temperature",
-            min_value=0.01, max_value=1.0,
-            value=st.session_state.get("_6evs_sa_min_temp", 0.05),
-            step=0.01, format="%.2f",
-            key="_6evs_sa_min_temp",
-            help="Temperature floor — step size won't shrink below maxdist × min_temp. "
-                 "Prevents the walk from freezing completely.",
-        )
-
-    # Soft PDP scoring: accept partial matches
-    _6evs_soft_col1, _6evs_soft_col2 = st.columns([1, 2], gap="small")
-    with _6evs_soft_col1:
-        _6evs_soft_pdp_enabled = st.checkbox(
-            "🎯 Soft PDP scoring",
-            value=st.session_state.get("_6evs_soft_pdp_enabled", False),
-            key="_6evs_soft_pdp_enabled",
-            help="Accept moves that partially preserve PDP order. "
-                 "Instead of requiring 100% match, accept if match % ≥ threshold. "
-                 "Allows more exploration at the cost of slight order violations.",
-        )
-    with _6evs_soft_col2:
-        _6evs_soft_pdp_thresh = st.number_input(
-            "Min PDP match %",
-            min_value=0.80, max_value=1.00,
-            value=st.session_state.get("_6evs_soft_pdp_thresh", 0.95),
-            step=0.01, format="%.2f",
-            key="_6evs_soft_pdp_thresh",
-            disabled=not st.session_state.get("_6evs_soft_pdp_enabled", False),
-            help="Minimum fraction of PDP comparisons that must match (both d1 and d2). "
-                 "0.95 = accept if ≥95% of pairs match. Higher = stricter.",
-        )
-
-    # Population-based search
-    _6evs_pop_col1, _6evs_pop_col2 = st.columns([1, 2], gap="small")
-    with _6evs_pop_col1:
-        _6evs_pop_enabled = st.checkbox(
-            "👥 Population search",
-            value=st.session_state.get("_6evs_pop_enabled", False),
-            key="_6evs_pop_enabled",
-            help="Maintain multiple parallel configurations (population). "
-                 "Each gets iterations in round-robin; the best member "
-                 "(lowest perpendicular variance) is selected at the end.",
-        )
-    with _6evs_pop_col2:
-        _6evs_pop_size = st.number_input(
-            "Population size",
-            min_value=2, max_value=10,
-            value=st.session_state.get("_6evs_pop_size", 3),
-            step=1,
-            key="_6evs_pop_size",
-            disabled=not st.session_state.get("_6evs_pop_enabled", False),
-            help="Number of parallel configurations to maintain. "
-                 "Total iterations are split across members (e.g. 50 iters / 5 pop = 10 each).",
-        )
-
-    # Multi-point coordinated moves
-    _6evs_coord_col1, _6evs_coord_col2 = st.columns([1, 2], gap="small")
-    with _6evs_coord_col1:
-        _6evs_coord_enabled = st.checkbox(
-            "🔗 Coordinated moves",
-            value=st.session_state.get("_6evs_coord_enabled", False),
-            key="_6evs_coord_enabled",
-            help="Occasionally move ALL moveable points together in the same direction "
-                 "(global shift). Preserves relative ordering while exploring the config space.",
-        )
-    with _6evs_coord_col2:
-        _6evs_coord_prob = st.number_input(
-            "Coordinated move probability",
-            min_value=0.05, max_value=1.00,
-            value=st.session_state.get("_6evs_coord_prob", 0.20),
+    with _6evs_ds_col3:
+        _6evs_dir_long_max = st.number_input(
+            "d1 – Longitudinal scale max",
+            min_value=0.01, max_value=2.00,
+            value=float(st.session_state.get("_6evs_dir_long_max", 1.00)),
             step=0.05, format="%.2f",
-            key="_6evs_coord_prob",
-            disabled=not st.session_state.get("_6evs_coord_enabled", False),
-            help="Probability per iteration that all moveable points are moved together "
-                 "instead of just one/few. 0.20 = 20% of iterations are coordinated.",
+            key="_6evs_dir_long_max",
+            disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
+            help="Step size fraction for pure longitudinal (X-axis) moves (d1). "
+                 "1.00 = longitudinal moves are 100% of maxdist. "
+                 "Formula: scale(θ) = d0 + (d1 − d0) · cos²(θ).",
         )
+
+    # --- Advanced optimisation settings (hidden by default) ---
+    st.markdown("---")
+    _6evs_show_advanced = st.checkbox(
+        "🔧 Show advanced optimisation settings",
+        value=st.session_state.get("_6evs_show_advanced", False),
+        key="_6evs_show_advanced",
+        help="Show SA, soft PDP scoring, population search, and coordinated moves.",
+    )
+    if _6evs_show_advanced:
+        _6evs_sa_col1, _6evs_sa_col2, _6evs_sa_col3 = st.columns([1, 1, 1], gap="small")
+        with _6evs_sa_col1:
+            _6evs_sa_enabled = st.checkbox(
+                "🌡️ Simulated annealing",
+                value=st.session_state.get("_6evs_sa_enabled", False),
+                key="_6evs_sa_enabled",
+                help="Enable temperature-based step size decay. "
+                     "Early iterations explore broadly (large steps); "
+                     "later iterations refine (small steps). "
+                     "Uses T = T_initial × cooling_rate^iteration.",
+            )
+        with _6evs_sa_col2:
+            _6evs_sa_cooling = st.number_input(
+                "Cooling rate",
+                min_value=0.900, max_value=0.999,
+                value=st.session_state.get("_6evs_sa_cooling", 0.980),
+                step=0.005, format="%.3f",
+                key="_6evs_sa_cooling",
+                help="Temperature multiplier per iteration (0.95 = fast cooling, 0.995 = slow cooling). "
+                     "At cooling=0.98, step size halves every ~35 iterations.",
+            )
+        with _6evs_sa_col3:
+            _6evs_sa_min_temp = st.number_input(
+                "Min temperature",
+                min_value=0.01, max_value=1.0,
+                value=st.session_state.get("_6evs_sa_min_temp", 0.05),
+                step=0.01, format="%.2f",
+                key="_6evs_sa_min_temp",
+                help="Temperature floor — step size won't shrink below maxdist × min_temp. "
+                     "Prevents the walk from freezing completely.",
+            )
+    
+        # Soft PDP scoring: accept partial matches
+        _6evs_soft_col1, _6evs_soft_col2 = st.columns([1, 2], gap="small")
+        with _6evs_soft_col1:
+            _6evs_soft_pdp_enabled = st.checkbox(
+                "🎯 Soft PDP scoring",
+                value=st.session_state.get("_6evs_soft_pdp_enabled", False),
+                key="_6evs_soft_pdp_enabled",
+                help="Accept moves that partially preserve PDP order. "
+                     "Instead of requiring 100% match, accept if match % ≥ threshold. "
+                     "Allows more exploration at the cost of slight order violations.",
+            )
+        with _6evs_soft_col2:
+            _6evs_soft_pdp_thresh = st.number_input(
+                "Min PDP match %",
+                min_value=0.80, max_value=1.00,
+                value=st.session_state.get("_6evs_soft_pdp_thresh", 0.95),
+                step=0.01, format="%.2f",
+                key="_6evs_soft_pdp_thresh",
+                disabled=not st.session_state.get("_6evs_soft_pdp_enabled", False),
+                help="Minimum fraction of PDP comparisons that must match (both d1 and d2). "
+                     "0.95 = accept if ≥95% of pairs match. Higher = stricter.",
+            )
+    
+        # Population-based search
+        _6evs_pop_col1, _6evs_pop_col2 = st.columns([1, 2], gap="small")
+        with _6evs_pop_col1:
+            _6evs_pop_enabled = st.checkbox(
+                "👥 Population search",
+                value=st.session_state.get("_6evs_pop_enabled", False),
+                key="_6evs_pop_enabled",
+                help="Maintain multiple parallel configurations (population). "
+                     "Each gets iterations in round-robin; the best member "
+                     "(lowest perpendicular variance) is selected at the end.",
+            )
+        with _6evs_pop_col2:
+            _6evs_pop_size = st.number_input(
+                "Population size",
+                min_value=2, max_value=10,
+                value=st.session_state.get("_6evs_pop_size", 3),
+                step=1,
+                key="_6evs_pop_size",
+                disabled=not st.session_state.get("_6evs_pop_enabled", False),
+                help="Number of parallel configurations to maintain. "
+                     "Total iterations are split across members (e.g. 50 iters / 5 pop = 10 each).",
+            )
+    
+        # Multi-point coordinated moves
+        _6evs_coord_col1, _6evs_coord_col2 = st.columns([1, 2], gap="small")
+        with _6evs_coord_col1:
+            _6evs_coord_enabled = st.checkbox(
+                "🔗 Coordinated moves",
+                value=st.session_state.get("_6evs_coord_enabled", False),
+                key="_6evs_coord_enabled",
+                help="Occasionally move ALL moveable points together in the same direction "
+                     "(global shift). Preserves relative ordering while exploring the config space.",
+            )
+        with _6evs_coord_col2:
+            _6evs_coord_prob = st.number_input(
+                "Coordinated move probability",
+                min_value=0.05, max_value=1.00,
+                value=st.session_state.get("_6evs_coord_prob", 0.20),
+                step=0.05, format="%.2f",
+                key="_6evs_coord_prob",
+                disabled=not st.session_state.get("_6evs_coord_enabled", False),
+                help="Probability per iteration that all moveable points are moved together "
+                     "instead of just one/few. 0.20 = 20% of iterations are coordinated.",
+            )
 
 # ============= 6-Event Single Iteration (ts 0, 34, 67, 183, 213, 249) ============
 if st.session_state.get("_generate_6ev_single_requested", False) and not st.session_state.get("_generate_6ev_single_results", None):
@@ -7465,7 +7485,9 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         "Maxdist multiplier": float(st.session_state.get("_6evs_maxdist_mult", 1.0)),
         "Maxdist (effective)": round(maxdist * float(st.session_state.get("_6evs_maxdist_mult", 1.0)), 2),
         "Directional scaling": bool(st.session_state.get("_6evs_dir_scaling_enabled", True)),
-        "Lateral scale min": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+        "d0 (lateral min)": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+            if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
+        "d1 (longitudinal max)": float(st.session_state.get("_6evs_dir_long_max", 1.00))
             if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
         "Damping": st.session_state.get("_6evs_damping_enabled", False),
         "Damping range": [
@@ -12020,29 +12042,14 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_n_total = sum(_6evs_n_per_obj.values())
     st.markdown(f"### 6-Event Single Iteration (timestamps: 0, 34, 67, 183, 213, 249)")
 
-    # ---- Sync from general sidebar (same logic as pre-generation block) ----
-    _6evs_pv_opts_d = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-    _cfg_v_disp = st.session_state.get("cfg_pdp_variants", [])
-    _gen_variant_d = "fundamental"
-    for _cv_d in (_cfg_v_disp if _cfg_v_disp else []):
-        if _cv_d in _6evs_pv_opts_d:
-            _gen_variant_d = _cv_d
-            break
-    _gen_bx_d = st.session_state.get("cfg_buffer_x", 1.5)
-    _gen_by_d = st.session_state.get("cfg_buffer_y", 0.0)
-    _gen_rx_d = st.session_state.get("cfg_rough_x", 0.0)
-    _gen_ry_d = st.session_state.get("cfg_rough_y", 0.4)
-    _gen_sig_d = (_gen_variant_d, _gen_bx_d, _gen_by_d, _gen_rx_d, _gen_ry_d)
-    # ALWAYS write: no widget owns these keys in the display section, and
-    # Streamlit clears widget-tied keys when the generation selectbox is
-    # not rendered (generation guard is False once results exist).
-    st.session_state["_6evs_pdp_variant"] = _gen_variant_d
-    st.session_state["_6evs_buffer_x"] = _gen_bx_d
-    st.session_state["_6evs_buffer_y"] = _gen_by_d
-    st.session_state["_6evs_rough_x"] = _gen_rx_d
-    st.session_state["_6evs_rough_y"] = _gen_ry_d
-    st.session_state["_6evs_prev_general_sig"] = _gen_sig_d
-    st.session_state["_6evs_prev_general_variant"] = _gen_variant_d
+    # ---- Read current PDP settings from session state ----
+    # The generation-settings expander (always rendered above) owns these
+    # keys via its widgets, so we only READ here — never write.
+    _gen_variant_d = st.session_state.get("_6evs_pdp_variant", "fundamental")
+    _gen_bx_d = st.session_state.get("_6evs_buffer_x", 1.5)
+    _gen_by_d = st.session_state.get("_6evs_buffer_y", 0.0)
+    _gen_rx_d = st.session_state.get("_6evs_rough_x", 0.0)
+    _gen_ry_d = st.session_state.get("_6evs_rough_y", 0.4)
 
     # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
@@ -12105,8 +12112,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
         st.session_state["_6evs_anim_paused"] = False
         _anim_start_idx = st.session_state.get("_6evs_anim_start_idx", 0)
         st.session_state["_6evs_anim_end_idx"] = _6evs_n_iters - 1
-        # Jump to first frame of the animation (the one after the start)
-        _first_anim = min(_anim_start_idx + 1, _6evs_n_iters - 1)
+        # Start playback from the current position (include k0 / original)
+        _first_anim = _anim_start_idx
         st.session_state["_6evs_browse_idx"] = _first_anim
         _6evs_browse_idx = _first_anim
 
@@ -12126,15 +12133,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     _6evs_n_generated = _6evs_n_iters - 1  # exclude the original entry
     nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 3, 1, 1])
-    # Sync widget value with browse index BEFORE rendering the number_input
-    st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx
     with nav_col1:
         if st.button("⏮ First", key="_6evs_nav_first", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = 0
+            st.session_state["_6evs_nav_num_input"] = 0
             st.rerun()
     with nav_col2:
         if st.button("◀ Prev", key="_6evs_nav_prev", disabled=(_6evs_browse_idx == 0)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx - 1
+            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx - 1
             st.rerun()
     with nav_col3:
         _6evs_new_idx = st.number_input(
@@ -12150,10 +12157,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with nav_col4:
         if st.button("Next ▶", key="_6evs_nav_next", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_browse_idx + 1
+            st.session_state["_6evs_nav_num_input"] = _6evs_browse_idx + 1
             st.rerun()
     with nav_col5:
         if st.button("Last ⏭", key="_6evs_nav_last", disabled=(_6evs_browse_idx >= _6evs_n_iters - 1)):
             st.session_state["_6evs_browse_idx"] = _6evs_n_iters - 1
+            st.session_state["_6evs_nav_num_input"] = _6evs_n_iters - 1
             st.rerun()
 
     # ---- Display the selected iteration ----
@@ -13552,7 +13561,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         ax_ed = fig_ed.add_subplot(111)
         # Color-code: green for successful moves, red for failed
         _ed_colors = ['#2ca02c' if ok else '#d62728' for ok in _ed_ok]
-        ax_ed.scatter(_ed_iters, _ed_dists, c=_ed_colors, s=20, zorder=3)
+        ax_ed.scatter(_ed_iters, _ed_dists, c=_ed_colors, s=4, zorder=3, linewidths=0)
         ax_ed.plot(_ed_iters, _ed_dists, color='steelblue', linewidth=1.0, alpha=0.6, zorder=2)
         # Highlight the currently browsed iteration
         if 1 <= _6evs_cnum <= max(_ed_iters):
@@ -13619,7 +13628,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     # ---- Random Walk Diagnostics (acceptance rate, PDP match %, step size) ----
     _6evs_diag_data = st.session_state.get("_6evs_iter_diagnostics", [])
     if _6evs_diag_data and len(_6evs_diag_data) >= 2:
-        with st.expander("📊 Random walk diagnostics", expanded=False):
+        with st.expander("📊 Random walk diagnostics", expanded=True):
             st.markdown(
                 "These charts diagnose the behaviour of the random walk that generates new configurations. "
                 "They help identify whether the search is exploring efficiently or getting stuck."
