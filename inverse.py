@@ -3206,28 +3206,28 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     If after max_attempts no valid direction is found, uses the best direction found.
     
     Directional scaling (optional): step size varies with angle using
-        scale(θ) = d0 + (d1 - d0) × cos²(θ)
+        scale(θ) = d0 + (d1 - d0) × sin²(θ)
     where θ is measured from the X/longitudinal axis.  At θ=0 (along road)
-    scale=d1 (default 1.0); at θ=π/2 (across lanes) scale=d0 (default 0.20).
+    scale=d0 (default 0.20); at θ=π/2 (across lanes) scale=d1 (default 1.0).
     """
     if not selected_indices:
         return {}
 
     # ── Directional scaling ──
     _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
-    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))   # d0
-    _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1
+    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))   # d0 – longitudinal (along road)
+    _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1 – lateral (across lanes)
 
     def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
         """Return (dx, dy) with optional direction-dependent distance scaling.
 
-        scale(θ) = d0 + (d1 - d0) · cos²(θ)
-        At θ=0  → along X (longitudinal) → scale = d1
-        At θ=π/2 → along Y (lateral)      → scale = d0
+        scale(θ) = d0 + (d1 - d0) · sin²(θ)
+        At θ=0  → along X (longitudinal) → scale = d0
+        At θ=π/2 → along Y (lateral)      → scale = d1
         """
         if _dir_scaling_on:
-            cos2 = np.cos(angle) ** 2
-            s = _dir_lat_min + (_dir_long_max - _dir_lat_min) * cos2
+            sin2 = np.sin(angle) ** 2
+            s = _dir_lat_min + (_dir_long_max - _dir_lat_min) * sin2
             d = dist * s
         else:
             d = dist
@@ -7302,34 +7302,34 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             "↔️ Directional scaling",
             value=st.session_state.get("_6evs_dir_scaling_enabled", True),
             key="_6evs_dir_scaling_enabled",
-            help="Scale step size by movement direction using cos²(θ). "
-                 "Longitudinal moves (along road / X) get d1 × maxdist; "
-                 "lateral moves (across lanes / Y) get d0 × maxdist. "
+            help="Scale step size by movement direction using sin²(θ). "
+                 "Longitudinal moves (along road / X) get d0 × maxdist; "
+                 "lateral moves (across lanes / Y) get d1 × maxdist. "
                  "Intermediate angles are smoothly interpolated.",
         )
     with _6evs_ds_col2:
         _6evs_dir_lat_min = st.number_input(
-            "d0 – Lateral scale min",
+            "d0 – Longitudinal scale (along road)",
             min_value=0.01, max_value=2.00,
             value=float(st.session_state.get("_6evs_dir_lat_min", 0.20)),
             step=0.05, format="%.2f",
             key="_6evs_dir_lat_min",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
-            help="Step size fraction for pure lateral (Y-axis) moves (d0). "
-                 "0.20 = lateral moves are 20% of maxdist. "
-                 "Formula: scale(θ) = d0 + (d1 − d0) · cos²(θ).",
+            help="Step size fraction for pure longitudinal (X-axis / along road) moves (d0). "
+                 "0.20 = longitudinal moves are 20% of maxdist. "
+                 "Formula: scale(θ) = d0 + (d1 − d0) · sin²(θ).",
         )
     with _6evs_ds_col3:
         _6evs_dir_long_max = st.number_input(
-            "d1 – Longitudinal scale max",
+            "d1 – Lateral scale (across lanes)",
             min_value=0.01, max_value=2.00,
             value=float(st.session_state.get("_6evs_dir_long_max", 1.00)),
             step=0.05, format="%.2f",
             key="_6evs_dir_long_max",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
-            help="Step size fraction for pure longitudinal (X-axis) moves (d1). "
-                 "1.00 = longitudinal moves are 100% of maxdist. "
-                 "Formula: scale(θ) = d0 + (d1 − d0) · cos²(θ).",
+            help="Step size fraction for pure lateral (Y-axis / across lanes) moves (d1). "
+                 "1.00 = lateral moves are 100% of maxdist. "
+                 "Formula: scale(θ) = d0 + (d1 − d0) · sin²(θ).",
         )
 
     # --- Advanced optimisation settings (hidden by default) ---
@@ -7485,9 +7485,9 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         "Maxdist multiplier": float(st.session_state.get("_6evs_maxdist_mult", 1.0)),
         "Maxdist (effective)": round(maxdist * float(st.session_state.get("_6evs_maxdist_mult", 1.0)), 2),
         "Directional scaling": bool(st.session_state.get("_6evs_dir_scaling_enabled", True)),
-        "d0 (lateral min)": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+        "d0 (longitudinal, along road)": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
             if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
-        "d1 (longitudinal max)": float(st.session_state.get("_6evs_dir_long_max", 1.00))
+        "d1 (lateral, across lanes)": float(st.session_state.get("_6evs_dir_long_max", 1.00))
             if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
         "Damping": st.session_state.get("_6evs_damping_enabled", False),
         "Damping range": [
@@ -12452,6 +12452,139 @@ if st.session_state.get("_generate_6ev_single_results", None):
         mime="image/png",
         key="_6evs_static_png_dl",
     )
+
+    # ============= Density plots across ALL iterations =============
+    # Collect generated coordinates per object across every iteration
+    from scipy.stats import gaussian_kde as _gaussian_kde  # noqa: E402
+
+    # Build flat-index → object-id mapping
+    _dens_flat_to_oid: list[int] = []
+    for _d_oid in _6evs_sorted_oids:
+        n_pts = _6evs_pp[_d_oid].shape[0]
+        _dens_flat_to_oid.extend([_d_oid] * n_pts)
+
+    # Accumulate per-object generated coords across iterations (skip index 0 = original)
+    _dens_pts: dict[int, list[tuple[float, float]]] = {oid: [] for oid in _6evs_sorted_oids}
+    for _d_iter_idx in range(1, len(_6evs_results)):
+        _d_cnum, _d_dev, _d_cfg = _6evs_results[_d_iter_idx]
+        _d_sp = _d_cfg.get("successful_points", [])
+        _d_gen_map: dict[int, np.ndarray] = {}
+        for _d_s in _d_sp:
+            _d_gen_map[int(_d_s["original_parent_idx"])] = np.asarray(_d_s["point"])
+        # Build full point set for this iteration
+        _d_gi = 0
+        for _d_oid in _6evs_sorted_oids:
+            n_pts = _6evs_pp[_d_oid].shape[0]
+            for _d_li in range(n_pts):
+                _d_fidx = _d_gi + _d_li
+                if _d_fidx in _d_gen_map:
+                    _d_pt = _d_gen_map[_d_fidx]
+                else:
+                    _d_pt = _6evs_pp[_d_oid][_d_li]
+                _dens_pts[_d_oid].append((float(_d_pt[0]), float(_d_pt[1])))
+            _d_gi += n_pts
+
+    # Helper: draw lanes on an axis (same as the main chart)
+    def _draw_density_lanes(_ax: matplotlib.axes.Axes) -> None:
+        _d_show_lanes = st.session_state.get("_6evs_show_lanes", True)
+        if _d_show_lanes:
+            _d_lw = _6EVS_LANE_WIDTH
+            _d_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+            _d_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
+            _d_road_top = max(_d_l1c + _d_lw / 2, _d_l2c + _d_lw / 2)
+            _d_road_bot = min(_d_l1c - _d_lw / 2, _d_l2c - _d_lw / 2)
+            _ax.axhspan(_d_road_bot, _d_road_top, color='#A9A9A9', alpha=0.25, zorder=0)
+            _ax.axhline(_d_road_top, color='black', linewidth=1.0, linestyle='-', zorder=4)
+            _ax.axhline(_d_road_bot, color='black', linewidth=1.0, linestyle='-', zorder=4)
+            _d_div_y = (_d_l1c + _d_l2c) / 2.0
+            _ax.axhline(_d_div_y, color='white', linewidth=2.5, linestyle=(0, (5, 4)), zorder=4)
+
+    # Helper: create a density plot on the given axis
+    def _render_density(_ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray,
+                        title: str, cmap: str = "viridis") -> None:
+        _draw_density_lanes(_ax)
+        if len(xs) >= 3:
+            try:
+                _kde = _gaussian_kde(np.vstack([xs, ys]), bw_method=0.15)
+                _xi = np.linspace(_6evs_xlo, _6evs_xhi, 300)
+                _yi = np.linspace(_6evs_ylo, _6evs_yhi, 200)
+                _Xi, _Yi = np.meshgrid(_xi, _yi)
+                _Zi = _kde(np.vstack([_Xi.ravel(), _Yi.ravel()])).reshape(_Xi.shape)
+                _ax.pcolormesh(_Xi, _Yi, _Zi, cmap=cmap, shading='gouraud', zorder=1, alpha=0.5)
+            except np.linalg.LinAlgError:
+                # Fallback: scatter if KDE fails (e.g., singular matrix)
+                _ax.scatter(xs, ys, s=2, alpha=0.3, zorder=2)
+        else:
+            _ax.scatter(xs, ys, s=8, alpha=0.6, zorder=2)
+        _ax.set_xlim(_6evs_xlo, _6evs_xhi)
+        _ax.set_ylim(_6evs_ylo, _6evs_yhi)
+        _ax.set_xlabel("d0 / x-axis (m)")
+        _ax.set_ylabel("d1 / y-axis (m)")
+        _ax.set_title(title, fontsize=9)
+        _ax.grid(True, alpha=0.3)
+
+    _dens_n_iters = len(_6evs_results) - 1  # iterations only (excl. original)
+    if _dens_n_iters >= 1:
+        st.markdown("---")
+        st.markdown(
+            f"### Density plots — {_dens_n_iters} iteration{'s' if _dens_n_iters != 1 else ''}"
+        )
+
+        # Identify which oids correspond to k and l
+        _dens_k_oids = [oid for oid in _6evs_sorted_oids
+                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "k"]
+        _dens_l_oids = [oid for oid in _6evs_sorted_oids
+                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "l"]
+
+        # Gather x,y arrays
+        _dens_k_x = np.array([p[0] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
+        _dens_k_y = np.array([p[1] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
+        _dens_l_x = np.array([p[0] for oid in _dens_l_oids for p in _dens_pts.get(oid, [])])
+        _dens_l_y = np.array([p[1] for oid in _dens_l_oids for p in _dens_pts.get(oid, [])])
+        _dens_all_x = np.concatenate([_dens_k_x, _dens_l_x]) if len(_dens_k_x) + len(_dens_l_x) > 0 else np.array([])
+        _dens_all_y = np.concatenate([_dens_k_y, _dens_l_y]) if len(_dens_k_y) + len(_dens_l_y) > 0 else np.array([])
+
+        # --- Plot 1: k-objects density ---
+        if len(_dens_k_x) >= 1:
+            _fig_dk = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_dk = _fig_dk.add_subplot(111)
+            _render_density(_ax_dk, _dens_k_x, _dens_k_y,
+                            f"Density — k-objects ({len(_dens_k_x)} pts from {_dens_n_iters} iterations)",
+                            cmap="Blues")
+            _fig_dk.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_dk = io.BytesIO()
+            _fig_dk.savefig(_buf_dk, format='png', dpi=150)
+            _buf_dk.seek(0)
+            st.image(_buf_dk, use_container_width=True)
+            plt.close(_fig_dk)
+
+        # --- Plot 2: l-objects density ---
+        if len(_dens_l_x) >= 1:
+            _fig_dl = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_dl = _fig_dl.add_subplot(111)
+            _render_density(_ax_dl, _dens_l_x, _dens_l_y,
+                            f"Density — l-objects ({len(_dens_l_x)} pts from {_dens_n_iters} iterations)",
+                            cmap="Oranges")
+            _fig_dl.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_dl = io.BytesIO()
+            _fig_dl.savefig(_buf_dl, format='png', dpi=150)
+            _buf_dl.seek(0)
+            st.image(_buf_dl, use_container_width=True)
+            plt.close(_fig_dl)
+
+        # --- Plot 3: k + l combined density ---
+        if len(_dens_all_x) >= 1:
+            _fig_da = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_da = _fig_da.add_subplot(111)
+            _render_density(_ax_da, _dens_all_x, _dens_all_y,
+                            f"Density — k + l combined ({len(_dens_all_x)} pts from {_dens_n_iters} iterations)",
+                            cmap="viridis")
+            _fig_da.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_da = io.BytesIO()
+            _fig_da.savefig(_buf_da, format='png', dpi=150)
+            _buf_da.seek(0)
+            st.image(_buf_da, use_container_width=True)
+            plt.close(_fig_da)
 
     # ============= Baseline C0 Documentation (original configuration) =============
     if _6evs_browse_idx == 0:
