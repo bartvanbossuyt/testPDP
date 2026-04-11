@@ -7310,9 +7310,9 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
     with _6evs_ds_col2:
         _6evs_dir_lat_min = st.number_input(
             "d0 – Longitudinal scale (along road)",
-            min_value=0.01, max_value=2.00,
+            min_value=0.0001, max_value=2.00,
             value=float(st.session_state.get("_6evs_dir_lat_min", 0.20)),
-            step=0.05, format="%.2f",
+            step=0.05, format="%.4f",
             key="_6evs_dir_lat_min",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
             help="Step size fraction for pure longitudinal (X-axis / along road) moves (d0). "
@@ -7322,9 +7322,9 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
     with _6evs_ds_col3:
         _6evs_dir_long_max = st.number_input(
             "d1 – Lateral scale (across lanes)",
-            min_value=0.01, max_value=2.00,
+            min_value=0.0001, max_value=2.00,
             value=float(st.session_state.get("_6evs_dir_long_max", 1.00)),
-            step=0.05, format="%.2f",
+            step=0.05, format="%.4f",
             key="_6evs_dir_long_max",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
             help="Step size fraction for pure lateral (Y-axis / across lanes) moves (d1). "
