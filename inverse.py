@@ -3205,10 +3205,9 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     For multi-point mode, ensures that the chosen direction keeps ALL points within bounds.
     If after max_attempts no valid direction is found, uses the best direction found.
     
-    Directional scaling (optional): step size varies with angle using
-        scale(θ) = d0 + (d1 - d0) × sin²(θ)
-    where θ is measured from the X/longitudinal axis.  At θ=0 (along road)
-    scale=d0 (default 0.20); at θ=π/2 (across lanes) scale=d1 (default 1.0).
+    Directional scaling (optional): each axis is scaled independently.
+        dx = dist × d0 × cos(θ),  dy = dist × d1 × sin(θ)
+    d0 controls longitudinal (X) step size, d1 controls lateral (Y) step size.
     """
     if not selected_indices:
         return {}
@@ -3219,19 +3218,22 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
     _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1 – lateral (across lanes)
 
     def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
-        """Return (dx, dy) with optional direction-dependent distance scaling.
+        """Return (dx, dy) with independent per-axis distance scaling.
 
-        scale(θ) = d0 + (d1 - d0) · sin²(θ)
-        At θ=0  → along X (longitudinal) → scale = d0
-        At θ=π/2 → along Y (lateral)      → scale = d1
+        dx = dist × d0 × cos(θ)   — longitudinal component scaled by d0
+        dy = dist × d1 × sin(θ)   — lateral component scaled by d1
+
+        At θ=0  → pure X → (dist×d0, 0)
+        At θ=π/2 → pure Y → (0, dist×d1)
+        Diagonal angles get each component scaled independently.
         """
         if _dir_scaling_on:
-            sin2 = np.sin(angle) ** 2
-            s = _dir_lat_min + (_dir_long_max - _dir_lat_min) * sin2
-            d = dist * s
+            dx = dist * _dir_lat_min * np.cos(angle)
+            dy = dist * _dir_long_max * np.sin(angle)
         else:
-            d = dist
-        return (d * np.cos(angle), d * np.sin(angle))
+            dx = dist * np.cos(angle)
+            dy = dist * np.sin(angle)
+        return (dx, dy)
     
     # Check for temporary override first (used by preset buttons), then fall back to widget key
     movement_direction = st.session_state.get("_override_movement_direction", st.session_state.get("cfg_movement_direction", "Same direction"))
@@ -4618,12 +4620,20 @@ def run_multipoint_iteration(
         if movement_direction == "Same direction" and search_step > 0:
             # Perturb the shared angle slightly
             angle_perturbation = float(np.random.uniform(-0.3, 0.3))
-            # Regenerate vectors with new angle
+            # Regenerate vectors with new angle, respecting directional scaling
             old_angle = np.arctan2(list(movement_vectors.values())[0][1], list(movement_vectors.values())[0][0])
             new_angle = old_angle + angle_perturbation
             new_base_dist = base_distance * current_scale * 2  # *2 because we just halved
-            dx = new_base_dist * np.cos(new_angle)
-            dy = new_base_dist * np.sin(new_angle)
+            # Apply directional scaling: d0 for X, d1 for Y
+            _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
+            if _dir_scaling_on:
+                _d0 = float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+                _d1 = float(st.session_state.get("_6evs_dir_long_max", 1.00))
+                dx = new_base_dist * _d0 * np.cos(new_angle)
+                dy = new_base_dist * _d1 * np.sin(new_angle)
+            else:
+                dx = new_base_dist * np.cos(new_angle)
+                dy = new_base_dist * np.sin(new_angle)
             movement_vectors = {idx: (dx, dy) for idx in selected_indices}
     
     # Max search steps reached without finding PDP match — report failure.
@@ -7302,10 +7312,9 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             "↔️ Directional scaling",
             value=st.session_state.get("_6evs_dir_scaling_enabled", True),
             key="_6evs_dir_scaling_enabled",
-            help="Scale step size by movement direction using sin²(θ). "
-                 "Longitudinal moves (along road / X) get d0 × maxdist; "
-                 "lateral moves (across lanes / Y) get d1 × maxdist. "
-                 "Intermediate angles are smoothly interpolated.",
+            help="Scale step size independently per axis. "
+                 "X-component scaled by d0, Y-component scaled by d1. "
+                 "dx = dist × d0 × cos(θ), dy = dist × d1 × sin(θ).",
         )
     with _6evs_ds_col2:
         _6evs_dir_lat_min = st.number_input(
@@ -7315,9 +7324,9 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             step=0.05, format="%.4f",
             key="_6evs_dir_lat_min",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
-            help="Step size fraction for pure longitudinal (X-axis / along road) moves (d0). "
-                 "0.20 = longitudinal moves are 20% of maxdist. "
-                 "Formula: scale(θ) = d0 + (d1 − d0) · sin²(θ).",
+            help="Step size fraction for the X-axis (longitudinal / along road) component (d0). "
+                 "0.20 = X-component is 20% of maxdist. "
+                 "dx = dist × d0 × cos(θ).",
         )
     with _6evs_ds_col3:
         _6evs_dir_long_max = st.number_input(
@@ -7327,9 +7336,9 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             step=0.05, format="%.4f",
             key="_6evs_dir_long_max",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
-            help="Step size fraction for pure lateral (Y-axis / across lanes) moves (d1). "
-                 "1.00 = lateral moves are 100% of maxdist. "
-                 "Formula: scale(θ) = d0 + (d1 − d0) · sin²(θ).",
+            help="Step size fraction for the Y-axis (lateral / across lanes) component (d1). "
+                 "1.00 = Y-component is 100% of maxdist. "
+                 "dy = dist × d1 × sin(θ).",
         )
 
     # --- Advanced optimisation settings (hidden by default) ---
@@ -12464,14 +12473,18 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _dens_flat_to_oid.extend([_d_oid] * n_pts)
 
     # Accumulate per-object generated coords across iterations (skip index 0 = original)
+    # Only include points that were actually moved (present in successful_points)
+    # Also track offsets from original positions for adaptive KDE bandwidth.
     _dens_pts: dict[int, list[tuple[float, float]]] = {oid: [] for oid in _6evs_sorted_oids}
+    _dens_offsets_x: list[float] = []
+    _dens_offsets_y: list[float] = []
     for _d_iter_idx in range(1, len(_6evs_results)):
         _d_cnum, _d_dev, _d_cfg = _6evs_results[_d_iter_idx]
         _d_sp = _d_cfg.get("successful_points", [])
         _d_gen_map: dict[int, np.ndarray] = {}
         for _d_s in _d_sp:
             _d_gen_map[int(_d_s["original_parent_idx"])] = np.asarray(_d_s["point"])
-        # Build full point set for this iteration
+        # Only add points that were actually generated/moved
         _d_gi = 0
         for _d_oid in _6evs_sorted_oids:
             n_pts = _6evs_pp[_d_oid].shape[0]
@@ -12479,10 +12492,17 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 _d_fidx = _d_gi + _d_li
                 if _d_fidx in _d_gen_map:
                     _d_pt = _d_gen_map[_d_fidx]
-                else:
-                    _d_pt = _6evs_pp[_d_oid][_d_li]
-                _dens_pts[_d_oid].append((float(_d_pt[0]), float(_d_pt[1])))
+                    _d_orig = _6evs_pp[_d_oid][_d_li]
+                    _dens_pts[_d_oid].append((float(_d_pt[0]), float(_d_pt[1])))
+                    _dens_offsets_x.append(float(_d_pt[0] - _d_orig[0]))
+                    _dens_offsets_y.append(float(_d_pt[1] - _d_orig[1]))
             _d_gi += n_pts
+
+    # Compute adaptive KDE bandwidth inputs from actual movement spread.
+    # A single shared bandwidth is derived later and reused for all density plots.
+    _dens_offset_std_x = np.std(_dens_offsets_x) if _dens_offsets_x else 1.0
+    _dens_offset_std_y = np.std(_dens_offsets_y) if _dens_offsets_y else 1.0
+    _dens_shared_bw = 0.15
 
     # Helper: draw lanes on an axis (same as the main chart)
     def _draw_density_lanes(_ax: matplotlib.axes.Axes) -> None:
@@ -12505,17 +12525,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _draw_density_lanes(_ax)
         if len(xs) >= 3:
             try:
-                _kde = _gaussian_kde(np.vstack([xs, ys]), bw_method=0.15)
+                _kde = _gaussian_kde(np.vstack([xs, ys]), bw_method=_dens_shared_bw)
                 _xi = np.linspace(_6evs_xlo, _6evs_xhi, 300)
                 _yi = np.linspace(_6evs_ylo, _6evs_yhi, 200)
                 _Xi, _Yi = np.meshgrid(_xi, _yi)
                 _Zi = _kde(np.vstack([_Xi.ravel(), _Yi.ravel()])).reshape(_Xi.shape)
-                _ax.pcolormesh(_Xi, _Yi, _Zi, cmap=cmap, shading='gouraud', zorder=1, alpha=0.5)
+                _ax.pcolormesh(_Xi, _Yi, _Zi, cmap=cmap, shading='gouraud', zorder=1, alpha=0.8)
             except np.linalg.LinAlgError:
-                # Fallback: scatter if KDE fails (e.g., singular matrix)
-                _ax.scatter(xs, ys, s=2, alpha=0.3, zorder=2)
+                _ax.scatter(xs, ys, s=2, alpha=0.6, zorder=2)
         else:
-            _ax.scatter(xs, ys, s=8, alpha=0.6, zorder=2)
+            _ax.scatter(xs, ys, s=8, alpha=0.85, zorder=2)
         _ax.set_xlim(_6evs_xlo, _6evs_xhi)
         _ax.set_ylim(_6evs_ylo, _6evs_yhi)
         _ax.set_xlabel("d0 / x-axis (m)")
@@ -12543,6 +12562,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _dens_l_y = np.array([p[1] for oid in _dens_l_oids for p in _dens_pts.get(oid, [])])
         _dens_all_x = np.concatenate([_dens_k_x, _dens_l_x]) if len(_dens_k_x) + len(_dens_l_x) > 0 else np.array([])
         _dens_all_y = np.concatenate([_dens_k_y, _dens_l_y]) if len(_dens_k_y) + len(_dens_l_y) > 0 else np.array([])
+
+        if len(_dens_all_x) >= 3:
+            _data_std_x = np.std(_dens_all_x) if np.std(_dens_all_x) > 1e-9 else 1.0
+            _data_std_y = np.std(_dens_all_y) if np.std(_dens_all_y) > 1e-9 else 1.0
+            _bw_x = max(_dens_offset_std_x / _data_std_x, 0.001)
+            _bw_y = max(_dens_offset_std_y / _data_std_y, 0.001)
+            _dens_shared_bw = max(float(np.sqrt(_bw_x * _bw_y)), 0.001)
 
         # --- Plot 1: k-objects density ---
         if len(_dens_k_x) >= 1:
