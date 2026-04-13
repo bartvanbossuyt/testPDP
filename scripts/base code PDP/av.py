@@ -56,7 +56,7 @@ N_VA_StaticRelative = 0
 N_VA_StaticFinetuned = 0
 N_VA_DynamicAbsolute = 0
 N_PDP = 1
-N_VA_InequalityMatrices = 0
+N_VA_InequalityMatrices = 1
 N_VA_HeatMap = 1
 N_VA_HClust = 1
 N_VA_ClusterMap = 0
@@ -130,6 +130,18 @@ OUTPUT_FOLDER = os.path.expanduser('D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP
 # - or None to keep existing relative-file behavior.
 INPUT_DISTANCE_MATRIX = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB'
 
+# ---------------- Helper function for safe file saving ----------------
+def get_output_path(filename):
+    """
+    Returns the full path for saving a file:
+    - If OUTPUT_FOLDER exists and is a directory, saves to OUTPUT_FOLDER/filename
+    - Otherwise, saves to current directory (relative path)
+    """
+    if OUTPUT_FOLDER and os.path.isdir(OUTPUT_FOLDER):
+        return os.path.join(OUTPUT_FOLDER, filename)
+    else:
+        return filename
+
 # ---------------- Load & normalize data ----------------
 # Detect number of columns: 5 (no class) or 6 (with class)
 _probe = pd.read_csv(dataset_name, header=None, nrows=1)
@@ -169,12 +181,12 @@ if not pd.api.types.is_integer_dtype(Df_raw['poiID']):
 
 # Split into numeric base and optional classes
 Df_dataset = Df_raw[['conID', 'tstID', 'poiID', 'x', 'y']].copy()
-Df_dataset.to_csv(f"{dataset_name_exclusive}__Df_dataset.csv", index=False)
+Df_dataset.to_csv(get_output_path(f"{dataset_name_exclusive}__Df_dataset.csv"), index=False)
 
 Df_classes = None
 if has_class:
     Df_classes = Df_raw[['conID', 'tstID', 'poiID', 'class']].copy()
-    Df_classes.to_csv(f"{dataset_name_exclusive}__Df_classes.csv", index=False)
+    Df_classes.to_csv(get_output_path(f"{dataset_name_exclusive}__Df_classes.csv"), index=False)
 
 # Legacy outputs you already rely on
 L_dataset = Df_dataset.values.tolist()
@@ -187,7 +199,7 @@ poi = int(Df_dataset['poiID'].max()) + 1
 print("poi =", poi)
 
 # Keep standard export name if other modules expect it
-Df_dataset.to_csv("Df_dataset.csv", index=False)
+Df_dataset.to_csv(get_output_path("Df_dataset.csv"), index=False)
 
 # ---------------- PDP activation flags (runtime) ----------------
 PDPg_fundamental_active = 0
