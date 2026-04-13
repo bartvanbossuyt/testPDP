@@ -141,7 +141,7 @@ if av.PDPg_buffer == 1:
 
     import N_T_OB  # your buffer-prep module
 
-    av.dataset_name = "N_C_PDPg_buffer_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_buffer_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -152,9 +152,9 @@ if av.PDPg_buffer == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_buffer_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     # Reload analysis modules if they were already imported in the fundamental branch
     if av.N_PDP == 1:
@@ -184,7 +184,7 @@ if av.PDPg_rough == 1:
     av.PDPg_rough_active = 1
 
     # For rough, you use the fundamental dataset; roughness is applied in inequality calc
-    av.dataset_name = "N_C_PDPg_fundamental_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_fundamental_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -195,9 +195,9 @@ if av.PDPg_rough == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_fundamental_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     if av.N_PDP == 1:
         importlib.reload(N_PDP)
@@ -226,7 +226,7 @@ if av.PDPg_bufferrough == 1:
 
     import N_T_OB  # buffer generator (roughness applied later in metrics)
 
-    av.dataset_name = "N_C_PDPg_buffer_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_buffer_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -237,9 +237,9 @@ if av.PDPg_bufferrough == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_buffer_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     if av.N_PDP == 1:
         importlib.reload(N_PDP)
