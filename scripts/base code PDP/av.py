@@ -74,7 +74,7 @@ window_length_tst = 137
 buffer_x = 0
 buffer_y = 0
 rough_x = 0
-rough_y = 0.1
+rough_y = 0.05
 
 DD  = 2
 des = 2
@@ -122,22 +122,23 @@ dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 # Central output folder for distance matrices, images and other generated files.
 # Change this single variable if you move the output folder.
 # Use an absolute path or a path relative to the project root.
-OUTPUT_FOLDER = os.path.expanduser('D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB')
+OUTPUT_FOLDER = os.path.expanduser('D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\curve_y_rough_0.05')
 
 # Path or folder where distance-matrix CSV files live. You can set this to either:
 # - an absolute path to a directory (then scripts will look for filenames inside that dir),
 # - or a full path to a single CSV file (then that file will be used directly),
 # - or None to keep existing relative-file behavior.
-INPUT_DISTANCE_MATRIX = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\test_CB'
+INPUT_DISTANCE_MATRIX = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\curve_y_rough_0.05'
 
 # ---------------- Helper function for safe file saving ----------------
 def get_output_path(filename):
     """
     Returns the full path for saving a file:
-    - If OUTPUT_FOLDER exists and is a directory, saves to OUTPUT_FOLDER/filename
+    - If OUTPUT_FOLDER is set, creates it if needed and saves to OUTPUT_FOLDER/filename
     - Otherwise, saves to current directory (relative path)
     """
-    if OUTPUT_FOLDER and os.path.isdir(OUTPUT_FOLDER):
+    if OUTPUT_FOLDER:
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
         return os.path.join(OUTPUT_FOLDER, filename)
     else:
         return filename

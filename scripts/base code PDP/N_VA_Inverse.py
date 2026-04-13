@@ -75,7 +75,7 @@ def inequalities(array_of_1_configuration):
                     
             new_index = len(Df_con_tst_xineq_yineq)
                 
-    Df_con_tst_xineq_yineq.to_csv("Df_con_tst_xineq_yineq.csv", index=False)
+    Df_con_tst_xineq_yineq.to_csv(av.get_output_path("Df_con_tst_xineq_yineq.csv"), index=False)
     return Df_con_tst_xineq_yineq
 
 def modify_selected_point(selected_point, av_dim):
@@ -178,17 +178,17 @@ for configuration in range(av.num_similar_configurations * av.new_configuration_
     
     while True:
         result = inequalities(A_new_configuration)
-        N_PDP.Df_con_tst_xineq_yineq.to_csv("basic_inequalities_representation.csv", index=False)
-        result.to_csv("new_inequalities_representation.csv", index=False)
+        N_PDP.Df_con_tst_xineq_yineq.to_csv(av.get_output_path("basic_inequalities_representation.csv"), index=False)
+        result.to_csv(av.get_output_path("new_inequalities_representation.csv"), index=False)
         Df_new_xineq_yineq = result
 
         # Check if the new generated configuration is similar to the basic configuration
         if N_PDP.Df_con_tst_xineq_yineq.equals(Df_new_xineq_yineq):
             if configuration == 0:
                 source_file_path = 'N_C_Dataset.csv'
-                destination_file_path = 'N_C_similar_configurations.csv'
+                destination_file_path = av.get_output_path('N_C_similar_configurations.csv')
                 shutil.copy(source_file_path, destination_file_path)
-                with open("N_C_similar_configurations.csv", 'r') as csv_file:
+                with open(destination_file_path, 'r') as csv_file:
                     reader = csv.reader(csv_file)
                     data = list(reader)
                 df_dataset = pd.DataFrame(data[1:], columns=data[0])
@@ -200,7 +200,7 @@ for configuration in range(av.num_similar_configurations * av.new_configuration_
             # Append the new DataFrame to df_dataset (using pd.concat instead of deprecated append)
             if teller % av.new_configuration_step == 0:
                 df_dataset = pd.concat([df_dataset, df_A_new_configuration], ignore_index=True)
-                df_dataset.to_csv("N_C_similar_configurations.csv", index=False)
+                df_dataset.to_csv(av.get_output_path("N_C_similar_configurations.csv"), index=False)
             break  # Exit the while loop once a similar configuration is found
 
 # End and print time
