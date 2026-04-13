@@ -243,13 +243,13 @@ for idx, unique_set in enumerate(unique_sets):
     conv_map = {orig: new for new, orig in enumerate(unique_set)}
     conversion_mappings.append(conv_map)
     filtered_df['conID'] = filtered_df['conID'].map(conv_map)
-    file_path = f"Filtered_Dataset_{idx+1}.csv"
+    file_path = av.get_output_path(f"Filtered_Dataset_{idx+1}.csv")
     filtered_df.to_csv(file_path, index=False, header=None)
     file_paths.append(file_path)
 
 if conversion_mappings:
     conversion_df = pd.DataFrame(conversion_mappings)
-    conversion_df.to_csv("Conversion_Mapping.csv", index=False)
+    conversion_df.to_csv(av.get_output_path("Conversion_Mapping.csv"), index=False)
 
 # Define output folder once
 output_folder = av.OUTPUT_FOLDER
