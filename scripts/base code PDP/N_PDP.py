@@ -70,6 +70,8 @@ for con_id in range(av.con):
         conditions = [Df_con_id['tstID'] == tst_id + i for i in range(av.window_length_tst)]
         mask = np.logical_or.reduce(conditions)
         Df_tst_id = Df_con_id[mask]
+        # Sort by poiID first, then tstID to ensure consistent matrix ordering (POI priority)
+        Df_tst_id = Df_tst_id.sort_values(['poiID', 'tstID']).reset_index(drop=True)
 
         L_tst_id_dfs = []
         for dim_id in ['x', 'y']:
@@ -107,9 +109,10 @@ for con_id in range(av.con):
 
             # Optional visualization
             if av.N_VA_InequalityMatrices == 1:
+                # Generate ticks with POI as outer loop, time as inner loop (same as CB)
                 ticks = [f"c{con_id}_t{tst_id}_d{dim_id}_p{var2}_w{var1}"
-                         for var1 in range(int(av.window_length_tst))
-                         for var2 in range(int(av.poi))]
+                         for var2 in range(int(av.poi))
+                         for var1 in range(int(av.window_length_tst))]
                 cmap = ListedColormap(["green", "yellow", "red"])
                 cNorm = plt.matplotlib.colors.BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
 
@@ -145,7 +148,9 @@ for con_id in range(av.con):
         new_index += 1
 
 # Save mapping table
-Df_con_tst_xineq_yineq.to_csv("Df_con_tst_xineq_yineq.csv", index=False)
+# Set numpy print options to display complete arrays without ellipsis
+np.set_printoptions(threshold=np.inf, suppress=True)
+Df_con_tst_xineq_yineq.to_csv(av.get_output_path("Df_con_tst_xineq_yineq.csv"), index=False)
 
 # ---------------- Count identical matrices across timestamps ----------------
 if av.N_VA_InequalityMatrices == 1:
