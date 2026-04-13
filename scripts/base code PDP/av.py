@@ -45,7 +45,7 @@ graphical_user_interface = 0  # 1 to show the Tk GUI
 # PDP types (keep fundamental always 1 as you noted)
 PDPg_fundamental = 1  # must always be 1
 PDPg_buffer = 0  
-PDPg_rough = 0
+PDPg_rough = 1
 PDPg_bufferrough = 0
 
 # Report/visual analytics switches
@@ -74,7 +74,7 @@ window_length_tst = 137
 buffer_x = 0
 buffer_y = 0
 rough_x = 0
-rough_y = 0
+rough_y = 0.1
 
 DD  = 2
 des = 2
@@ -112,8 +112,8 @@ if graphical_user_interface == 1:
 
 # ---------------- Choose active dataset ----------------
 # NOTE: Update these paths to match your local setup
-DATA_NOCLASS   = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv'
-DATA_WITHCLASS = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset.csv'
+DATA_NOCLASS   = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv'
+DATA_WITHCLASS = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv'
 
 # Pick which one you want active right now:
 dataset_name = DATA_NOCLASS  # Switch to DATA_NOCLASS if you want the 5-col file
