@@ -1,0 +1,27 @@
+{
+  "config_name": "tracks_df_0_cfg0001",
+  "config_index": 1,
+  "source_csv": "tracks_df_0.csv",
+  "source_csv_path": "C:\\Users\\oliverme\\OneDrive - UGent\\Documents\\PDP-Analysis-upstream\\scripts\\STREAMS_analysis_data_teledyne_IMEC\\Data_IMEC_04\\10_55_new\\10_55_new\\track_dataframes\\tracks_df_0.csv",
+  "source_media_path": "C:\\Users\\oliverme\\OneDrive - UGent\\Documents\\PDP-Analysis-upstream\\scripts\\STREAMS_analysis_data_teledyne_IMEC\\Data_IMEC_04\\10_55_new\\10_55_new\\visual_0.mp4",
+  "media_type": "video",
+  "start_time": 553,
+  "end_time": 582,
+  "time_unit": "frames",
+  "fps": 15,
+  "start_time_seconds": 36.8667,
+  "target_length": 30,
+  "track_ids_original": [
+    26,
+    969
+  ],
+  "track_ids_reindexed": [
+    0,
+    1
+  ],
+  "track_classes": {
+    "26": "person",
+    "969": "person"
+  },
+  "scene_name": "10_55_new"
+}
