@@ -55,7 +55,7 @@ N_VA_StaticRelative = 0
 N_VA_StaticFinetuned = 0
 N_VA_DynamicAbsolute = 0
 N_PDP = 1
-N_VA_InequalityMatrices = 0
+N_VA_InequalityMatrices = 1
 N_VA_HeatMap = 1
 N_VA_HClust = 1
 N_VA_ClusterMap = 0
@@ -68,7 +68,7 @@ N_VA_Inverse = 0
 N_VA_TSNE = 1
 
 # PDP window and geometry params
-window_length_tst = 3
+window_length_tst = 50
 
 buffer_x = 15
 buffer_y = 1
@@ -110,8 +110,8 @@ if graphical_user_interface == 1:
     root.mainloop()
 
 # ---------------- Choose active dataset ----------------
-DATA_NOCLASS   = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_NC_inD_F100.csv"
-DATA_WITHCLASS = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_CL_inD_F100.csv"
+DATA_NOCLASS   = r"C:\Users\oliverme\OneDrive - UGent\Documents\STREAMS\inD\Dataset_for_testing_new_pdp\18\maxdist4_minframes3_minmov3\C20_CB_NC_inD_F100.csv"
+DATA_WITHCLASS = r"C:\Users\oliverme\OneDrive - UGent\Documents\STREAMS\inD\Dataset_for_testing_new_pdp\18\maxdist4_minframes3_minmov3\C20_CB_CL_inD_F100.csv"
 
 # Pick which one you want active right now:
 dataset_name = DATA_WITHCLASS # ← switch to DATA_NOCLASS if you want the 5-col file
@@ -121,7 +121,7 @@ dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 # Change this single variable if you move the output folder.
 # Use an absolute path or a path relative to the project root. Example:
 # OUTPUT_FOLDER = '/Users/olivier/Documents/STREAMS/Test_datalvlX_output'
-OUTPUT_FOLDER = os.path.expanduser('/Users/olivier/Documents/STREAMS/inD/Data/test')
+OUTPUT_FOLDER = os.path.expanduser(r"C:\Users\oliverme\OneDrive - UGent\Documents\STREAMS\TEST_new_PDP_script\Original")
 
 # Path or folder where distance-matrix CSV files live. You can set this to either:
 # - an absolute path to a directory (then scripts will look for filenames inside that dir),
@@ -129,7 +129,7 @@ OUTPUT_FOLDER = os.path.expanduser('/Users/olivier/Documents/STREAMS/inD/Data/te
 # - or None to keep existing relative-file behavior.
 # Example (directory): av.INPUT_DISTANCE_MATRIX = '/Users/olivier/Documents/STREAMS/Test_datalvlX_output'
 # Example (single file): av.INPUT_DISTANCE_MATRIX = '/path/to/N_C_PDPg_fundamental_DistanceMatrix.csv'
-INPUT_DISTANCE_MATRIX = '/Users/olivier/Documents/STREAMS/inD/Data/test'
+INPUT_DISTANCE_MATRIX = r"C:\Users\oliverme\OneDrive - UGent\Documents\STREAMS\TEST_new_PDP_script\Original"
 
 # ---------------- Load & normalize data ----------------
 # Detect number of columns: 5 (no class) or 6 (with class)
