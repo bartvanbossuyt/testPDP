@@ -47,6 +47,7 @@ def read_config_csv(path):
     df = pd.read_csv(path, header=None)
     ncols = df.shape[1]
 
+
     if ncols == 5:
         df.columns = ['conID', 'tstID', 'poiID', 'x', 'y']
         df_classes = None
