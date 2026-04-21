@@ -22,6 +22,8 @@ t_start = time.time()
 # Conditionally import visual modules (based on av toggles)
 if av.N_VA_StaticAbsolute == 1:
     import N_VA_StaticAbsolute
+if av.N_VA_StaticAbsolute_color == 1:
+    import N_VA_StaticAbsolute_color   
 if av.N_VA_StaticRelative == 1:
     import N_VA_StaticRelative
 if av.N_VA_StaticFinetuned == 1:
@@ -78,7 +80,7 @@ def SetDataForPDPType(data_filename, D_point_mapping, curr_point_id, window_leng
     Legacy function signature preserved (mapping args unused here).
     """
     Df_dataset, Df_classes, L_dataset, A_dataset, con, tst, poi = read_config_csv(data_filename)
-    Df_dataset.to_csv("Df_dataset.csv", index=False)
+    Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
     if av.window_length_tst > tst:
         print("ERROR IN VALUE OF VARIABLE: window_length_tst > tst")
     return Df_dataset, A_dataset, con, tst, poi
@@ -89,8 +91,9 @@ if av.PDPg_fundamental == 1:
     av.PDPg_fundamental_active = 1
 
     # Copy the active dataset to a local working file name (as in your original flow)
-    shutil.copyfile(av.dataset_name, "N_C_PDPg_fundamental_Dataset.csv")
-    av.dataset_name = "N_C_PDPg_fundamental_Dataset.csv"
+    target_dataset = av.get_output_path("N_C_PDPg_fundamental_Dataset.csv")
+    shutil.copyfile(av.dataset_name, target_dataset)
+    av.dataset_name = target_dataset
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     # Robust read (handles optional class)
@@ -102,10 +105,10 @@ if av.PDPg_fundamental == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_fundamental_Dataset.csv")
+    ) = read_config_csv(target_dataset)
 
     # Standard export retained
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     # Execute analysis stages
     if av.N_PDP == 1:
@@ -138,7 +141,7 @@ if av.PDPg_buffer == 1:
 
     import N_T_OB  # your buffer-prep module
 
-    av.dataset_name = "N_C_PDPg_buffer_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_buffer_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -149,9 +152,9 @@ if av.PDPg_buffer == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_buffer_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     # Reload analysis modules if they were already imported in the fundamental branch
     if av.N_PDP == 1:
@@ -181,7 +184,7 @@ if av.PDPg_rough == 1:
     av.PDPg_rough_active = 1
 
     # For rough, you use the fundamental dataset; roughness is applied in inequality calc
-    av.dataset_name = "N_C_PDPg_fundamental_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_fundamental_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -192,9 +195,9 @@ if av.PDPg_rough == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_fundamental_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     if av.N_PDP == 1:
         importlib.reload(N_PDP)
@@ -223,7 +226,7 @@ if av.PDPg_bufferrough == 1:
 
     import N_T_OB  # buffer generator (roughness applied later in metrics)
 
-    av.dataset_name = "N_C_PDPg_buffer_Dataset.csv"
+    av.dataset_name = av.get_output_path("N_C_PDPg_buffer_Dataset.csv")
     av.dataset_name_exclusive = av.dataset_name[:-4]
 
     (
@@ -234,9 +237,9 @@ if av.PDPg_bufferrough == 1:
         av.con,
         av.tst,
         av.poi,
-    ) = read_config_csv("N_C_PDPg_buffer_Dataset.csv")
+    ) = read_config_csv(av.dataset_name)
 
-    av.Df_dataset.to_csv("Df_dataset.csv", index=False)
+    av.Df_dataset.to_csv(av.get_output_path("Df_dataset.csv"), index=False)
 
     if av.N_PDP == 1:
         importlib.reload(N_PDP)

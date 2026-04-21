@@ -24,6 +24,7 @@ The scripts in this folder provide core functionality for analyzing moving objec
 
 ### Visual Analytics
 - **N_VA_StaticAbsolute.py** - Absolute static visualizations with class support
+- **N_VA_StaticAbsolute_color.py** - Absolute static visualizations with class support, enhanced with time-dependent coloring and stationary markers
 - **N_VA_StaticRelative.py** - Relative static visualizations with scaling
 - **N_VA_StaticFinetuned.py** - Finetuned visualizations (e.g., tennis pitch overlays)
 - **N_VA_DynamicAbsolute.py** - Animated trajectory visualizations

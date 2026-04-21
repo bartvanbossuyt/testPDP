@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+"""
+PDP Utilities Package
+
+This package contains utility modules for the PDP inverse application:
+- core: Core PDP functions (inequality matrices, transformations)
+- config: Lane configurations and settings
+- data_loading: CSV loading and DataFrame processing
+- order_comparison: PDP order matching functions
+- drawing: Matplotlib/Plotly drawing utilities
+- frenet_coordinates: Road-relative coordinate transformations for curved roads
+"""
+
+from .core import (
+    COORD_DISPLAY_PRECISION,
+    COORD_CSV_PRECISION,
+    OBJECT_LABELS,
+    SuccessfulPoint,
+    compute_inequality_matrix,
+    compare_inequality_matrices,
+    compare_inequality_matrices_with_threshold,
+    apply_buffer_transformation,
+)
+
+from .config import LANE_CONFIGURATIONS, DEFAULT_LANE_SETUP
+
+from .data_loading import (
+    to_numeric_series,
+    read_clean_df,
+    load_points_from_df,
+    extract_points_from_df,
+    get_available_configs,
+    get_available_objects,
+    get_time_range,
+    get_coordinate_bounds,
+)
+
+from .order_comparison import (
+    strip_primes,
+    extract_order_string,
+    check_pdp_match,
+    check_pdp_match_detailed,
+    check_pdp_match_frenet,
+    check_pdp_match_frenet_detailed,
+)
+
+from .frenet_coordinates import (
+    FrenetFrame,
+    compute_centerline_from_trajectory,
+    compute_arc_length,
+    compute_tangent_vectors,
+    compute_normal_vectors,
+    cartesian_to_frenet,
+    frenet_to_cartesian,
+    compute_inequality_matrix_frenet,
+    check_pdp_match_frenet as check_pdp_match_frenet_simple,
+)
+
+from .drawing import (
+    BLUE,
+    ORANGE,
+    LABEL_FS,
+    OBJECT_COLORS,
+    OBJECT_COLORS_PLOTLY,
+    setup_square_axes_basic,
+    render_square_matplotlib_figure_basic,
+    remove_duplicate_points,
+    extract_longest_object_path,
+    compute_perpendicular_offset,
+)
+
+from .lane_geometry import (
+    safe_normalize,
+    calculate_vehicle_speeds,
+    determine_driving_direction,
+    vehicles_same_direction,
+    offset_polyline,
+    lane_polylines_bounds,
+    extract_centerline_from_data,
+    build_lane_polylines,
+)
+
+from .plotting import (
+    add_lane_polylines_plotly,
+    add_intersection_lanes_plotly,
+    draw_frenet_axes,
+    draw_intersection_lanes_matplotlib,
+    annotate_points,
+)
+
+__all__ = [
+    # core
+    "COORD_DISPLAY_PRECISION",
+    "COORD_CSV_PRECISION",
+    "OBJECT_LABELS",
+    "SuccessfulPoint",
+    "compute_inequality_matrix",
+    "compare_inequality_matrices",
+    "compare_inequality_matrices_with_threshold",
+    "apply_buffer_transformation",
+    # config
+    "LANE_CONFIGURATIONS",
+    "DEFAULT_LANE_SETUP",
+    # data_loading
+    "to_numeric_series",
+    "read_clean_df",
+    "load_points_from_df",
+    "extract_points_from_df",
+    "get_available_configs",
+    "get_available_objects",
+    "get_time_range",
+    "get_coordinate_bounds",
+    # order_comparison
+    "strip_primes",
+    "extract_order_string",
+    "check_pdp_match",
+    "check_pdp_match_detailed",
+    "check_pdp_match_frenet",
+    "check_pdp_match_frenet_detailed",
+    # frenet_coordinates
+    "FrenetFrame",
+    "compute_centerline_from_trajectory",
+    "compute_arc_length",
+    "compute_tangent_vectors",
+    "compute_normal_vectors",
+    "cartesian_to_frenet",
+    "frenet_to_cartesian",
+    "compute_inequality_matrix_frenet",
+    "check_pdp_match_frenet_simple",
+    # drawing
+    "BLUE",
+    "ORANGE",
+    "LABEL_FS",
+    "OBJECT_COLORS",
+    "OBJECT_COLORS_PLOTLY",
+    "setup_square_axes_basic",
+    "render_square_matplotlib_figure_basic",
+    "remove_duplicate_points",
+    "extract_longest_object_path",
+    "compute_perpendicular_offset",
+    # lane_geometry
+    "safe_normalize",
+    "calculate_vehicle_speeds",
+    "determine_driving_direction",
+    "vehicles_same_direction",
+    "offset_polyline",
+    "lane_polylines_bounds",
+    "extract_centerline_from_data",
+    "build_lane_polylines",
+    # plotting
+    "add_lane_polylines_plotly",
+    "add_intersection_lanes_plotly",
+    "draw_frenet_axes",
+    "draw_intersection_lanes_matplotlib",
+    "annotate_points",
+]

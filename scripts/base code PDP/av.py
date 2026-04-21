@@ -45,17 +45,18 @@ graphical_user_interface = 0  # 1 to show the Tk GUI
 # PDP types (keep fundamental always 1 as you noted)
 PDPg_fundamental = 1  # must always be 1
 PDPg_buffer = 0  
-PDPg_rough = 0
+PDPg_rough = 1
 PDPg_bufferrough = 0
 
 # Report/visual analytics switches
 N_VA_Report = 0
 N_VA_StaticAbsolute = 1
+N_VA_StaticAbsolute_color = 1
 N_VA_StaticRelative = 0
 N_VA_StaticFinetuned = 0
 N_VA_DynamicAbsolute = 0
 N_PDP = 1
-N_VA_InequalityMatrices = 0
+N_VA_InequalityMatrices = 1
 N_VA_HeatMap = 1
 N_VA_HClust = 1
 N_VA_ClusterMap = 0
@@ -68,12 +69,12 @@ N_VA_Inverse = 0
 N_VA_TSNE = 1
 
 # PDP window and geometry params
-window_length_tst = 3
+window_length_tst = 137
 
-buffer_x = 15
-buffer_y = 1
-rough_x = 30
-rough_y = 3
+buffer_x = 0
+buffer_y = 0
+rough_x = 0
+rough_y = 0.05
 
 DD  = 2
 des = 2
@@ -111,23 +112,36 @@ if graphical_user_interface == 1:
 
 # ---------------- Choose active dataset ----------------
 # NOTE: Update these paths to match your local setup
-DATA_NOCLASS   = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_NC_inD_F100.csv"
-DATA_WITHCLASS = "/Users/olivier/Documents/STREAMS/inD/Data/C16_CBP_CL_inD_F100/C16_CBP_CL_inD_F100.csv"
+DATA_NOCLASS   = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv'
+DATA_WITHCLASS = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\Data\\Df_dataset_curve.csv'
 
 # Pick which one you want active right now:
-dataset_name = DATA_WITHCLASS  # Switch to DATA_NOCLASS if you want the 5-col file
+dataset_name = DATA_NOCLASS  # Switch to DATA_NOCLASS if you want the 5-col file
 dataset_name_exclusive = os.path.splitext(os.path.basename(dataset_name))[0]
 
 # Central output folder for distance matrices, images and other generated files.
 # Change this single variable if you move the output folder.
 # Use an absolute path or a path relative to the project root.
-OUTPUT_FOLDER = os.path.expanduser('/Users/olivier/Documents/STREAMS/inD/Data/test')
+OUTPUT_FOLDER = os.path.expanduser('D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\curve_y_rough_0.05')
 
 # Path or folder where distance-matrix CSV files live. You can set this to either:
 # - an absolute path to a directory (then scripts will look for filenames inside that dir),
 # - or a full path to a single CSV file (then that file will be used directly),
 # - or None to keep existing relative-file behavior.
-INPUT_DISTANCE_MATRIX = '/Users/olivier/Documents/STREAMS/inD/Data/test'
+INPUT_DISTANCE_MATRIX = 'D:\\OneDrive - UGent\\PhD\\PDP\\UFO\\A2\\PDP_results\\curve_y_rough_0.05'
+
+# ---------------- Helper function for safe file saving ----------------
+def get_output_path(filename):
+    """
+    Returns the full path for saving a file:
+    - If OUTPUT_FOLDER is set, creates it if needed and saves to OUTPUT_FOLDER/filename
+    - Otherwise, saves to current directory (relative path)
+    """
+    if OUTPUT_FOLDER:
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        return os.path.join(OUTPUT_FOLDER, filename)
+    else:
+        return filename
 
 # ---------------- Load & normalize data ----------------
 # Detect number of columns: 5 (no class) or 6 (with class)
@@ -168,12 +182,12 @@ if not pd.api.types.is_integer_dtype(Df_raw['poiID']):
 
 # Split into numeric base and optional classes
 Df_dataset = Df_raw[['conID', 'tstID', 'poiID', 'x', 'y']].copy()
-Df_dataset.to_csv(f"{dataset_name_exclusive}__Df_dataset.csv", index=False)
+Df_dataset.to_csv(get_output_path(f"{dataset_name_exclusive}__Df_dataset.csv"), index=False)
 
 Df_classes = None
 if has_class:
     Df_classes = Df_raw[['conID', 'tstID', 'poiID', 'class']].copy()
-    Df_classes.to_csv(f"{dataset_name_exclusive}__Df_classes.csv", index=False)
+    Df_classes.to_csv(get_output_path(f"{dataset_name_exclusive}__Df_classes.csv"), index=False)
 
 # Legacy outputs you already rely on
 L_dataset = Df_dataset.values.tolist()
@@ -186,7 +200,7 @@ poi = int(Df_dataset['poiID'].max()) + 1
 print("poi =", poi)
 
 # Keep standard export name if other modules expect it
-Df_dataset.to_csv("Df_dataset.csv", index=False)
+Df_dataset.to_csv(get_output_path("Df_dataset.csv"), index=False)
 
 # ---------------- PDP activation flags (runtime) ----------------
 PDPg_fundamental_active = 0
