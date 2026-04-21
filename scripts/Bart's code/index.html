@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>White 1965 – interactieve netwerkdemo</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        display: flex;
+        height: 100vh;
+        color: #222;
+    }
+
+    #viz {
+        flex: 2;
+        background: #fafafa;
+        border-right: 1px solid #ccc;
+        position: relative;
+    }
+
+    #text {
+        flex: 1;
+        padding: 20px 24px;
+        overflow-y: auto;
+    }
+
+    #controls {
+        position: absolute;
+        bottom: 16px;
+        left: 16px;
+        background: rgba(255,255,255,0.9);
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 6px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+    }
+
+    button {
+        padding: 4px 10px;
+        margin: 0;
+        border-radius: 4px;
+        border: 1px solid #bbb;
+        background: #fff;
+        cursor: pointer;
+        font-size: 13px;
+    }
+
+    button:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    #scene-index {
+        font-size: 13px;
+        color: #666;
+    }
+
+    #scene-title {
+        margin-top: 0;
+        margin-bottom: 8px;
+        font-size: 20px;
+        font-weight: 600;
+    }
+
+    #scene-desc {
+        margin-top: 0;
+        font-size: 14px;
+        line-height: 1.4;
+    }
+
+    .legend {
+        margin-top: 8px;
+        font-size: 12px;
+        color: #555;
+    }
+
+    .legend span {
+        margin-right: 12px;
+    }
+
+    .badge {
+        display: inline-block;
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: #eee;
+        margin-right: 4px;
+    }
+
+</style>
+</head>
+
+<body>
+
+<div id="viz">
+    <svg id="svg" width="100%" height="100%"></svg>
+
+    <div id="controls">
+        <button id="btn-prev">Vorige</button>
+        <span id="scene-index"></span>
+        <button id="btn-next">Volgende</button>
+    </div>
+</div>
+
+<div id="text">
+    <h2 id="scene-title"></h2>
+    <p id="scene-desc"></p>
+    <div id="scene-legend" class="legend"></div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// =========================================================
+// 1. SCENEDEFINITIE
+// =========================================================
+// layout: "force", "static", "ego"
+// nodes: [{id, group, fixedX, fixedY}]
+// links: [{source, target, type, rel}]  type: "direct"/"indirect"  rel: "pos"/"neg"
+
+const scenes = [
+
+    // 0: Basennetwerk
+    {
+        title: "1. Basennetwerk",
+        desc: "Een eenvoudig netwerk van 6 personen met enkele relaties ertussen. Dit is White zijn basisdefinitie van een net: punten en pairwise relaties binnen een populatie.",
+        legend: [
+            {label: "knoop", text: "persoon of partij"},
+            {label: "volle lijn", text: "directe relatie"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}, {id: "F"}
+        ],
+        links: [
+            {source: "A", target: "B", type: "direct"},
+            {source: "A", target: "C", type: "direct"},
+            {source: "B", target: "D", type: "direct"},
+            {source: "C", target: "E", type: "direct"}
+        ]
+    },
+
+    // 1: Indirecte relaties
+    {
+        title: "2. Indirecte relaties",
+        desc: "Dezelfde directe relaties, maar nu tonen we gestippelde lijnen voor indirecte relaties via twee stappen. Personen beseffen die indirecte banden, maar ze zijn nog niet afzonderlijk gedefinieerd.",
+        legend: [
+            {label: "volle lijn", text: "directe relatie"},
+            {label: "gestippelde lijn", text: "indirecte relatie (via twee stappen)"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}, {id: "F"}
+        ],
+        links: [
+            {source: "A", target: "B", type: "direct"},
+            {source: "A", target: "C", type: "direct"},
+            {source: "B", target: "D", type: "direct"},
+            {source: "C", target: "E", type: "direct"},
+            {source: "A", target: "D", type: "indirect"},
+            {source: "A", target: "E", type: "indirect"}
+        ]
+    },
+
+    // 2: Populatiekader
+    {
+        title: "3. Netwerk binnen een populatie",
+        desc: "Het net is altijd gedefinieerd binnen een begrensde populatie met een gedeelde cultuur. We zien hetzelfde netwerk, maar nu expliciet binnen een kader dat de populatie voorstelt.",
+        legend: [
+            {label: "rechthoek", text: "populatie A"},
+            {label: "volle lijn", text: "directe relatie"}
+        ],
+        layout: "force",
+        frame: true,
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}, {id: "F"}
+        ],
+        links: [
+            {source: "A", target: "B", type: "direct"},
+            {source: "A", target: "C", type: "direct"},
+            {source: "B", target: "D", type: "direct"},
+            {source: "C", target: "E", type: "direct"},
+            {source: "D", target: "F", type: "direct"}
+        ]
+    },
+
+    // 3: Signed network
+    {
+        title: "4. Meerdere soorten relaties",
+        desc: "We voegen positieve en negatieve relaties toe. Dit laat toe om te spreken over evenwicht in triaden en de neiging tot vorming van facties.",
+        legend: [
+            {label: "blauwe lijn", text: "positieve relatie"},
+            {label: "rode lijn", text: "negatieve relatie"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}, {id: "F"}
+        ],
+        links: [
+            {source: "A", target: "B", rel: "pos"},
+            {source: "B", target: "C", rel: "pos"},
+            {source: "A", target: "C", rel: "neg"},
+            {source: "C", target: "D", rel: "pos"},
+            {source: "D", target: "E", rel: "neg"},
+            {source: "E", target: "F", rel: "pos"}
+        ]
+    },
+
+    // 4: Evenwicht en facties
+    {
+        title: "5. Evenwicht en facties",
+        desc: "Een evenwichtslogica in triaden (geen of twee negatieve banden) leidt tot het ontstaan van twee clusters: positieve banden binnen de facties, negatieve tussen de facties.",
+        legend: [
+            {label: "blauwe lijn", text: "positieve relatie (binnen factie)"},
+            {label: "rode lijn", text: "negatieve relatie (tussen facties)"},
+            {label: "kleur knoop", text: "factielidmaatschap"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A", group: 1},
+            {id: "B", group: 1},
+            {id: "C", group: 1},
+            {id: "D", group: 2},
+            {id: "E", group: 2},
+            {id: "F", group: 2}
+        ],
+        links: [
+            {source: "A", target: "B", rel: "pos"},
+            {source: "B", target: "C", rel: "pos"},
+            {source: "D", target: "E", rel: "pos"},
+            {source: "E", target: "F", rel: "pos"},
+            {source: "C", target: "D", rel: "neg"},
+            {source: "B", target: "E", rel: "neg"}
+        ]
+    },
+
+    // 5: Beperkte graad
+    {
+        title: "6. Beperkte graad",
+        desc: "In sociometrische studies wordt vaak gevraagd naar een beperkt aantal 'beste vrienden'. White wijst op boven- en ondergrenzen voor het aantal relaties per persoon.",
+        legend: [
+            {label: "volle lijn", text: "gekozen vriendschap (max. 3 per persoon)"},
+            {label: "lichtgrijze knoop", text: "persoon met weinig keuzes"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}, {id: "F"},
+            {id: "G"}, {id: "H"}
+        ],
+        links: [
+            {source: "A", target: "B"},
+            {source: "A", target: "C"},
+            {source: "A", target: "D"},
+            {source: "B", target: "C"},
+            {source: "C", target: "E"},
+            {source: "D", target: "F"},
+            {source: "E", target: "G"}
+        ]
+    },
+
+    // 6: Intro categorie
+    {
+        title: "7. Van net naar categorie",
+        desc: "We introduceren nu een categorie: een groep personen die in een bepaald opzicht gelijksoortig zijn. Het netwerk blijft bestaan, maar sommige knopen krijgen nu een categorielabel.",
+        legend: [
+            {label: "blauwe rand", text: "leden van categorie X"},
+            {label: "grijze rand", text: "niet-lid"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A", inCat: true},
+            {id: "B", inCat: true},
+            {id: "C", inCat: true},
+            {id: "D", inCat: false},
+            {id: "E", inCat: false},
+            {id: "F", inCat: false}
+        ],
+        links: [
+            {source: "A", target: "B"},
+            {source: "B", target: "C"},
+            {source: "C", target: "D"},
+            {source: "D", target: "E"},
+            {source: "E", target: "F"}
+        ]
+    },
+
+    // 7: Isolatie vs integratie
+    {
+        title: "8. Categorie als isolatie of als totale integratie",
+        desc: "Links zie je een categorie waar elk lid afzonderlijk met de categorie verbonden is (isolatie). Rechts een categorie waar de leden sterk onderling verbonden zijn (totale integratie).",
+        legend: [
+            {label: "linker cluster", text: "geïsoleerde categorie"},
+            {label: "rechter cluster", text: "totale integratie"}
+        ],
+        layout: "static",
+        nodes: [
+            // linker cluster (isolatie)
+            {id: "A", side: "left"},
+            {id: "B", side: "left"},
+            {id: "C", side: "left"},
+            {id: "X", side: "left", isCatNode: true},
+
+            // rechter cluster (integratie)
+            {id: "D", side: "right"},
+            {id: "E", side: "right"},
+            {id: "F", side: "right"},
+            {id: "G", side: "right"}
+        ],
+        links: [
+            // isolatie: elk individu naar categorie-node X
+            {source: "A", target: "X"},
+            {source: "B", target: "X"},
+            {source: "C", target: "X"},
+            // integratie: volledig netwerk
+            {source: "D", target: "E"},
+            {source: "D", target: "F"},
+            {source: "D", target: "G"},
+            {source: "E", target: "F"},
+            {source: "E", target: "G"},
+            {source: "F", target: "G"}
+        ]
+    },
+
+    // 8: Kruistabelblik
+    {
+        title: "9. Netwerk als matrix",
+        desc: "Hetzelfde netwerk kan als matrix worden weergegeven, waarbij rijen en kolommen personen zijn. Dit lijkt formeel op een kruistabel en verbindt netwerken met categorieënsystemen.",
+        legend: [
+            {label: "donker vakje", text: "relatie tussen i en j"},
+            {label: "diagonaal", text: "i met zichzelf"}
+        ],
+        layout: "static",
+        matrix: true,
+        nodes: [
+            {id: "A"}, {id: "B"}, {id: "C"},
+            {id: "D"}, {id: "E"}
+        ],
+        links: [
+            {source: "A", target: "B"},
+            {source: "A", target: "C"},
+            {source: "B", target: "D"},
+            {source: "C", target: "E"}
+        ]
+    },
+
+    // 9: Catnet – clusters met identiteit
+    {
+        title: "10. Catnet: clusters als identiteiten",
+        desc: "In een catnet groeien kliekjes uit tot categorieën met identiteit. Binnen clusters zijn relaties vaak latent beschikbaar, tussen clusters zijn er typische verbindingen.",
+        legend: [
+            {label: "kleur knoop", text: "categorielidmaatschap (cat)"},
+            {label: "lichte lijnen", text: "latente interne banden"},
+            {label: "donkere lijnen", text: "relaties tussen cats"}
+        ],
+        layout: "force",
+        nodes: [
+            {id: "A", group: 1},
+            {id: "B", group: 1},
+            {id: "C", group: 1},
+            {id: "D", group: 2},
+            {id: "E", group: 2},
+            {id: "F", group: 3},
+            {id: "G", group: 3}
+        ],
+        links: [
+            // interne, latente banden (we tonen er enkele)
+            {source: "A", target: "B", latent: true},
+            {source: "B", target: "C", latent: true},
+            {source: "D", target: "E", latent: true},
+            {source: "F", target: "G", latent: true},
+            // tussen cats
+            {source: "C", target: "D"},
+            {source: "E", target: "F"}
+        ]
+    },
+
+    // 10: Buurten
+    {
+        title: "11. Buurten als catnet op schaal",
+        desc: "Buurten zijn grotere clusters van cats. In matrixvorm verschijnen ze als blokken met hoge dichtheid langs de diagonaal, met spreiding van banden tussen buurten.",
+        legend: [
+            {label: "blok langs diagonaal", text: "buurt"},
+            {label: "punten buiten diagonaal", text: "relaties tussen buurten"}
+        ],
+        layout: "static",
+        matrix: true,
+        nodes: [
+            {id: "a1", block: 0}, {id: "a2", block: 0}, {id: "a3", block: 0},
+            {id: "b1", block: 1}, {id: "b2", block: 1}, {id: "b3", block: 1},
+            {id: "c1", block: 2}, {id: "c2", block: 2}
+        ],
+        links: [
+            // buurt A intern
+            {source: "a1", target: "a2"},
+            {source: "a1", target: "a3"},
+            {source: "a2", target: "a3"},
+            // buurt B intern
+            {source: "b1", target: "b2"},
+            {source: "b1", target: "b3"},
+            {source: "b2", target: "b3"},
+            // buurt C intern
+            {source: "c1", target: "c2"},
+            // tussen buurten
+            {source: "a3", target: "b1"},
+            {source: "b3", target: "c1"}
+        ]
+    },
+
+    // 11: Frame – ego en indirecte ringen
+    {
+        title: "12. Frame: ego en indirecte ringen",
+        desc: "Een frame ordent indirecte relaties in types rond een ego: vrienden, kennissen, vage contacten. Dit is een geïnstitutionaliseerd schema dat niet meer afhangt van een enkel concreet netwerk.",
+        legend: [
+            {label: "centrum", text: "ego"},
+            {label: "binnenste ring", text: "directe vrienden"},
+            {label: "middenring", text: "kennissen"},
+            {label: "buitenring", text: "vage contacten"}
+        ],
+        layout: "ego",
+        nodes: [
+            {id: "ego", role: "ego"},
+            {id: "v1", role: "friend"},
+            {id: "v2", role: "friend"},
+            {id: "v3", role: "friend"},
+            {id: "k1", role: "acq"},
+            {id: "k2", role: "acq"},
+            {id: "k3", role: "acq"},
+            {id: "w1", role: "weak"},
+            {id: "w2", role: "weak"},
+            {id: "w3", role: "weak"}
+        ],
+        links: [
+            {source: "ego", target: "v1"},
+            {source: "ego", target: "v2"},
+            {source: "ego", target: "v3"},
+            {source: "v1", target: "k1"},
+            {source: "v2", target: "k2"},
+            {source: "k2", target: "w1"},
+            {source: "k3", target: "w2"}
+        ]
+    },
+
+    // 12: Synthese
+    {
+        title: "13. Synthese",
+        desc: "White bouwt van net naar complex net, naar categorieën, catnets en frames. Dezelfde basisintuïtie van relaties en gelijkenis wordt telkens verder geformaliseerd.",
+        legend: [
+            {label: "links", text: "simpel netwerk"},
+            {label: "midden", text: "clusters / catnet"},
+            {label: "rechts", text: "frame rond ego"}
+        ],
+        layout: "static",
+        nodes: [
+            // links: simpel net
+            {id: "L1", zone: "left"},
+            {id: "L2", zone: "left"},
+            {id: "L3", zone: "left"},
+            {id: "L4", zone: "left"},
+            // midden: clusters
+            {id: "M1", zone: "mid", group: 1},
+            {id: "M2", zone: "mid", group: 1},
+            {id: "M3", zone: "mid", group: 2},
+            {id: "M4", zone: "mid", group: 2},
+            // rechts: frame
+            {id: "R0", zone: "right", role: "ego"},
+            {id: "R1", zone: "right", role: "friend"},
+            {id: "R2", zone: "right", role: "acq"}
+        ],
+        links: [
+            // links
+            {source: "L1", target: "L2"},
+            {source: "L2", target: "L3"},
+            {source: "L3", target: "L4"},
+            // midden
+            {source: "M1", target: "M2"},
+            {source: "M3", target: "M4"},
+            {source: "M2", target: "M3"},
+            // rechts
+            {source: "R0", target: "R1"},
+            {source: "R0", target: "R2"}
+        ]
+    }
+
+];
+
+// =========================================================
+// 2. D3 VISUALISATIE
+// =========================================================
+
+let currentScene = 0;
+
+const svg = d3.select("#svg");
+const width = document.getElementById("viz").clientWidth;
+const height = document.getElementById("viz").clientHeight;
+
+let frameRect = svg.append("rect")
+    .attr("fill", "none")
+    .attr("stroke", "#ddd")
+    .attr("stroke-width", 2)
+    .attr("visibility", "hidden");
+
+let linkGroup = svg.append("g");
+let nodeGroup = svg.append("g");
+
+let simulation = d3.forceSimulation()
+    .force("charge", d3.forceManyBody().strength(-220))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("link", d3.forceLink().id(d => d.id).distance(120));
+
+// =========================================================
+// 3. SCENE UPDATE FUNCTIE
+// =========================================================
+
+function updateScene(n) {
+    const scene = scenes[n];
+
+    document.getElementById("scene-title").textContent = scene.title;
+    document.getElementById("scene-desc").textContent = scene.desc;
+    document.getElementById("scene-index").textContent =
+        (n + 1) + " / " + scenes.length;
+
+    // legend
+    const legendDiv = document.getElementById("scene-legend");
+    legendDiv.innerHTML = "";
+    if (scene.legend) {
+        scene.legend.forEach(item => {
+            const span = document.createElement("span");
+            span.innerHTML = "<span class='badge'>" + item.label + "</span>" + item.text;
+            legendDiv.appendChild(span);
+        });
+    }
+
+    // toon of verberg populatiekader
+    if (scene.frame) {
+        frameRect
+            .attr("x", width * 0.1)
+            .attr("y", height * 0.1)
+            .attr("width", width * 0.8)
+            .attr("height", height * 0.8)
+            .attr("visibility", "visible");
+    } else {
+        frameRect.attr("visibility", "hidden");
+    }
+
+    const nodes = scene.nodes.map(d => Object.assign({}, d)); // kopie
+    const links = scene.links.map(d => Object.assign({}, d));
+
+    // JOIN links
+    const linkSel = linkGroup.selectAll("line")
+        .data(links, d => d.source + "-" + d.target);
+
+    linkSel.exit().remove();
+
+    const linkEnter = linkSel.enter().append("line");
+
+    const linkMerge = linkEnter.merge(linkSel)
+        .attr("stroke-width", d => d.latent ? 1.2 : 2)
+        .attr("stroke", d => {
+            if (d.type === "indirect") return "#aaa";
+            if (d.rel === "pos") return "steelblue";
+            if (d.rel === "neg") return "#c0392b";
+            if (d.latent) return "#bbb";
+            return "#555";
+        })
+        .attr("stroke-dasharray", d => d.type === "indirect" ? "4 4" : "0");
+
+    // JOIN nodes (circles)
+    const nodeSel = nodeGroup.selectAll("circle")
+        .data(nodes, d => d.id);
+
+    nodeSel.exit().remove();
+
+    const nodeEnter = nodeSel.enter().append("circle")
+        .attr("r", d => d.isCatNode ? 10 : 10)
+        .call(drag(simulation));
+
+    const nodeMerge = nodeEnter.merge(nodeSel)
+        .attr("stroke-width", d => d.isCatNode ? 2.5 : 1.8)
+        .attr("stroke", d => {
+            if (d.isCatNode) return "#2980b9";
+            if (d.inCat) return "#2980b9";
+            if (d.group === 1) return "#2980b9";
+            if (d.group === 2) return "#27ae60";
+            if (d.group === 3) return "#8e44ad";
+            return "#fdfdfd";
+        })
+        .attr("fill", d => {
+            if (d.isCatNode) return "#ecf6fc";
+            if (d.role === "ego") return "#34495e";
+            if (d.role === "friend") return "#3498db";
+            if (d.role === "acq") return "#95a5a6";
+            if (d.role === "weak") return "#bdc3c7";
+            if (d.zone === "left") return "#f5f5f5";
+            if (d.zone === "mid" && d.group === 1) return "#e8f4fb";
+            if (d.zone === "mid" && d.group === 2) return "#e9f9ee";
+            if (d.zone === "right") return "#fdf5e6";
+            if (d.group === 1) return "#e8f4fb";
+            if (d.group === 2) return "#e9f9ee";
+            if (d.group === 3) return "#f4ecf9";
+            if (d.inCat) return "#edf6ff";
+            return "#555";
+        })
+        .attr("r", d => d.role === "ego" ? 14 : 10);
+
+    // JOIN labels
+    const labelSel = nodeGroup.selectAll("text")
+        .data(nodes, d => d.id);
+
+    labelSel.exit().remove();
+
+    const labelEnter = labelSel.enter().append("text")
+        .attr("font-size", 11)
+        .attr("dy", 3)
+        .attr("text-anchor", "middle");
+
+    const labelMerge = labelEnter.merge(labelSel)
+        .text(d => d.id);
+
+    // layout logica
+    if (scene.layout === "force") {
+        simulation.nodes(nodes).on("tick", () => {
+            linkMerge
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            nodeMerge
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+
+            labelMerge
+                .attr("x", d => d.x)
+                .attr("y", d => d.y - 17);
+        });
+        simulation.force("link").links(links);
+        simulation.alpha(1).restart();
+
+    } else if (scene.layout === "static" && !scene.matrix && !scene.layoutOverride) {
+        simulation.stop();
+
+        // twee clusters naast elkaar voor scene 7
+        nodes.forEach((d, i) => {
+            if (d.side === "left") {
+                d.x = width * 0.3 + (Math.random() - 0.5) * 60;
+                d.y = height * (0.3 + 0.15 * i);
+            } else if (d.side === "right") {
+                d.x = width * 0.7 + (Math.random() - 0.5) * 60;
+                d.y = height * (0.3 + 0.15 * i);
+            } else if (d.zone) {
+                // gebruiken we later in synthese
+            }
+        });
+
+        // synthese: zones links, midden, rechts
+        if (scene.title.startsWith("13.")) {
+            nodes.forEach((d, i) => {
+                if (d.zone === "left") {
+                    d.x = width * 0.22 + (Math.random() - 0.5) * 40;
+                    d.y = height * 0.5 + (Math.random() - 0.5) * 60;
+                } else if (d.zone === "mid") {
+                    const row = d.group === 1 ? 0 : 1;
+                    d.x = width * 0.5 + (Math.random() - 0.5) * 40;
+                    d.y = height * (0.45 + 0.15 * row);
+                } else if (d.zone === "right") {
+                    if (d.role === "ego") {
+                        d.x = width * 0.78;
+                        d.y = height * 0.5;
+                    } else if (d.role === "friend") {
+                        d.x = width * 0.82;
+                        d.y = height * 0.4;
+                    } else {
+                        d.x = width * 0.85;
+                        d.y = height * 0.6;
+                    }
+                }
+            });
+        }
+
+        // update posities
+        linkMerge
+            .attr("x1", d => getNode(nodes, d.source).x)
+            .attr("y1", d => getNode(nodes, d.source).y)
+            .attr("x2", d => getNode(nodes, d.target).x)
+            .attr("y2", d => getNode(nodes, d.target).y);
+
+        nodeMerge
+            .attr("cx", d => d.x)
+            .attr("cy", d => d.y);
+
+        labelMerge
+            .attr("x", d => d.x)
+            .attr("y", d => d.y - 16);
+
+    } else if (scene.layout === "static" && scene.matrix) {
+        simulation.stop();
+
+        // matrixlay-out
+        const nNodes = nodes.length;
+        const cellSize = Math.min(width, height) / (nNodes + 3);
+        const startX = width * 0.25;
+        const startY = height * 0.25;
+
+        // map ids naar index
+        const idToIndex = {};
+        nodes.forEach((d, i) => { idToIndex[d.id] = i; });
+
+        // stel matrixpunten op diagonaal
+        nodes.forEach((d, i) => {
+            d.x = startX + i * cellSize;
+            d.y = startY + i * cellSize;
+        });
+
+        linkMerge
+            .attr("x1", d => {
+                const i = idToIndex[d.source];
+                return startX + i * cellSize;
+            })
+            .attr("y1", d => {
+                const j = idToIndex[d.target];
+                return startY + j * cellSize;
+            })
+            .attr("x2", d => {
+                const i = idToIndex[d.source];
+                return startX + i * cellSize + 1;
+            })
+            .attr("y2", d => {
+                const j = idToIndex[d.target];
+                return startY + j * cellSize + 1;
+            })
+            .attr("stroke-width", 4);
+
+        // nodes zelf tonen we boven of buiten beeld, zodat de matrix primeert
+        nodeMerge
+            .attr("cx", d => d.x)
+            .attr("cy", d => d.y - 80)
+            .attr("r", 6)
+            .attr("fill", "#777")
+            .attr("stroke", "#fff");
+
+        labelMerge
+            .attr("x", d => d.x)
+            .attr("y", d => d.y - 92);
+
+    } else if (scene.layout === "ego") {
+        simulation.stop();
+
+        // polar layout voor ego-frame
+        const centerX = width * 0.5;
+        const centerY = height * 0.5;
+
+        nodes.forEach((d, i) => {
+            if (d.role === "ego") {
+                d.x = centerX;
+                d.y = centerY;
+            } else {
+                let radius;
+                if (d.role === "friend") radius = 80;
+                else if (d.role === "acq") radius = 140;
+                else radius = 200;
+
+                const angle = (i / (nodes.length - 1)) * 2 * Math.PI;
+                d.x = centerX + radius * Math.cos(angle);
+                d.y = centerY + radius * Math.sin(angle);
+            }
+        });
+
+        linkMerge
+            .attr("x1", d => getNode(nodes, d.source).x)
+            .attr("y1", d => getNode(nodes, d.source).y)
+            .attr("x2", d => getNode(nodes, d.target).x)
+            .attr("y2", d => getNode(nodes, d.target).y);
+
+        nodeMerge
+            .attr("cx", d => d.x)
+            .attr("cy", d => d.y);
+
+        labelMerge
+            .attr("x", d => d.x)
+            .attr("y", d => d.y - 18);
+    }
+
+    // update knoppen
+    document.getElementById("btn-prev").disabled = (n === 0);
+    document.getElementById("btn-next").disabled = (n === scenes.length - 1);
+}
+
+function getNode(nodes, idOrObj) {
+    if (typeof idOrObj === "object") return idOrObj;
+    return nodes.find(d => d.id === idOrObj);
+}
+
+// drag functionaliteit
+function drag(sim) {
+    return d3.drag()
+        .on("start", (event, d) => {
+            if (!event.active) sim.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        })
+        .on("drag", (event, d) => {
+            d.fx = event.x;
+            d.fy = event.y;
+        })
+        .on("end", (event, d) => {
+            if (!event.active) sim.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        });
+}
+
+// knoppen
+document.getElementById("btn-prev").addEventListener("click", () => {
+    currentScene = Math.max(currentScene - 1, 0);
+    updateScene(currentScene);
+});
+
+document.getElementById("btn-next").addEventListener("click", () => {
+    currentScene = Math.min(currentScene + 1, scenes.length - 1);
+    updateScene(currentScene);
+});
+
+// init
+updateScene(currentScene);
+
+</script>
+</body>
+</html>
