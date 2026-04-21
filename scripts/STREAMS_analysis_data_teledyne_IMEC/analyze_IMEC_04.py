@@ -37,7 +37,7 @@ HEADING_DEG = 49.4
 METERS_PER_DEG_LAT = 111320
 METERS_PER_DEG_LON = 111320 * np.cos(np.radians(ORIGIN_LAT))
 
-SCENES = ["10_10", "10_55"]
+SCENES = ["09_56", "10_10_new", "10_27", "10_43", "10_55_new"]
 
 CLASS_COLORS_GT = {
     "Pedestrian": "#FF3B30",
@@ -62,7 +62,19 @@ def local_to_gps(x, y, heading_deg=HEADING_DEG):
 # ===================================================================
 def load_scene_files(scene: str) -> dict[int, pd.DataFrame]:
     """Return {snapshot_ts: DataFrame} for a scene."""
-    folder = DATA_DIR / scene / "track_dataframes"
+    # Try multiple possible folder structures
+    candidates = [
+        DATA_DIR / scene / "track_dataframes",
+        DATA_DIR / scene / scene / "track_dataframes",
+        DATA_DIR / scene / scene / "dataframes",
+    ]
+    folder = None
+    for c in candidates:
+        if c.exists():
+            folder = c
+            break
+    if folder is None:
+        return {}
     out = {}
     for fp in sorted(folder.glob("tracks_df_*.csv")):
         ts = int(fp.stem.split("_")[-1])
@@ -318,7 +330,13 @@ def create_interactive_map(
         gt_layer.add_to(m)
 
     # Scene layers
-    palette = {"10_10": "#F59E0B", "10_55": "#06B6D4"}
+    palette = {
+        "09_56": "#EF4444",
+        "10_10_new": "#F59E0B",
+        "10_27": "#10B981",
+        "10_43": "#8B5CF6",
+        "10_55_new": "#06B6D4",
+    }
     for scene, df in scene_data.items():
         layer = folium.FeatureGroup(name=f"IMEC_04 {scene}", show=True)
         color = palette.get(scene, "gray")
@@ -441,13 +459,13 @@ def main():
             VIZ_DIR / "imec04_full_map.html",
         )
 
-    # --- Combined PDP (both scenes as separate configs) ---
-    if len(map_data) == 2:
-        print(f"\n  Creating combined PDP (10_10 = conID 0, 10_55 = conID 1)...")
+    # --- Combined PDP (all scenes as separate configs) ---
+    if len(map_data) >= 2:
+        scene_labels = ", ".join(f"{s} = conID {i}" for i, s in enumerate(s for s in SCENES if s in map_data))
+        print(f"\n  Creating combined PDP ({scene_labels})...")
         parts = []
-        for i, scene in enumerate(SCENES):
-            if scene in map_data:
-                parts.append(convert_to_pdp_sparse(map_data[scene], con_id=i))
+        for i, scene in enumerate(s for s in SCENES if s in map_data):
+            parts.append(convert_to_pdp_sparse(map_data[scene], con_id=i))
         combined = pd.concat(parts, ignore_index=True)
         combined = combined.sort_values(["conID", "tstID", "poiID"]).reset_index(drop=True)
         save_pdp(combined,
@@ -455,9 +473,8 @@ def main():
                  "combined-sparse")
 
         parts_i = []
-        for i, scene in enumerate(SCENES):
-            if scene in map_data:
-                parts_i.append(convert_to_pdp_interpolated(map_data[scene], con_id=i))
+        for i, scene in enumerate(s for s in SCENES if s in map_data):
+            parts_i.append(convert_to_pdp_interpolated(map_data[scene], con_id=i))
         combined_i = pd.concat(parts_i, ignore_index=True)
         combined_i = combined_i.sort_values(["conID", "tstID", "poiID"]).reset_index(drop=True)
         save_pdp(combined_i,
