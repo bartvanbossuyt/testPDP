@@ -1,0 +1,27 @@
+{
+  "config_name": "tracks_df_9000_cfg0001",
+  "config_index": 1,
+  "source_csv": "tracks_df_9000.csv",
+  "source_csv_path": "C:\\Users\\oliverme\\OneDrive - UGent\\Documents\\PDP-Analysis-upstream\\scripts\\STREAMS_analysis_data_teledyne_IMEC\\Data_IMEC_04\\10_55_new\\10_55_new\\track_dataframes\\tracks_df_9000.csv",
+  "source_media_path": null,
+  "media_type": null,
+  "start_time": 8251,
+  "end_time": 8280,
+  "time_unit": "frames",
+  "fps": 15,
+  "start_time_seconds": 550.0667,
+  "target_length": 30,
+  "track_ids_original": [
+    7,
+    10
+  ],
+  "track_ids_reindexed": [
+    0,
+    1
+  ],
+  "track_classes": {
+    "7": "person",
+    "10": "person"
+  },
+  "scene_name": "10_55_new"
+}
