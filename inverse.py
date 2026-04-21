@@ -2452,88 +2452,6 @@ with advanced_col2:
         type="primary",
         help="Automatically generates 5 configurations using your current settings (PDP variant, buffer, roughness, threshold). Uses 50 iterations only for this button and shows the most deviating configurations with full analysis."
     )
-    generate_50_btn = st.button(
-        "Generate 200 & Show Top 25 (reinsertion)",
-        key="btn_generate_50",
-        help="Generates 200 configurations with 200 iterations each, using 8 timestamps from t=131 to t=138 (reinsertion zone). Shows the 25 most deviating configurations."
-    )
-    generate_ext30_btn = st.button(
-        "Generate 100 & Show Top 3 (with GIF)",
-        key="btn_generate_ext30",
-        help="Generates 100 configurations with 2500 iterations each. Shows the 3 most deviating configurations and lets you download an animated GIF of each."
-    )
-    generate_ext30_fe_btn = st.button(
-        "Generate 100 & Top 3 GIF (fixed endpoints)",
-        key="btn_generate_ext30_fe",
-        help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar de eerste en laatste timestamp per object worden NIET verplaatst. Ze fungeren als vaste ankerpunten."
-    )
-    generate_ext30_half_btn = st.button(
-        "100 configs × Top 3 (½ ts, sidebar-afhankelijk)",
-        key="btn_generate_ext30_half",
-        help="100 configs × 2500 iter | Gebruikt sidebar PDP-variant & step=2. Afhankelijk van sidebar-instellingen."
-    )
-    generate_half_ts_btn = st.button(
-        "100 configs × Top 10 (½ ts, eigen dataset)",
-        key="btn_generate_half_ts",
-        help="100 configs × 2500 iter | PDP fundamental | Bouwt zelf een gefilterde dataset (elke 2e timestamp + laatste). Onafhankelijk van sidebar."
-    )
-    generate_quarter_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (¼ ts, filtered)",
-        key="btn_generate_quarter_ts",
-        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 4e timestamp (0,4,8,...,136) + laatste (136). Tekent blauwe en oranje curves apart per object."
-    )
-    generate_eighth_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (⅛ ts, filtered)",
-        key="btn_generate_eighth_ts",
-        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 8e timestamp (0,8,16,...,136) + laatste (136). ±18 timestamps per object."
-    )
-    generate_sixteenth_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (1/16 ts, filtered)",
-        key="btn_generate_sixteenth_ts",
-        help="100 configs × 2500 iter | exponential | PDP fundamental | Houdt elke 16e timestamp (0,16,32,...,128) + laatste (136). ±9 timestamps per object."
-    )
-    generate_four_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (4 ts)",
-        key="btn_generate_four_ts",
-        help="100 configs × 2500 iter | exponential | PDP fundamental | Slechts 4 timestamps: 0, 46, 92, 136."
-    )
-    generate_two_ts_btn = st.button(
-        "Generate 100 & Top 10 GIF (2 ts)",
-        key="btn_generate_two_ts",
-        help="100 configs × 2500 iter | exponential | PDP fundamental | Slechts 2 timestamps: 0 en 136."
-    )
-    generate_c68_realistic_btn = st.button(
-        "C68 Realistic (multi-pt, buffer+rough)",
-        key="btn_generate_c68_realistic",
-        help="Config 68 | t=82..160 step 2 | Multiple points same direction | realistic (d0 buffer 5m, d1 rough 0.30m) | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
-    )
-    generate_c68_fundamental_btn = st.button(
-        "C68 Fundamental (single-pt, ext pts)",
-        key="btn_generate_c68_fundamental",
-        help="Config 68 | t=82..160 step 2 | Single point | fundamental | External pts at lane centers | 100 configs × 2500 iterations | Top 10"
-    )
-    generate_ext30_rough_btn = st.button(
-        "Generate 100 & Top 3 GIF (rough d0=d1=0.30m)",
-        key="btn_generate_ext30_rough",
-        help="Zelfde als 'Generate 100 & Show Top 3 (with GIF)' maar forceert rough d0=d1=0.30m ongeacht sidebar-instellingen."
-    )
-    generate_br_consec_btn = st.button(
-        "100 configs × Top 3 GIF (bufferrough, consec ts)",
-        key="btn_generate_br_consec",
-        help="100 configs × 2500 iter | early stopping | bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2-3) same direction | ALL timestamps"
-    )
-    generate_br_consec_rd_btn = st.button(
-        "100 configs × Top 3 GIF (bufferrough, consec ts, random dirs)",
-        key="btn_generate_br_consec_rd",
-        help="100 configs × 2500 iter | early stopping | bufferrough (buffer x/y=1m, rough x/y=0.30m) | Consecutive timestamps (2-3) RANDOM directions | ALL timestamps"
-    )
-    generate_recursive_6event_btn = st.button(
-        "🔄 Recursive 6-Event Generation",
-        key="btn_generate_recursive_6event",
-        help="Detects 6 overtake events (start, lane-change start/end, return start/end, last). "
-             "Generates recursively in batches of 100 configs — each batch starts from the best "
-             "result of the previous batch. Only the 6 event timestamps are used for generation and PDP comparison."
-    )
     generate_6ev_single_btn = st.button(
         "🎯 6-Event Single Iteration",
         key="btn_generate_6ev_single",
@@ -5720,137 +5638,12 @@ if generate_5000_btn:
     # Store in session state that we want to generate 5000
     st.session_state["_generate_5000_requested"] = True
 
-if generate_50_btn:
-    # Store in session state that we want to generate 50 configs (reinsertion)
-    st.session_state["_generate_50_requested"] = True
-    # Flag to apply reinsertion preset on next rerun (before widgets render)
-    st.session_state["_reinsertion_preset_pending"] = True
-    st.rerun()
-
-if generate_ext30_btn:
-    # Store in session state that we want to generate 100 configs x 2500 iterations
-    st.session_state["_generate_ext30_requested"] = True
-    # Ensure full timestamps: reset step to 1 and use all available timestamps
-    _needs_rerun = False
-    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
-        st.session_state["_cfg_timestamp_step"] = 1
-        _needs_rerun = True
-    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["_pending_cfg_k"] = n_timepoints
-        _needs_rerun = True
-    if _needs_rerun:
-        st.rerun()
-
-if generate_ext30_fe_btn:
-    st.session_state["_generate_ext30_fe_requested"] = True
-    _needs_rerun = False
-    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
-        st.session_state["_cfg_timestamp_step"] = 1
-        _needs_rerun = True
-    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["_pending_cfg_k"] = n_timepoints
-        _needs_rerun = True
-    if _needs_rerun:
-        st.rerun()
-
-if generate_ext30_half_btn:
-    # Same as ext30 but with step=2 (half timestamps)
-    st.session_state["_generate_ext30_half_requested"] = True
-    st.session_state["_ext30_half_preset_pending"] = True
-    st.rerun()
-
-if generate_c68_realistic_btn:
-    st.session_state["_generate_c68r_requested"] = True
-    st.session_state["_c68r_preset_pending"] = True
-    st.rerun()
-
-if generate_c68_fundamental_btn:
-    st.session_state["_generate_c68f_requested"] = True
-    st.session_state["_c68f_preset_pending"] = True
-    st.rerun()
-
-if generate_ext30_rough_btn:
-    st.session_state["_generate_ext30_rough_requested"] = True
-    _needs_rerun = False
-    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
-        st.session_state["_cfg_timestamp_step"] = 1
-        _needs_rerun = True
-    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["_pending_cfg_k"] = n_timepoints
-        _needs_rerun = True
-    if _needs_rerun:
-        st.rerun()
-
-if generate_br_consec_btn:
-    st.session_state["_generate_br_consec_requested"] = True
-    _needs_rerun = False
-    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
-        st.session_state["_cfg_timestamp_step"] = 1
-        _needs_rerun = True
-    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["_pending_cfg_k"] = n_timepoints
-        _needs_rerun = True
-    if _needs_rerun:
-        st.rerun()
-
-if generate_br_consec_rd_btn:
-    st.session_state["_generate_br_consec_rd_requested"] = True
-    _needs_rerun = False
-    if int(st.session_state.get("_cfg_timestamp_step", 1)) != 1:
-        st.session_state["_cfg_timestamp_step"] = 1
-        _needs_rerun = True
-    if int(st.session_state.get("cfg_k", 0)) != n_timepoints:
-        st.session_state["_pending_cfg_k"] = n_timepoints
-        _needs_rerun = True
-    if _needs_rerun:
-        st.rerun()
-
-if generate_recursive_6event_btn:
-    st.session_state["_generate_recursive_6event_requested"] = True
-    st.session_state["_generate_recursive_6event_results"] = None
-
 if generate_6ev_single_btn:
     st.session_state["_generate_6ev_single_requested"] = True
     st.session_state["_generate_6ev_single_results"] = None
     st.session_state["_6evs_batch_count"] = 1000  # start with 1000 iterations
     st.session_state.pop("_6evs_points_plot", None)
     st.session_state.pop("_6evs_vals_plot", None)
-
-if generate_half_ts_btn:
-    st.session_state["_generate_half_ts_requested"] = True
-    st.session_state["_generate_half_ts_results"] = None
-    st.session_state.pop("_hts_points_plot", None)
-    st.session_state.pop("_hts_vals_plot", None)
-
-if generate_quarter_ts_btn:
-    st.session_state["_generate_quarter_ts_requested"] = True
-    st.session_state["_generate_quarter_ts_results"] = None
-    st.session_state.pop("_qts_points_plot", None)
-    st.session_state.pop("_qts_vals_plot", None)
-
-if generate_eighth_ts_btn:
-    st.session_state["_generate_eighth_ts_requested"] = True
-    st.session_state["_generate_eighth_ts_results"] = None
-    st.session_state.pop("_ets_points_plot", None)
-    st.session_state.pop("_ets_vals_plot", None)
-
-if generate_sixteenth_ts_btn:
-    st.session_state["_generate_sixteenth_ts_requested"] = True
-    st.session_state["_generate_sixteenth_ts_results"] = None
-    st.session_state.pop("_sts_points_plot", None)
-    st.session_state.pop("_sts_vals_plot", None)
-
-if generate_four_ts_btn:
-    st.session_state["_generate_four_ts_requested"] = True
-    st.session_state["_generate_four_ts_results"] = None
-    st.session_state.pop("_fts_points_plot", None)
-    st.session_state.pop("_fts_vals_plot", None)
-
-if generate_two_ts_btn:
-    st.session_state["_generate_two_ts_requested"] = True
-    st.session_state["_generate_two_ts_results"] = None
-    st.session_state.pop("_tts_points_plot", None)
-    st.session_state.pop("_tts_vals_plot", None)
 
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
@@ -13080,6 +12873,156 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 f"{_6evs_gen_log['accumulated_sp']} total moved points, "
                 f"maxdist={_6evs_gen_log.get('maxdist_used', '?'):.4f}m"
             )
+
+    # ============= Density plots across ALL iterations =============
+    # Collect generated coordinates per object across every iteration.
+    from scipy.stats import gaussian_kde as _gaussian_kde  # noqa: E402
+
+    # Accumulate per-object coordinates across iterations (skip index 0 = original).
+    # Each stored result contains cumulative state up to that iteration.
+    _dens_pts: dict[int, list[tuple[float, float]]] = {oid: [] for oid in _6evs_sorted_oids}
+    _dens_offsets_x: list[float] = []
+    _dens_offsets_y: list[float] = []
+    for _d_iter_idx in range(1, len(_6evs_results)):
+        _d_cnum, _d_dev, _d_cfg = _6evs_results[_d_iter_idx]
+        _d_sp = _d_cfg.get("successful_points", [])
+        _d_gen_map: dict[int, np.ndarray] = {}
+        for _d_s in _d_sp:
+            _d_gen_map[int(_d_s["original_parent_idx"])] = np.asarray(_d_s["point"])
+
+        _d_gi = 0
+        for _d_oid in _6evs_sorted_oids:
+            n_pts = _6evs_pp[_d_oid].shape[0]
+            for _d_li in range(n_pts):
+                _d_fidx = _d_gi + _d_li
+                if _d_fidx in _d_gen_map:
+                    _d_pt = _d_gen_map[_d_fidx]
+                    _d_orig = _6evs_pp[_d_oid][_d_li]
+                    _dens_offsets_x.append(float(_d_pt[0] - _d_orig[0]))
+                    _dens_offsets_y.append(float(_d_pt[1] - _d_orig[1]))
+                else:
+                    _d_pt = _6evs_pp[_d_oid][_d_li]
+                _dens_pts[_d_oid].append((float(_d_pt[0]), float(_d_pt[1])))
+            _d_gi += n_pts
+
+    _dens_offset_std_x = np.std(_dens_offsets_x) if _dens_offsets_x else 1.0
+    _dens_offset_std_y = np.std(_dens_offsets_y) if _dens_offsets_y else 1.0
+    _dens_shared_bw = 0.15
+
+    def _draw_density_lanes(_ax: matplotlib.axes.Axes) -> None:
+        _d_show_lanes = st.session_state.get("_6evs_show_lanes", True)
+        if _d_show_lanes:
+            _d_lw = _6EVS_LANE_WIDTH
+            _d_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+            _d_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
+            _d_road_top = max(_d_l1c + _d_lw / 2, _d_l2c + _d_lw / 2)
+            _d_road_bot = min(_d_l1c - _d_lw / 2, _d_l2c - _d_lw / 2)
+            _ax.axhspan(_d_road_bot, _d_road_top, color="#A9A9A9", alpha=0.25, zorder=0)
+            _ax.axhline(_d_road_top, color="black", linewidth=1.0, linestyle="-", zorder=4)
+            _ax.axhline(_d_road_bot, color="black", linewidth=1.0, linestyle="-", zorder=4)
+            _d_div_y = (_d_l1c + _d_l2c) / 2.0
+            _ax.axhline(_d_div_y, color="white", linewidth=2.5, linestyle=(0, (5, 4)), zorder=4)
+
+    def _render_density(_ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray,
+                        title: str, cmap: str = "viridis") -> None:
+        _draw_density_lanes(_ax)
+        if len(xs) >= 3:
+            try:
+                _kde = _gaussian_kde(np.vstack([xs, ys]), bw_method=_dens_shared_bw)
+                _xi = np.linspace(_6evs_xlo, _6evs_xhi, 300)
+                _yi = np.linspace(_6evs_ylo, _6evs_yhi, 200)
+                _Xi, _Yi = np.meshgrid(_xi, _yi)
+                _Zi = _kde(np.vstack([_Xi.ravel(), _Yi.ravel()])).reshape(_Xi.shape)
+                _ax.pcolormesh(_Xi, _Yi, _Zi, cmap=cmap, shading="gouraud", zorder=1, alpha=0.8)
+            except np.linalg.LinAlgError:
+                pass
+        else:
+            _ax.scatter(xs, ys, s=12, alpha=0.9, zorder=2)
+        _ax.set_xlim(_6evs_xlo, _6evs_xhi)
+        _ax.set_ylim(_6evs_ylo, _6evs_yhi)
+        _ax.set_xlabel("d0 / x-axis (m)")
+        _ax.set_ylabel("d1 / y-axis (m)")
+        _ax.set_title(title, fontsize=9)
+        _ax.grid(True, alpha=0.3)
+
+    _dens_n_iters = len(_6evs_results) - 1
+    if _dens_n_iters >= 1:
+        st.markdown("---")
+        st.markdown(
+            f"### Density plots - {_dens_n_iters} cumulative iteration{'s' if _dens_n_iters != 1 else ''}"
+        )
+
+        _dens_k_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "k"]
+        _dens_l_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "l"]
+
+        _dens_k_x = np.array([p[0] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
+        _dens_k_y = np.array([p[1] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
+        _dens_l_x = np.array([p[0] for oid in _dens_l_oids for p in _dens_pts.get(oid, [])])
+        _dens_l_y = np.array([p[1] for oid in _dens_l_oids for p in _dens_pts.get(oid, [])])
+        _dens_all_x = np.concatenate([_dens_k_x, _dens_l_x]) if len(_dens_k_x) + len(_dens_l_x) > 0 else np.array([])
+        _dens_all_y = np.concatenate([_dens_k_y, _dens_l_y]) if len(_dens_k_y) + len(_dens_l_y) > 0 else np.array([])
+
+        _dens_k_max_pts = int(sum(_6evs_pp[oid].shape[0] for oid in _dens_k_oids) * _dens_n_iters)
+        _dens_l_max_pts = int(sum(_6evs_pp[oid].shape[0] for oid in _dens_l_oids) * _dens_n_iters)
+        _dens_all_max_pts = _dens_k_max_pts + _dens_l_max_pts
+
+        if len(_dens_all_x) >= 3:
+            _data_std_x = np.std(_dens_all_x) if np.std(_dens_all_x) > 1e-9 else 1.0
+            _data_std_y = np.std(_dens_all_y) if np.std(_dens_all_y) > 1e-9 else 1.0
+            _bw_x = max(_dens_offset_std_x / _data_std_x, 0.001)
+            _bw_y = max(_dens_offset_std_y / _data_std_y, 0.001)
+            _dens_shared_bw = max(float(np.sqrt(_bw_x * _bw_y)), 0.001)
+
+        if len(_dens_k_x) >= 1:
+            _fig_dk = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_dk = _fig_dk.add_subplot(111)
+            _render_density(
+                _ax_dk,
+                _dens_k_x,
+                _dens_k_y,
+                f"Density - k-objects ({len(_dens_k_x)}/{_dens_k_max_pts} positions across {_dens_n_iters} iterations)",
+                cmap="Blues",
+            )
+            _fig_dk.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_dk = io.BytesIO()
+            _fig_dk.savefig(_buf_dk, format="png", dpi=150)
+            _buf_dk.seek(0)
+            st.image(_buf_dk, use_container_width=True)
+            plt.close(_fig_dk)
+
+        if len(_dens_l_x) >= 1:
+            _fig_dl = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_dl = _fig_dl.add_subplot(111)
+            _render_density(
+                _ax_dl,
+                _dens_l_x,
+                _dens_l_y,
+                f"Density - l-objects ({len(_dens_l_x)}/{_dens_l_max_pts} positions across {_dens_n_iters} iterations)",
+                cmap="Oranges",
+            )
+            _fig_dl.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_dl = io.BytesIO()
+            _fig_dl.savefig(_buf_dl, format="png", dpi=150)
+            _buf_dl.seek(0)
+            st.image(_buf_dl, use_container_width=True)
+            plt.close(_fig_dl)
+
+        if len(_dens_all_x) >= 1:
+            _fig_da = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+            _ax_da = _fig_da.add_subplot(111)
+            _render_density(
+                _ax_da,
+                _dens_all_x,
+                _dens_all_y,
+                f"Density - k + l combined ({len(_dens_all_x)}/{_dens_all_max_pts} positions across {_dens_n_iters} iterations)",
+                cmap="viridis",
+            )
+            _fig_da.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.12)
+            _buf_da = io.BytesIO()
+            _fig_da.savefig(_buf_da, format="png", dpi=150)
+            _buf_da.seek(0)
+            st.image(_buf_da, use_container_width=True)
+            plt.close(_fig_da)
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
     _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4, _6evs_btn_col5 = st.columns([2, 1, 2, 2, 2])

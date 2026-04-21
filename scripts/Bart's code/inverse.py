@@ -93,6 +93,8 @@ DEFAULT_BUFFER_X: float = 25.0         # Default x-axis buffer margin
 DEFAULT_BUFFER_Y: float = 10.0         # Default y-axis buffer margin
 DEFAULT_MAXDIST_FALLBACK: float = 10.0 # Fallback max distance when no pairwise data
 CURVED_ROAD_CONFIGS: list[int] = [15, 17]  # S-curve config numbers for Frenet coords
+LANE_DRAW_WIDTH_M: float = 3.0
+LANE_DRAW_COUNT: int = 3
 
 # ============= Subscript digit helper =============
 _SUBSCRIPT_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
@@ -1011,9 +1013,9 @@ def _extract_centerline_from_data(c_value: int) -> np.ndarray | None:
             cross_products = vecs[:, 0] * unit_vec[1] - vecs[:, 1] * unit_vec[0]
             max_deviation = np.max(np.abs(cross_products))
             
-            # If deviation is small (e.g. < 5.0m), simplify to straight line
+            # If deviation is small, simplify to a straight line preserving slope.
             # Keep original start/end points to preserve the slope angle!
-            if max_deviation < 5.0:
+            if max_deviation < 1.5:
                 centerline = np.array([p_start, p_end])
     elif centerline.shape[0] == 2:
         pass # Already straight
@@ -1042,11 +1044,10 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     1. Vehicles traveling in same direction: creates parallel lanes
     2. Vehicles traveling in different directions: creates separate road segments with merge
     
-    Dynamically determines lane count based on max speed (>100 km/h = 3 lanes, else 2 lanes).
-    Positions slower vehicle on the rightmost lane.
+    Uses fixed geometry for visualization: 3 lanes of 3m width.
     """
-    if lane_count < 1:
-        return None
+    lane_width = LANE_DRAW_WIDTH_M
+    lane_count = LANE_DRAW_COUNT
     
     # Check if we have data and if vehicles are traveling in same direction
     if _df_all is None:
@@ -1059,11 +1060,10 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     lane_cfg: dict[str, Any] = LANE_CONFIGURATIONS.get(c_value, {})
     force_horizontal = bool(lane_cfg.get("force_horizontal", False))
     
-    # Calculate speeds to determine lane count and positioning
+    # Calculate speeds for lane positioning logic
     speeds = _calculate_vehicle_speeds(config_df)
-    max_speed = max(speeds.values()) if speeds else 0.0
     
-    # Check vehicle y-positions to determine if they span multiple lanes
+    # Check vehicle y-positions
     object_ids = sorted(config_df['o'].unique())
     vehicle_y_positions: dict[int, float] = {}
     for obj_id in object_ids:
@@ -1077,18 +1077,7 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
     else:
         y_span = 0.0
     
-    # Determine lane count based on:
-    # 1. Speed: >100 km/h suggests highway (3 lanes)
-    # 2. Y-span: if vehicles are separated by more than 1.5 * lane_width, need 3 lanes
-    # 3. Default: 2 lanes
-    needs_3_lanes: bool = (max_speed > 100.0) or (y_span > 1.5 * lane_width)
-    
-    if needs_3_lanes:
-        lane_count = 3
-        logger.debug(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 3 lanes")
-    else:
-        lane_count = 2
-        logger.debug(f"[LANE BUILD] Config {c_value}: max_speed={max_speed:.1f} km/h, y_span={y_span:.2f}m -> 2 lanes")
+    logger.debug(f"[LANE BUILD] Config {c_value}: fixed lane layout {lane_count} lanes x {lane_width:.1f}m, y_span={y_span:.2f}m")
     
     same_direction = _vehicles_same_direction(config_df)
     logger.debug(f"[LANE BUILD] Config {c_value}: same_direction={same_direction}")
@@ -1123,13 +1112,13 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
                     end_unit = np.array([1.0, 0.0])
                 
                 # Extend start if needed (using start tangent, going backwards)
-                if abs(start_unit[0]) > 1e-6 and xlim[0] < p1[0] - 0.1:
+                if abs(start_unit[0]) > 1e-6:
                     t_start = (xlim[0] - p1[0]) / start_unit[0]
                     new_start = p1 + t_start * start_unit
                     centerline = np.vstack([[new_start], centerline])
                 
                 # Extend end if needed (using end tangent, going forwards)
-                if abs(end_unit[0]) > 1e-6 and xlim[1] > p2[0] + 0.1:
+                if abs(end_unit[0]) > 1e-6:
                     t_end = (xlim[1] - p2[0]) / end_unit[0]
                     new_end = p2 + t_end * end_unit
                     centerline = np.vstack([centerline, [new_end]])
@@ -1239,6 +1228,22 @@ def _build_lane_polylines_from_data(c_value: int, lane_width: float, lane_count:
             
             if vehicle_path.shape[0] < 2:
                 continue
+
+            if xlim is not None:
+                vp_start = vehicle_path[0]
+                vp_end = vehicle_path[-1]
+                vp_dir = vp_end - vp_start
+                vp_norm = np.linalg.norm(vp_dir)
+                if vp_norm > 1e-6:
+                    vp_unit = vp_dir / vp_norm
+                    if abs(vp_unit[0]) > 1e-6:
+                        t_left = (xlim[0] - vp_start[0]) / vp_unit[0]
+                        t_right = (xlim[1] - vp_start[0]) / vp_unit[0]
+                        if t_left > t_right:
+                            t_left, t_right = t_right, t_left
+                        new_left = vp_start + t_left * vp_unit
+                        new_right = vp_start + t_right * vp_unit
+                        vehicle_path = np.array([new_left, new_right])
             
             # Position vehicle in the rightmost lane of its road
             # Vehicle is currently on the path, we need to shift the road so vehicle is in rightmost lane center
@@ -1390,8 +1395,8 @@ def _auto_detect_bounds_logic() -> bool:
                 _new_max_y = max(_new_max_y, float(y_bounds[1]))  # type: ignore[index]
 
             if lane_cfg.get("mode", "data_path") == "data_path":
-                lane_width = float(lane_cfg.get("lane_width", 3.0))  # type: ignore[arg-type]
-                lane_count = int(lane_cfg.get("lanes", 3))  # type: ignore[arg-type]
+                lane_width = LANE_DRAW_WIDTH_M
+                lane_count = LANE_DRAW_COUNT
                 lane_polylines = _build_lane_polylines_from_data(_detect_c, lane_width, lane_count)
                 poly_bounds = _lane_polylines_bounds(lane_polylines) if lane_polylines else None
                 if poly_bounds:
@@ -2431,6 +2436,76 @@ volledig doorlopen.
   die toch geen effect meer zouden hebben.
 - Na afloop toont de timing-balk hoeveel iteraties er daadwerkelijk gebruikt zijn en hoeveel procent bespaard is.
 """)
+
+# 6-event settings are shown directly under the early stopping section,
+# above the advanced generation buttons.
+_6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+_cfg_v_gen_top = st.session_state.get("cfg_pdp_variants", [])
+_gen_variant_top = "fundamental"
+for _cv_g_top in (_cfg_v_gen_top if _cfg_v_gen_top else []):
+    if _cv_g_top in _6evs_pv_opts:
+        _gen_variant_top = _cv_g_top
+        break
+if "_6evs_pdp_variant" not in st.session_state:
+    st.session_state["_6evs_pdp_variant"] = _gen_variant_top
+if "_6evs_buffer_x" not in st.session_state:
+    st.session_state["_6evs_buffer_x"] = st.session_state.get("cfg_buffer_x", 1.5)
+if "_6evs_buffer_y" not in st.session_state:
+    st.session_state["_6evs_buffer_y"] = st.session_state.get("cfg_buffer_y", 0.0)
+if "_6evs_rough_x" not in st.session_state:
+    st.session_state["_6evs_rough_x"] = st.session_state.get("cfg_rough_x", 0.0)
+if "_6evs_rough_y" not in st.session_state:
+    st.session_state["_6evs_rough_y"] = st.session_state.get("cfg_rough_y", 0.4)
+
+with st.expander("⚙️ 6-Event generation settings", expanded=False):
+    _6evs_top_c1, _6evs_top_c2, _6evs_top_c2b, _6evs_top_c3, _6evs_top_c4 = st.columns([1, 1, 1, 1, 1], gap="small")
+    with _6evs_top_c1:
+        st.selectbox(
+            "PDP variant",
+            options=_6evs_pv_opts,
+            key="_6evs_pdp_variant",
+            help="PDP variant used to accept/reject moves for 6-event generation.",
+        )
+    with _6evs_top_c2:
+        st.number_input(
+            "Buffer X (d0)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(st.session_state.get("_6evs_buffer_x", 1.5)),
+            step=0.1,
+            format="%.1f",
+            key="_6evs_buffer_x",
+        )
+    with _6evs_top_c2b:
+        st.number_input(
+            "Buffer Y (d1)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(st.session_state.get("_6evs_buffer_y", 0.0)),
+            step=0.1,
+            format="%.1f",
+            key="_6evs_buffer_y",
+        )
+    with _6evs_top_c3:
+        st.number_input(
+            "Rough X (d0)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(st.session_state.get("_6evs_rough_x", 0.0)),
+            step=0.05,
+            format="%.2f",
+            key="_6evs_rough_x",
+        )
+    with _6evs_top_c4:
+        st.number_input(
+            "Rough Y (d1)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(st.session_state.get("_6evs_rough_y", 0.4)),
+            step=0.05,
+            format="%.2f",
+            key="_6evs_rough_y",
+        )
 
 advanced_col1, advanced_col2 = st.columns([3, 1], gap="small")
 with advanced_col1:
@@ -7039,88 +7114,24 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
     _6evs_n_ts_total = sum(_6evs_n_ts_per_obj.values())
     _6evs_ts_info = ", ".join(f"obj {oid}: {n} timestamps" for oid, n in _6evs_n_ts_per_obj.items())
 
-    # ---- Always sync from general sidebar BEFORE widget instantiation ----
-    _6evs_pv_opts = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
+    # Read 6-event settings from the controls shown near the generation buttons.
     _cfg_v_gen = st.session_state.get("cfg_pdp_variants", [])
     _gen_variant = "fundamental"
     for _cv_g in (_cfg_v_gen if _cfg_v_gen else []):
-        if _cv_g in _6evs_pv_opts:
+        if _cv_g in ("fundamental", "realistic", "buffer", "rough", "bufferrough"):
             _gen_variant = _cv_g
             break
+
     _gen_bx = st.session_state.get("cfg_buffer_x", 1.5)
     _gen_by = st.session_state.get("cfg_buffer_y", 0.0)
     _gen_rx = st.session_state.get("cfg_rough_x", 0.0)
     _gen_ry = st.session_state.get("cfg_rough_y", 0.4)
-    _gen_sig = (_gen_variant, _gen_bx, _gen_by, _gen_rx, _gen_ry)
-    # ALWAYS write: ensures the selectbox starts with the sidebar value.
-    st.session_state["_6evs_pdp_variant"] = _gen_variant
-    st.session_state["_6evs_buffer_x"] = _gen_bx
-    st.session_state["_6evs_buffer_y"] = _gen_by
-    st.session_state["_6evs_rough_x"] = _gen_rx
-    st.session_state["_6evs_rough_y"] = _gen_ry
-    st.session_state["_6evs_prev_general_sig"] = _gen_sig
-    st.session_state["_6evs_prev_general_variant"] = _gen_variant
 
-    # ------ User-tuneable generation parameters ------
-    with st.expander("⚙️ Generation settings", expanded=False):
-        _6evs_pcol1, _6evs_pcol2, _6evs_pcol2b, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1, 1], gap="small")
-        with _6evs_pcol1:
-            _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
-            # Sync already happened before generation (unconditional sync block above)
-
-            _6evs_pdp_variant = st.selectbox(
-                "PDP variant",
-                options=_6evs_pdp_variant_options,
-                key="_6evs_pdp_variant",
-                help="PDP variant used to accept/reject moves.\n\n"
-                     "• **fundamental**: strict ordering, no tolerance\n"
-                     "• **realistic**: buffer on d0 + roughness on d1 (recommended for traffic)\n"
-                     "• **buffer/rough/bufferrough**: manual control",
-            )
-        with _6evs_pcol2:
-            _6evs_buffer_x = st.number_input(
-                "Buffer X (d0)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_buffer_x", 1.5),
-                step=0.1, format="%.1f",
-                key="_6evs_buffer_x",
-                help="Tolerance on longitudinal (driving-direction) ordering. "
-                     "Points within this distance are considered equivalent in d0. "
-                     "Only used by buffer/bufferrough variants.",
-            )
-        with _6evs_pcol2b:
-            _6evs_buffer_y = st.number_input(
-                "Buffer Y (d1)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_buffer_y", 0.0),
-                step=0.1, format="%.1f",
-                key="_6evs_buffer_y",
-                help="Tolerance on lateral (cross-lane) ordering. "
-                     "Points within this distance are considered equivalent in d1. "
-                     "Only used by buffer/bufferrough variants.",
-            )
-        with _6evs_pcol3:
-            _6evs_rough_x = st.number_input(
-                "Rough X (d0)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_rough_x", 0.0),
-                step=0.05, format="%.2f",
-                key="_6evs_rough_x",
-                help="Equality tolerance on longitudinal ordering. "
-                     "Points within this distance are treated as equal in d0. "
-                     "Only used by rough/bufferrough variants.",
-            )
-        with _6evs_pcol4:
-            _6evs_rough_y = st.number_input(
-                "Rough Y (d1)",
-                min_value=0.0, max_value=100.0,
-                value=st.session_state.get("_6evs_rough_y", 0.4),
-                step=0.05, format="%.2f",
-                key="_6evs_rough_y",
-                help="Equality tolerance on lateral ordering. "
-                     "Points within this distance are treated as equal in d1. "
-                     "Only used by rough/bufferrough/realistic variants.",
-            )
+    _6evs_pdp_variant = st.session_state.get("_6evs_pdp_variant") or _gen_variant
+    _6evs_buffer_x = float(st.session_state.get("_6evs_buffer_x", _gen_bx))
+    _6evs_buffer_y = float(st.session_state.get("_6evs_buffer_y", _gen_by))
+    _6evs_rough_x = float(st.session_state.get("_6evs_rough_x", _gen_rx))
+    _6evs_rough_y = float(st.session_state.get("_6evs_rough_y", _gen_ry))
 
     _6evs_settings = {
         "PDP variant": _6evs_pdp_variant,
@@ -13532,8 +13543,8 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
         _draw_intersection_lanes_matplotlib(ax, lane_cfg, xlim, ylim)
         return
 
-    lane_width = float(lane_cfg.get("lane_width", 3.0))  # type: ignore[arg-type]
-    lane_count = int(lane_cfg.get("lanes", 3))  # type: ignore[arg-type]
+    lane_width = LANE_DRAW_WIDTH_M
+    lane_count = LANE_DRAW_COUNT
     offset = float(lane_cfg.get("offset", 0.0))  # type: ignore[arg-type]
 
     # NOTE: Offset is now calculated dynamically inside _build_lane_polylines_from_data()
@@ -13546,10 +13557,10 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
         logger.debug("[INFER_LANES] No lane polylines returned")
         return
 
-    road_color = "#A9A9A9"
-    road_alpha = 0.35
+    road_color = "#FFFFFF"
+    road_alpha = 1.0
     edge_line_color = "black"
-    center_line_color = "white"
+    center_line_color = "black"
     lane_line_width = 1.0
     center_line_width = 1.2
 
@@ -13583,7 +13594,7 @@ def infer_and_draw_lanes(ax: matplotlib.axes.Axes, xlim: Tuple[float, float], yl
             color=center_line_color,
             linewidth=center_line_width,
             linestyle="--",
-            dashes=(10, 10),
+            dashes=(10, 6),
             alpha=1.0,
             zorder=1,
         )
@@ -13990,16 +14001,16 @@ def add_lane_markings_to_figure(fig: go.Figure, c_value: int, xlim: tuple[float,
     if not lane_cfg:
         return fig
 
-    lane_color = "rgba(169, 169, 169, 0.35)"
+    lane_color = "rgba(255, 255, 255, 1)"
     edge_color = "rgba(0, 0, 0, 1)"
-    dashed_color = "rgba(255, 255, 255, 1)"
+    dashed_color = "rgba(0, 0, 0, 1)"
 
     mode = lane_cfg.get("mode", "data_path")
     if mode == "intersection":
         return _add_intersection_lanes(fig, lane_cfg, lane_color, edge_color, dashed_color, xlim, ylim)
 
-    lane_width = float(lane_cfg.get("lane_width", 3.0))  # type: ignore[arg-type]
-    lane_count = int(lane_cfg.get("lanes", 3))  # type: ignore[arg-type]
+    lane_width = LANE_DRAW_WIDTH_M
+    lane_count = LANE_DRAW_COUNT
     offset = float(lane_cfg.get("offset", 0.0))  # type: ignore[arg-type]
 
     # Dynamic offset for single-object configurations: force object to rightmost (bottom) lane
