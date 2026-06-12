@@ -7,7 +7,7 @@ COORD_DISPLAY_PRECISION = 2   # Decimal places for UI display (hover text, statu
 COORD_CSV_PRECISION = 3       # Decimal places for CSV export (3 digits after decimal point)
 
 # ============= Object Labels for Display =============
-OBJECT_LABELS = ["k", "l", "m", "n", "p", "q", "r", "s", "u", "v"]
+OBJECT_LABELS = ["A", "B", "m", "n", "p", "q", "r", "s", "u", "v"]
 
 # Type definition for successful point data in the search process
 class SuccessfulPoint(TypedDict):

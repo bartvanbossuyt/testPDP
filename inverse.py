@@ -15,6 +15,7 @@ import io
 import logging
 import time
 import traceback
+import zipfile
 from PIL import Image as PILImage
 
 import numpy as np
@@ -36,6 +37,7 @@ from pdp_utils.core import (
     OBJECT_LABELS,
     SuccessfulPoint,
     IncrementalPDPChecker,
+    compute_inequality_matrix,
 )
 from pdp_utils.config import LANE_CONFIGURATIONS
 from pdp_utils.data_loading import to_numeric_series, extract_points_from_df
@@ -105,8 +107,25 @@ def _subscript(n: int) -> str:
 _CAR_LENGTH = 4.5   # typical car length along driving direction (x)
 _CAR_WIDTH  = 1.8   # typical car width perpendicular to driving direction (y)
 
-# ---- 6-event lane width override (metres) ----
-_6EVS_LANE_WIDTH = 3.7  # lane width used in all 6-event logic
+# ---- 6-event lane width (single source: config 68) ----
+_6EVS_LANE_WIDTH = float(LANE_CONFIGURATIONS.get(68, {}).get("lane_width", 3.5))
+
+
+def _snap_ext_points_to_road_edges(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Snap external-point y-values to the nearest 6-event road edge."""
+    if not points:
+        return points
+    # Read lane width directly from config (not cached constant) to ensure latest value
+    lane_width = float(LANE_CONFIGURATIONS.get(68, {}).get("lane_width", 3.7))
+    l1c = float(st.session_state.get("_6evs_lane1_center", 0.0))
+    l2c = float(st.session_state.get("_6evs_lane2_center", -lane_width))
+    road_top = max(l1c + lane_width / 2.0, l2c + lane_width / 2.0)
+    road_bot = min(l1c - lane_width / 2.0, l2c - lane_width / 2.0)
+    snapped: list[tuple[float, float]] = []
+    for x, y in points:
+        y_snapped = road_top if abs(y - road_top) <= abs(y - road_bot) else road_bot
+        snapped.append((float(x), float(y_snapped)))
+    return snapped
 
 
 def _draw_car_rect(
@@ -118,8 +137,28 @@ def _draw_car_rect(
     alpha: float = 1.0,
     zorder: int = 5,
     linewidth: float = 1.5,
+    front_back: tuple[tuple[float, float], tuple[float, float]] | None = None,
 ) -> None:
-    """Draw an unfilled rectangle centred on (*cx*, *cy*) representing a car."""
+    """Draw a car marker centred on (*cx*, *cy*).
+
+    Default (``front_back=None``): unfilled rectangle of ``_CAR_LENGTH`` × ``_CAR_WIDTH``.
+
+    Front/back mode (``front_back=((fx, fy), (bx, by))``): draw two markers (front
+    as a small triangle, back as a small square) connected by a line segment.
+    Used when the user selects "Front+Back (1 vehicle)" representation.
+    """
+    if front_back is not None:
+        (fx, fy), (bx, by) = front_back
+        # Connecting line between back and front.
+        ax.plot([bx, fx], [by, fy],
+                color=color, linewidth=linewidth, alpha=alpha, zorder=zorder)
+        # Back marker (square) and front marker (triangle pointing along heading).
+        ax.scatter([bx], [by], marker='s', s=28, color=color,
+                   alpha=alpha, zorder=zorder + 1, edgecolors='none')
+        ax.scatter([fx], [fy], marker='^', s=36, color=color,
+                   alpha=alpha, zorder=zorder + 1, edgecolors='none')
+        return
+
     rect = matplotlib.patches.Rectangle(
         (cx - _CAR_LENGTH / 2, cy - _CAR_WIDTH / 2),
         _CAR_LENGTH, _CAR_WIDTH,
@@ -129,6 +168,81 @@ def _draw_car_rect(
     ax.add_patch(rect)
 
 
+def _vehicle_repr_mode() -> str:
+    """Current vehicle representation mode from session state.
+
+    Returns one of: ``"centroid"`` (default), ``"front_back_1obj"``,
+    ``"front_back_2obj"``.
+    """
+    return str(st.session_state.get("cfg_vehicle_repr", "centroid"))
+
+
+def _compute_endpoints_for_config(
+    config_df: pd.DataFrame,
+) -> dict[tuple[int, float], tuple[tuple[float, float], tuple[float, float]]]:
+    """Build a (obj_id, t) → ((front_x, front_y), (back_x, back_y)) lookup.
+
+    Uses explicit ``x_front, y_front, x_back, y_back`` columns when present on the
+    row; otherwise falls back to centroid ± (_CAR_LENGTH/2) along the object's
+    driving direction (from :func:`_determine_driving_direction`).
+    """
+    out: dict[tuple[int, float], tuple[tuple[float, float], tuple[float, float]]] = {}
+    if config_df is None or config_df.empty:
+        return out
+    half = _CAR_LENGTH / 2.0
+    has_explicit = all(c in config_df.columns for c in _FB_COLS)
+    obj_ids = sorted(int(o) for o in config_df["o"].unique().tolist())
+    headings: dict[int, np.ndarray] = {
+        oid: _determine_driving_direction(config_df, oid) for oid in obj_ids
+    }
+    for _, row in config_df.iterrows():
+        oid = int(row["o"])
+        t = float(row["t"])
+        cx = float(row["x"])
+        cy = float(row["y"])
+        fx = fy = bx = by = None
+        if has_explicit:
+            fx_r = row.get("x_front"); fy_r = row.get("y_front")
+            bx_r = row.get("x_back");  by_r = row.get("y_back")
+            if all(pd.notna(v) for v in (fx_r, fy_r, bx_r, by_r)):
+                fx, fy = float(fx_r), float(fy_r)
+                bx, by = float(bx_r), float(by_r)
+        if fx is None:
+            h = headings.get(oid, np.array([1.0, 0.0]))
+            fx, fy = cx + float(h[0]) * half, cy + float(h[1]) * half
+            bx, by = cx - float(h[0]) * half, cy - float(h[1]) * half
+        out[(oid, t)] = ((fx, fy), (bx, by))
+    return out
+
+
+def _get_endpoints(
+    obj_id: int | float | None,
+    t_val: float | None,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Look up front/back endpoints for (obj_id, t_val) from session-state cache.
+
+    Returns ``None`` when the cache is missing, mode isn't ``front_back_1obj``,
+    or no matching entry exists.
+    """
+    if _vehicle_repr_mode() != "front_back_1obj":
+        return None
+    if obj_id is None or t_val is None:
+        return None
+    cache = st.session_state.get("_endpoints_by_ot")
+    if not isinstance(cache, dict) or not cache:
+        return None
+    key = (int(obj_id), float(t_val))
+    fb = cache.get(key)
+    if fb is not None:
+        return fb
+    # Fallback: tolerant match on rounded t to handle float quirks.
+    key_r = (int(obj_id), round(float(t_val), 6))
+    for (k_oid, k_t), v in cache.items():
+        if k_oid == int(obj_id) and round(float(k_t), 6) == key_r[1]:
+            return v
+    return None
+
+
 
 st.set_page_config(
     page_title="pdp inverse",
@@ -136,6 +250,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ============= One-time settings migration =============
+# Force dimensional/directional scaling OFF and allow 360° random directions
+# (override any stale session-state values from earlier app versions).
+_SETTINGS_VERSION = "v2_no_constraints"
+if st.session_state.get("_settings_version") != _SETTINGS_VERSION:
+    st.session_state["cfg_constrain_horizontal"] = False
+    st.session_state["_6evs_dir_scaling_enabled"] = False
+    st.session_state["_settings_version"] = _SETTINGS_VERSION
 
 # ============= Authentication =============
 def check_password():
@@ -310,8 +433,23 @@ def load_points(csv_name: str = "voorbeeld.csv", o_val: int = 0, c_val: int = 11
     return pts, ts
 
 # ============= Settings (configuration and time window) ============
+# Optional front/back column names (CSV may include these to give explicit
+# per-(o, t) endpoint coordinates instead of relying on heading-derived ones).
+_FB_COLS: tuple[str, ...] = ("x_front", "y_front", "x_back", "y_back")
+# Aliases accepted on upload (lowercased keys -> canonical name).
+_FB_COL_ALIASES: dict[str, str] = {
+    "xfront": "x_front", "x_front": "x_front", "front_x": "x_front", "fx": "x_front",
+    "yfront": "y_front", "y_front": "y_front", "front_y": "y_front", "fy": "y_front",
+    "xback": "x_back",  "x_back":  "x_back",  "back_x":  "x_back",  "bx": "x_back",
+    "yback": "y_back",  "y_back":  "y_back",  "back_y":  "y_back",  "by": "y_back",
+}
+
 def _read_clean_df(csv_name: str) -> pd.DataFrame:
-    """Read the CSV once into a clean DataFrame for sidebar settings."""
+    """Read the CSV once into a clean DataFrame for sidebar settings.
+
+    Required columns: c, t, o, x, y.
+    Optional columns: x_front, y_front, x_back, y_back (left as NaN when absent).
+    """
     csv_path = Path(__file__).with_name(csv_name)
     with csv_path.open("r", encoding="utf-8") as fh:
         first = fh.readline().strip()
@@ -330,6 +468,10 @@ def _read_clean_df(csv_name: str) -> pd.DataFrame:
             )
     for col in names:
         df[col] = to_numeric_series(df[col])
+    # Optional front/back columns: coerce to numeric if present, leave alone otherwise.
+    for col in _FB_COLS:
+        if col in df.columns:
+            df[col] = to_numeric_series(df[col])
     df = df.dropna(subset=names)  # type: ignore
     df = df.reset_index(drop=True)
     return df  # type: ignore[return-value]
@@ -350,7 +492,7 @@ data_source = st.radio(
 
 • **Preset configurations**: Load from the built-in 'voorbeeld.csv' file containing 11 predefined configurations.
 
-• **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=k, 1=l), x/y=coordinates.
+• **Upload custom file**: Upload your own CSV file with columns (c, t, o, x, y) where c=configuration ID, t=timestamp, o=object type (0=A, 1=B), x/y=coordinates.
 
 • **Create random configuration**: Generate a random configuration with specified number of points and timestamps. You can then interactively edit the coordinates."""
 )
@@ -381,7 +523,7 @@ elif data_source == "Upload custom file":
         "Upload CSV file",
         type=["csv"],
         key="uploaded_csv",
-        help="Upload a CSV file with columns: c (configuration ID), t (timestamp), o (object: 0=k, 1=l), x (x-coordinate), y (y-coordinate). The file can have a header row or start with 'header: c,t,o,x,y'."
+        help="Upload a CSV file with required columns: c (configuration ID), t (timestamp), o (object: 0=A, 1=B), x (x-coordinate), y (y-coordinate). Optional front/back columns: x_front, y_front, x_back, y_back (used when 'Vehicle representation' is set to Front+Back). The file can have a header row or start with 'header: c,t,o,x,y'."
     )
     
     if uploaded_file is not None:
@@ -398,6 +540,8 @@ elif data_source == "Upload custom file":
                 "tstid": "t", "timestamp": "t", "time": "t",
                 "poiid": "o", "objectid": "o", "object": "o", "obj": "o",
             }
+            # Merge front/back aliases on top of base aliases.
+            _col_aliases.update(_FB_COL_ALIASES)
             if first_line.startswith("header:"):
                 # Skip header line
                 from io import StringIO
@@ -416,6 +560,10 @@ elif data_source == "Upload custom file":
             # Clean the dataframe
             for col in names:
                 _df_all[col] = pd.to_numeric(_df_all[col], errors="coerce")  # type: ignore[assignment]
+            # Optional front/back columns: coerce if present, otherwise leave absent.
+            for col in _FB_COLS:
+                if col in _df_all.columns:
+                    _df_all[col] = pd.to_numeric(_df_all[col], errors="coerce")  # type: ignore[assignment]
             _df_all = _df_all.dropna(subset=names)  # type: ignore[assignment]
             _df_all = _df_all.reset_index(drop=True)
             
@@ -536,7 +684,7 @@ elif data_source == "Create random configuration":
     # Display editors in columns to make them narrower
     cols = st.columns(stored_num_points)
     for p in range(stored_num_points):
-        point_label = chr(ord('k') + p) if p < 26 else f"p{p}"  # k, l, m, n, ... or p0, p1, ...
+        point_label = OBJECT_LABELS[p] if p < len(OBJECT_LABELS) else f"obj_{p}"
         coords = all_coords.get(p, [(50.0, 50.0)])
         
         with cols[p]:
@@ -1498,8 +1646,97 @@ with sc1:
         st.markdown(f"**Configuration:** {selected_c}")
 selected_c_int: int = int(selected_c) if selected_c is not None else int(available_configs[0])
 
+with sc1:
+    _VEHICLE_REPR_OPTIONS: list[str] = [
+        "Centroid",
+        "Front+Back (1 vehicle)",
+        "Front+Back (2 separate objects)",
+    ]
+    _VEHICLE_REPR_KEYS: dict[str, str] = {
+        "Centroid": "centroid",
+        "Front+Back (1 vehicle)": "front_back_1obj",
+        "Front+Back (2 separate objects)": "front_back_2obj",
+    }
+    # Backward-compat: if the old checkbox key is set in session_state, seed the radio.
+    if "cfg_vehicle_repr_label" not in st.session_state:
+        if st.session_state.get("cfg_use_front_back", False):
+            st.session_state["cfg_vehicle_repr_label"] = "Front+Back (2 separate objects)"
+        else:
+            st.session_state["cfg_vehicle_repr_label"] = "Centroid"
+    _vehicle_repr_label = st.radio(
+        "Vehicle representation",
+        options=_VEHICLE_REPR_OPTIONS,
+        key="cfg_vehicle_repr_label",
+        help=(
+            "Choose how each vehicle is represented in plots and (for the legacy "
+            f"mode) downstream PDP analysis. The half-length offset is "
+            f"_CAR_LENGTH/2 = {_CAR_LENGTH/2:.2f} m.\n\n"
+            "• **Centroid** — one point per (o, t) from the CSV `x`,`y` columns. "
+            "Default behaviour.\n\n"
+            "• **Front+Back (1 vehicle)** — each vehicle is shown as a front + back "
+            "point connected by a line, derived from explicit `x_front,y_front,"
+            "x_back,y_back` CSV columns when present, otherwise from centroid ± "
+            "heading. *Phase 1: only affects the drawing — distance / PDP / frenet / "
+            "lane still use the centroid.*\n\n"
+            "• **Front+Back (2 separate objects)** — legacy: each centroid is split "
+            "into two independent objects (back keeps obj_id, front gets obj_id + "
+            "N). Downstream analysis treats them as separate vehicles."
+        ),
+    )
+    st.session_state["cfg_vehicle_repr"] = _VEHICLE_REPR_KEYS.get(
+        _vehicle_repr_label, "centroid"
+    )
+    # Keep legacy bool in sync so the existing split-into-2-objects block still fires.
+    st.session_state["cfg_use_front_back"] = (
+        st.session_state["cfg_vehicle_repr"] == "front_back_2obj"
+    )
+
+    # Invalidate cached 6-event point snapshots when the vehicle representation
+    # changes, so the matrices rebuild against the new (split/un-split) object set.
+    _prev_vehicle_repr = st.session_state.get("_prev_cfg_vehicle_repr", None)
+    _curr_vehicle_repr = st.session_state["cfg_vehicle_repr"]
+    if _prev_vehicle_repr is not None and _prev_vehicle_repr != _curr_vehicle_repr:
+        st.session_state.pop("_6evs_points_plot", None)
+        st.session_state.pop("_6evs_vals_plot", None)
+    st.session_state["_prev_cfg_vehicle_repr"] = _curr_vehicle_repr
+
 # Gather data for the selected configuration
 config_df = _df_all[_df_all["c"] == selected_c_int]
+
+# Optionally split each centroid (o, t) into two points: back (original o) and front (o + N).
+# Direction comes from _determine_driving_direction(config_df, o) — first-to-last timestamp.
+if st.session_state.get("cfg_use_front_back", False) and not config_df.empty:
+    _orig_obj_ids = sorted(config_df["o"].unique().tolist())  # type: ignore[attr-defined]
+    if _orig_obj_ids:
+        _id_offset = int(max(_orig_obj_ids)) + 1
+        _half_len = _CAR_LENGTH / 2.0
+        # Precompute one driving direction per original obj_id (unit vector).
+        _obj_dirs: dict[int, np.ndarray] = {
+            int(_o): _determine_driving_direction(config_df, int(_o)) for _o in _orig_obj_ids
+        }
+        _back_df = config_df.copy()
+        _front_df = config_df.copy()
+        for _o, _dir in _obj_dirs.items():
+            _mask = _back_df["o"] == _o
+            _dx = float(_dir[0]) * _half_len
+            _dy = float(_dir[1]) * _half_len
+            _back_df.loc[_mask, "x"] = _back_df.loc[_mask, "x"] - _dx
+            _back_df.loc[_mask, "y"] = _back_df.loc[_mask, "y"] - _dy
+            _front_df.loc[_mask, "x"] = _front_df.loc[_mask, "x"] + _dx
+            _front_df.loc[_mask, "y"] = _front_df.loc[_mask, "y"] + _dy
+            _front_df.loc[_mask, "o"] = _o + _id_offset
+        config_df = pd.concat([_back_df, _front_df], ignore_index=True).sort_values(
+            ["o", "t"]
+        ).reset_index(drop=True)
+
+# Build the per-(o, t) front/back endpoints cache used by drawing helpers
+# when the vehicle representation is "Front+Back (1 vehicle)". For other
+# modes the cache is cleared so _get_endpoints returns None.
+if _vehicle_repr_mode() == "front_back_1obj" and not config_df.empty:
+    st.session_state["_endpoints_by_ot"] = _compute_endpoints_for_config(config_df)
+else:
+    st.session_state["_endpoints_by_ot"] = {}
+
 all_object_ids: list[int] = sorted(config_df["o"].unique().tolist())  # type: ignore[attr-defined]
 
 # Time values per object (supports single-object configurations)
@@ -1716,6 +1953,15 @@ with sc6:
         help="How many independent configurations to create when clicking 'Generate configurations'. Each configuration is a complete new set of generated points (all k and l points) that preserves the original PDP pattern. Use this for batch generation without animation."
     )
 with sc7:
+    if "cfg_strict_order_match" not in st.session_state:
+        st.session_state["cfg_strict_order_match"] = True
+    strict_order_match = st.checkbox(
+        "Require identical order match",
+        value=bool(st.session_state.get("cfg_strict_order_match", True)),
+        key="cfg_strict_order_match",
+        help="ON (default): enforce exact match (100%, 0 mismatches). Turn OFF only when you explicitly want relaxed matching.",
+    )
+
     # Match threshold selection - two modes: percentage or absolute
     threshold_mode = st.radio(
         "Match threshold",
@@ -1723,10 +1969,16 @@ with sc7:
         index=0,
         horizontal=True,
         key="cfg_threshold_mode",
+        disabled=strict_order_match,
         help="Percentage: require X% match. Max mismatches: allow up to N differing cells."
     )
-    
-    if threshold_mode == "Percentage":
+
+    if strict_order_match:
+        st.caption("Strict mode active: exact PDP order match is required (effective threshold: 100%, 0 mismatches).")
+
+    _threshold_mode_ui = "Percentage" if strict_order_match else threshold_mode
+
+    if _threshold_mode_ui == "Percentage":
         threshold_pct = st.slider(
             "Match %",
             min_value=25,
@@ -1734,6 +1986,7 @@ with sc7:
             value=100,
             step=5,
             key="cfg_threshold_pct",
+            disabled=strict_order_match,
             help="Minimum percentage of cells that must match (100% = strict, lower = permissive)"
         )
     else:
@@ -1744,6 +1997,7 @@ with sc7:
             value=0,
             step=1,
             key="cfg_threshold_abs",
+            disabled=strict_order_match,
             help="Maximum number of differing cells allowed between original and generated heatmaps (0 = strict)"
         )
 
@@ -1764,7 +2018,7 @@ with st.expander("Advanced Point Selection", expanded=False):
 
 • **Multiple random points**: Move N randomly selected points together
 
-• **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (k, l, or random) and the starting timestamp, then T consecutive timestamps are moved together."""
+• **Consecutive time stamps**: Move consecutive timestamps of a single object. Select which object (A, B, or random) and the starting timestamp, then T consecutive timestamps are moved together."""
         )
     
     with ps_col2:
@@ -1778,6 +2032,12 @@ with st.expander("Advanced Point Selection", expanded=False):
 • **Same direction**: All points move with the same angle and distance (coherent movement)
 
 • **Random directions**: Each point gets its own random angle and distance (independent movement)"""
+        )
+        constrain_horizontal = st.checkbox(
+            "Constrain direction to horizontal (2–4 or 8–10 o'clock)",
+            value=False,
+            key="cfg_constrain_horizontal",
+            help="When enabled, random movement vectors are constrained to point roughly horizontally: between 2 and 4 o'clock (rightward, ±30°) or between 8 and 10 o'clock (leftward, ±30°). Disable for fully random 360° directions."
         )
     
     # Damping factor settings
@@ -1848,8 +2108,8 @@ with st.expander("Advanced Point Selection", expanded=False):
                 options=object_options,
                 index=0,
                 key="cfg_consecutive_object",
-                help="Select which object's points to move (k, l, etc.). "
-                     "'random' picks k or l randomly at the start of each iteration."
+                 help="Select which object's points to move (A, B, etc.). "
+                     "'random' picks A or B randomly at the start of each iteration."
             )
             # Convert label back to object id (-1 signals random)
             if selected_object_label == "random":
@@ -1877,15 +2137,24 @@ with st.expander("Advanced Point Selection", expanded=False):
         
         with gp_col3:
             # First timestamp selection (0-indexed, max depends on num_timestamps)
+            # Supports "random" to pick a random valid start each iteration.
             max_first_ts = max(0, max_ts - int(group_num_timestamps))
-            first_timestamp = st.number_input(
+            _first_ts_options: list[object] = ["random"] + list(range(max_first_ts + 1))
+            _prev_first_ts = st.session_state.get("cfg_consecutive_first_timestamp", 0)
+            if isinstance(_prev_first_ts, str):
+                _first_ts_idx = 0  # "random"
+            else:
+                try:
+                    _first_ts_idx = _first_ts_options.index(int(_prev_first_ts))
+                except ValueError:
+                    _first_ts_idx = 1 if len(_first_ts_options) > 1 else 0
+            first_timestamp = st.selectbox(
                 "First timestamp",
-                min_value=0,
-                max_value=max_first_ts,
-                value=0,
-                step=1,
+                options=_first_ts_options,
+                index=_first_ts_idx,
                 key="cfg_consecutive_first_timestamp",
-                help=f"Starting timestamp index (0 to {max_first_ts}). The next {group_num_timestamps} consecutive timestamps will be selected."
+                help=f"Starting timestamp index (0 to {max_first_ts}), or 'random' to pick a new random start "
+                     f"every iteration. The next {group_num_timestamps} consecutive timestamps will be selected.",
             )
 
 # PDP Variant Selection (Multiple variants) - in expander for compactness
@@ -2024,18 +2293,27 @@ with st.expander("External Reference Points", expanded=False):
     if use_external_points:
         st.markdown("Define fixed reference points (these remain stationary during generation):")
         st.caption("Each row is a fixed point with coordinates (x, y). These points apply to all timestamps and constrain the absolute positions of generated configurations.")
+        snap_ext_to_edge = st.checkbox(
+            "Snap external points to nearest road edge (6-event)",
+            value=bool(st.session_state.get("cfg_snap_ext_to_road_edge", True)),
+            key="cfg_snap_ext_to_road_edge",
+            help="When enabled, each external point keeps its x but its y is snapped to the nearest outer road edge based on current lane centers and lane width.",
+        )
 
-        # Initialize external points if not present: place one point per lane center at x=0
+        # Initialize external points if not present
         if "external_points" not in st.session_state:
-            # Default: road origin (0,0) and opposite lane center (0, -3.7)
+            # Calculate what the snapped values should be:
+            # Lane 1 center = 0.0, Lane 2 center = -3.7, Lane width = 3.7
+            # Road edges: top = 1.85, bottom = -5.55
             st.session_state["external_points"] = [
-                (0.0, 0.0),
-                (0.0, -3.7),
+                (0.0, 1.85),   # Top road edge
+                (0.0, -5.55),  # Bottom road edge
             ]
+
+        _ext_pts_src = st.session_state.get("external_points", [])
 
         # Sync external_points list → individual number_input keys (needed after
         # presets or first initialization set external_points as a list of tuples).
-        _ext_pts_src = st.session_state.get("external_points", [])
         _ext_n_pts = len(_ext_pts_src)
         if "_ext_n_pts" not in st.session_state:
             st.session_state["_ext_n_pts"] = _ext_n_pts
@@ -2090,11 +2368,12 @@ with st.expander("External Reference Points", expanded=False):
                 st.rerun()
 
         # Rebuild external_points from the number_input keys (always in sync)
-        st.session_state["external_points"] = [
+        _rebuilt_ext_points = [
             (float(st.session_state.get(f"_ext_pt_{i}_x", 0.0)),
              float(st.session_state.get(f"_ext_pt_{i}_y", 0.0)))
             for i in range(int(st.session_state.get("_ext_n_pts", 0)))
         ]
+        st.session_state["external_points"] = _rebuilt_ext_points
 
 # Animation settings - compact layout
 st.markdown("**Animation Mode**")
@@ -2755,6 +3034,8 @@ for o_id in all_object_ids:
 external_points_list: list[tuple[float, float]] = []  # (x, y) only - no timestamp needed
 if st.session_state.get("use_external_points", False):
     raw_external = st.session_state.get("external_points", [])
+    if st.session_state.get("cfg_snap_ext_to_road_edge", False):
+        raw_external = _snap_ext_points_to_road_edges(list(raw_external))
     # Handle both old format (x, y, t) and new format (x, y)
     for pt in raw_external:
         if len(pt) >= 2:
@@ -2913,6 +3194,8 @@ def detect_overtake_events(
     best_oid: int | None = None
     best_range = 0.0
     for oid, (pts, _ts) in objects_points.items():
+        if pts.size == 0 or pts.shape[0] == 0:
+            continue
         d2_range = float(np.ptp(pts[:, 1]))
         if d2_range > best_range:
             best_range = d2_range
@@ -3075,7 +3358,9 @@ def select_points_for_iteration() -> list[int]:
         # Select consecutive timestamps from a single object
         selected_object_id = int(st.session_state.get("_override_consecutive_object_id", st.session_state.get("cfg_consecutive_object_id", 0)))
         num_timestamps = int(st.session_state.get("_override_group_num_timestamps", st.session_state.get("cfg_group_num_timestamps", 2)))
-        first_timestamp_idx = int(st.session_state.get("_override_consecutive_first_timestamp", st.session_state.get("cfg_consecutive_first_timestamp", 0)))
+        _raw_first_ts = st.session_state.get("_override_consecutive_first_timestamp", st.session_state.get("cfg_consecutive_first_timestamp", 0))
+        _first_ts_random = isinstance(_raw_first_ts, str) and str(_raw_first_ts).lower() == "random"
+        first_timestamp_idx = 0 if _first_ts_random else int(_raw_first_ts)
         
         # If selected_object_id == -1, pick a random object from those available in movable_indices
         if selected_object_id == -1:
@@ -3102,7 +3387,9 @@ def select_points_for_iteration() -> list[int]:
         
         # Clamp first_timestamp_idx to valid range
         max_start = max(0, len(indices_for_object) - num_timestamps)
-        if prefer_high_d2_change and max_start > 0:
+        if _first_ts_random and max_start > 0:
+            first_timestamp_idx = int(np.random.randint(0, max_start + 1))
+        elif prefer_high_d2_change and max_start > 0:
             start_candidates = list(range(max_start + 1))
             start_scores: list[float] = []
             for s in start_candidates:
@@ -3149,7 +3436,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
 
     # ── Directional scaling ──
     _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
-    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 0.20))   # d0 – longitudinal (along road)
+    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 20.0))    # d0 – longitudinal (along road)
     _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1 – lateral (across lanes)
 
     def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
@@ -3221,6 +3508,23 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             return all_pts_flat[idx]
         return np.array([0.0, 0.0])
     
+    # Optionally constrain random directions to roughly horizontal (2–4 o'clock or 8–10 o'clock).
+    # Clock-to-math mapping (math angle 0 = +x = 3 o'clock, CCW positive):
+    #   2 o'clock → +π/6,  3 o'clock → 0,  4 o'clock → -π/6   (rightward, ±30°)
+    #   8 o'clock → π+π/6, 9 o'clock → π,  10 o'clock → π-π/6 (leftward, ±30°)
+    _constrain_horizontal = bool(st.session_state.get(
+        "_override_constrain_horizontal",
+        st.session_state.get("cfg_constrain_horizontal", True),
+    ))
+
+    def _random_angle() -> float:
+        """Return a random angle (radians). If horizontal constraint is on, restrict
+        to ±30° around 0 (rightward, 2–4 o'clock) or π (leftward, 8–10 o'clock)."""
+        if _constrain_horizontal:
+            base = 0.0 if np.random.rand() < 0.5 else np.pi
+            return float(base + np.random.uniform(-np.pi / 6.0, np.pi / 6.0))
+        return float(np.random.uniform(0, 2 * np.pi))
+
     if movement_direction == "Same direction":
         # All points move with the same angle - find a direction that keeps ALL points in bounds
         max_attempts = MAX_DIRECTION_ATTEMPTS
@@ -3228,7 +3532,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
         best_in_bounds_count = 0
         
         for _ in range(max_attempts):
-            angle = float(np.random.uniform(0, 2 * np.pi))
+            angle = _random_angle()
             delta_x, delta_y = _scaled_deltas(angle, base_distance)
             
             # Check if all points would be in bounds with this direction
@@ -3258,7 +3562,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             return {int(idx): (delta_x, delta_y) for idx in selected_indices}
         
         # Fallback: use first random angle
-        angle = float(np.random.uniform(0, 2 * np.pi))
+        angle = _random_angle()
         delta_x, delta_y = _scaled_deltas(angle, base_distance)
         return {int(idx): (delta_x, delta_y) for idx in selected_indices}
     
@@ -3272,7 +3576,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
             best_angle = None
             
             for _ in range(max_attempts):
-                angle = float(np.random.uniform(0, 2 * np.pi))
+                angle = _random_angle()
                 delta_x, delta_y = _scaled_deltas(angle, base_distance)
                 
                 new_x = parent_pt[0] + delta_x
@@ -3290,7 +3594,7 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
                     vectors[int(idx)] = (delta_x, delta_y)
                 else:
                     # Complete fallback
-                    angle = float(np.random.uniform(0, 2 * np.pi))
+                    angle = _random_angle()
                     delta_x, delta_y = _scaled_deltas(angle, base_distance)
                     vectors[int(idx)] = (delta_x, delta_y)
         
@@ -3611,7 +3915,7 @@ def make_d1_order_latex() -> str:
         
         for val, t in zip(coords_d1.tolist(), ts.tolist()):  # type: ignore[misc]
             lbl = _format_t_subscript(t)
-            entries.append((float(val), rf"{label}_{{{lbl}}}"))
+            entries.append((float(val), rf"\mathit{{{label}}}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -3649,7 +3953,7 @@ def make_d2_order_latex() -> str:
         
         for val, t in zip(coords_d2.tolist(), ts.tolist()):  # type: ignore[misc]
             lbl = _format_t_subscript(t)
-            entries.append((float(val), rf"{label}_{{{lbl}}}"))
+            entries.append((float(val), rf"\mathit{{{label}}}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -3711,7 +4015,7 @@ def make_d1_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[0]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
+    entries.append((float(gen_pt[0]), rf"\mathit{{{parent_label}}}{parent_primes}_{{t_{lbl_parent}}}"))
 
     # Track the latest generated point for each original index
     latest_generated: dict[int, np.ndarray] = {}
@@ -3730,9 +4034,9 @@ def make_d1_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][0]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(latest_generated[flat_idx][0]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
         else:
-            entries.append((float(pt[0]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(pt[0]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -3791,7 +4095,7 @@ def make_d2_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[1]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
+    entries.append((float(gen_pt[1]), rf"\mathit{{{parent_label}}}{parent_primes}_{{t_{lbl_parent}}}"))
 
     latest_generated: dict[int, np.ndarray] = {}
     for sp in successful_points:
@@ -3809,9 +4113,9 @@ def make_d2_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][1]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(latest_generated[flat_idx][1]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
         else:
-            entries.append((float(pt[1]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(pt[1]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -4014,6 +4318,9 @@ def get_threshold_settings() -> tuple[str, float, int]:
         - percentage: float 0.0-1.0 (only used if mode='Percentage')
         - max_mismatches: int (only used if mode='Max mismatches')
     """
+    if bool(st.session_state.get("cfg_strict_order_match", True)):
+        return "Percentage", 1.0, 0
+
     mode = st.session_state.get("cfg_threshold_mode", "Percentage")
     pct = st.session_state.get("cfg_threshold_pct", 100) / 100.0
     abs_val = st.session_state.get("cfg_threshold_abs", 0)
@@ -4036,6 +4343,11 @@ def get_threshold_params() -> tuple[float, int | None]:
         - For percentage mode: (percentage, None)
         - For absolute mode: (1.0, max_mismatches_value)
     """
+    if bool(st.session_state.get("cfg_strict_order_match", True)):
+        # Strict mode must be exact: use absolute mismatch path so checker
+        # does an exact upper-triangle mismatch count on every validation.
+        return 1.0, 0
+
     mode, pct, abs_val = get_threshold_settings()
     if mode == "Percentage":
         return pct, None
@@ -4356,11 +4668,13 @@ def run_multipoint_iteration(
     buffer_y: float,
     rough_x: float,
     rough_y: float,
-    max_search_steps: int = 10,
+    max_search_steps: int = 15,
     pdp_checker: Optional[IncrementalPDPChecker] = None,
     sa_temperature: float = 1.0,
     soft_pdp_threshold: float = 1.0,
     coordinated_move_prob: float = 0.0,
+    force_strict_exact: bool = False,
+    extra_validator: Optional[Callable[[dict[int, np.ndarray]], bool]] = None,
 ):
     """
     Run one iteration of multi-point generation.
@@ -4403,7 +4717,12 @@ def run_multipoint_iteration(
         "pdp_match_pct": {"d1_pct": 1.0, "d2_pct": 1.0},
         "n_halvings_tried": 0,
         "sa_temperature": sa_temperature,
+        "selected_indices": [],
+        "pdp_variant": pdp_variant,
+        "buffer_x": buffer_x, "buffer_y": buffer_y,
+        "rough_x": rough_x, "rough_y": rough_y,
     }
+    _strict_exact = bool(st.session_state.get("cfg_strict_order_match", True)) or bool(force_strict_exact)
     # Select which points to move this iteration
     selected_indices = select_points_for_iteration()
     if not selected_indices:
@@ -4418,6 +4737,7 @@ def run_multipoint_iteration(
             selected_indices = _all_moveable
             _is_coordinated = True
     diagnostics["coordinated_move"] = _is_coordinated
+    diagnostics["selected_indices"] = [int(i) for i in selected_indices]
     
     # Generate initial movement vectors (scaled by SA temperature)
     base_distance = maxdist * sa_temperature
@@ -4471,12 +4791,14 @@ def run_multipoint_iteration(
             candidate_positions[idx] = np.array([new_x, new_y])
         
         # --- PDP Check ---
-        if pdp_checker is not None:
+        _used_incremental_checker = False
+        if pdp_checker is not None and not _strict_exact:
             # Incremental path: O(k*N) instead of O(N²)
             _pdp_saved = pdp_checker.save_state_for_indices(list(candidate_positions.keys()))
             pdp_checker.update_points(candidate_positions)
             same_d1, same_d2 = pdp_checker.check_match()
             success = same_d1 and same_d2
+            _used_incremental_checker = True
             # Soft PDP scoring: accept partial matches when threshold < 1.0
             if not success and soft_pdp_threshold < 1.0:
                 _soft_pct = pdp_checker.get_match_pct()
@@ -4487,7 +4809,13 @@ def run_multipoint_iteration(
         else:
             # Original path: build full config and check O(N²)
             test_config = build_current_config(candidate_positions)
-            _thresh, _max_mm = get_threshold_params()
+            if _strict_exact:
+                # HARD STRICT: ignore UI threshold, force 0 mismatches.
+                # Variant + ρ/buffer settings are kept exactly as the user chose
+                # (fundamental → all 0.0 by upstream filtering anyway).
+                _thresh, _max_mm = 1.0, 0
+            else:
+                _thresh, _max_mm = get_threshold_params()
             if pdp_variant in ["buffer", "bufferrough", "realistic"]:
                 same_d1, same_d2 = check_pdp_match(
                     all_pts_flat,
@@ -4513,9 +4841,25 @@ def run_multipoint_iteration(
                     max_mismatches=_max_mm
                 )
             success = same_d1 and same_d2
-        
+
+            # --- Extra (display-equivalent) validator ---
+            # The 6-event search re-checks the chain using single externals (no
+            # replication) and the exact sorted-chain comparison the display
+            # uses. If the engine's PDP says "OK" but this stricter view says
+            # "no", we MUST continue halving instead of declaring success and
+            # letting an outer chain-check reject the iteration after only N
+            # halvings. This guarantees we always use the full halving budget.
+            if success and extra_validator is not None:
+                try:
+                    if not bool(extra_validator(candidate_positions)):
+                        success = False
+                except Exception:
+                    # If the validator itself blows up, treat as accepted so
+                    # the engine's PDP decision wins (best-effort fail-safe).
+                    pass
+
         # Record PDP match % at this halving level (before accept/reject)
-        if pdp_checker is not None:
+        if pdp_checker is not None and _used_incremental_checker:
             _diag_pct = pdp_checker.get_match_pct()
             diagnostics["pdp_match_pct"] = _diag_pct
         diagnostics["n_halvings_tried"] = search_step + 1
@@ -4524,7 +4868,7 @@ def run_multipoint_iteration(
             # Success! Add all candidate points via dict assignment (was append)
             diagnostics["accepted_halving_level"] = search_step
             diagnostics["accepted_step_size"] = float(base_distance * current_scale)
-            if pdp_checker is not None:
+            if pdp_checker is not None and _used_incremental_checker:
                 # Undo candidate positions, apply damped positions instead
                 pdp_checker.restore_saved(_pdp_saved)
             iteration_num = _sp_count_at_start + 1
@@ -4542,7 +4886,7 @@ def run_multipoint_iteration(
                     "iteration": iteration_num,
                 }
                 _sp_dict[idx] = sp  # O(1) dict assignment replaces append
-            if pdp_checker is not None:
+            if pdp_checker is not None and _used_incremental_checker:
                 pdp_checker.update_points(damped_map)
             _result = list(_sp_dict.values()) if _return_as_list else _sp_dict
             return _result, True, diagnostics
@@ -4562,7 +4906,7 @@ def run_multipoint_iteration(
             # Apply directional scaling: d0 for X, d1 for Y
             _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
             if _dir_scaling_on:
-                _d0 = float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+                _d0 = float(st.session_state.get("_6evs_dir_lat_min", 20.0))
                 _d1 = float(st.session_state.get("_6evs_dir_long_max", 1.00))
                 dx = new_base_dist * _d0 * np.cos(new_angle)
                 dy = new_base_dist * _d1 * np.sin(new_angle)
@@ -4782,7 +5126,7 @@ def generate_exp() -> None:
         completed_iterations = int(st.session_state.get("anim_completed_iterations", 0))
         max_iterations = int(st.session_state.get("anim_max_iterations", default_iterations))
         search_steps = int(st.session_state.get("anim_search_steps", 0))
-        max_search_steps = 10
+        max_search_steps = 15
 
         distance = float(st.session_state.get("anim_distance", maxdist))
         angle = float(st.session_state.get("anim_angle", 0.0))
@@ -5594,6 +5938,121 @@ if generate_btn:
         # Run the binary search generator
         generate_binary_multipoint()
 
+# ============= External-point rough constraint (shared) ============
+def _check_external_rough_constraint(
+    *,
+    pts_flat: np.ndarray,
+    is_fixed_flat: list[bool],
+    successful_points: list[dict[str, Any]] | dict[int, dict[str, Any]],
+    pdp_variant: str,
+    rough_x: float,
+    rough_y: float,
+) -> bool:
+    """Strict external-anchor deviation guard.
+
+    External points act as ANCHORS. When at least one external point is
+    present and the variant uses rough on a given axis, every generated
+    moveable point must satisfy::
+
+        |gen_i[d] - orig_i[d]| ≤ ρ_d
+
+    on that axis. This is the strict interpretation: with rough_y=0.3 m and
+    an external anchor present, a moveable point may deviate at most ±0.3 m
+    along d1 from its original position. Without external points the check
+    is skipped (PDP-only constraint applies).
+
+    Active per axis only for variants that use rough on that axis:
+        rough_x : variants {"rough", "bufferrough"}
+        rough_y : variants {"rough", "bufferrough", "realistic"}
+    """
+    _act_x = pdp_variant in ("rough", "bufferrough") and rough_x > 0
+    _act_y = pdp_variant in ("rough", "bufferrough", "realistic") and rough_y > 0
+    if not (_act_x or _act_y):
+        return True
+    if pts_flat is None or len(pts_flat) == 0 or not is_fixed_flat:
+        return True
+    # Skip when no external anchors present
+    if not any(is_fixed_flat):
+        return True
+
+    # Normalize input → dict[orig_idx -> gen_point]
+    if isinstance(successful_points, dict):
+        _gen_map = {int(k): v["point"] for k, v in successful_points.items()}
+    else:
+        _gen_map = {int(sp["original_parent_idx"]): sp["point"] for sp in successful_points}
+
+    for _mi, _gen_pt in _gen_map.items():
+        if _mi < 0 or _mi >= len(pts_flat):
+            continue
+        if _mi < len(is_fixed_flat) and is_fixed_flat[_mi]:
+            continue  # external itself, never moved
+        _orig_pt = pts_flat[_mi]
+        if _act_x and abs(float(_gen_pt[0]) - float(_orig_pt[0])) > rough_x:
+            return False
+        if _act_y and abs(float(_gen_pt[1]) - float(_orig_pt[1])) > rough_y:
+            return False
+    return True
+
+
+def _check_external_strict_ordering(
+    *,
+    pts_flat: np.ndarray,
+    is_fixed_flat: list[bool],
+    successful_points: list[dict[str, Any]] | dict[int, dict[str, Any]],
+    rough_x: float = 0.0,
+    rough_y: float = 0.0,
+) -> bool:
+    """Hard PDP-ordering guard for moveable↔external pairs.
+
+    For every moveable point M and every external (fixed) point E:
+        sign(M_gen.d - E.d) MUST equal sign(M_orig.d - E.d)
+    on each axis d ∈ {0, 1}. Differences within ρ_d are treated as
+    'equal' (consistent with the PDP inequality matrix definition).
+
+    This guarantees external anchors never get crossed, which is exactly
+    what the user expects when adding external reference points. Without
+    this explicit check, an upstream rounding / threshold / cached-state
+    issue could let a violation slip through the matrix-based check.
+    """
+    if pts_flat is None or len(pts_flat) == 0 or not is_fixed_flat:
+        return True
+    # Locate external indices
+    _ext_idxs = [i for i, f in enumerate(is_fixed_flat) if f]
+    if not _ext_idxs:
+        return True
+
+    # Normalize successful_points input
+    if isinstance(successful_points, dict):
+        _gen_map = {int(k): v["point"] for k, v in successful_points.items()}
+    else:
+        _gen_map = {int(sp["original_parent_idx"]): sp["point"] for sp in successful_points}
+
+    def _sign(diff: float, rho: float) -> int:
+        if abs(diff) <= rho:
+            return 0
+        return 1 if diff > 0 else -1
+
+    for _mi, _gen_pt in _gen_map.items():
+        if _mi < 0 or _mi >= len(pts_flat):
+            continue
+        if _mi < len(is_fixed_flat) and is_fixed_flat[_mi]:
+            continue
+        _orig_pt = pts_flat[_mi]
+        for _ei in _ext_idxs:
+            _ext_pt = pts_flat[_ei]
+            # Axis d0
+            _orig_sign_x = _sign(float(_orig_pt[0]) - float(_ext_pt[0]), rough_x)
+            _gen_sign_x = _sign(float(_gen_pt[0]) - float(_ext_pt[0]), rough_x)
+            if _orig_sign_x != _gen_sign_x:
+                return False
+            # Axis d1
+            _orig_sign_y = _sign(float(_orig_pt[1]) - float(_ext_pt[1]), rough_y)
+            _gen_sign_y = _sign(float(_gen_pt[1]) - float(_ext_pt[1]), rough_y)
+            if _orig_sign_y != _gen_sign_y:
+                return False
+    return True
+
+
 # ============= Perpendicular variance helper ============
 def _perpendicular_variance(
     all_points_plot: dict[int, np.ndarray],
@@ -5668,191 +6127,36 @@ if generate_5000_btn:
 if generate_6ev_single_btn:
     st.session_state["_generate_6ev_single_requested"] = True
     st.session_state["_generate_6ev_single_results"] = None
-    st.session_state["_6evs_batch_count"] = 1000  # start with 1000 iterations
+    st.session_state["_6evs_batch_count"] = 100  # start with 100 iterations
     st.session_state.pop("_6evs_points_plot", None)
     st.session_state.pop("_6evs_vals_plot", None)
 
 # Check if we have stored results or need to generate
 if st.session_state.get("_generate_30_requested", False) and not st.session_state.get("_generate_30_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 1000 Configurations...")
-    st.caption("This may take several minutes. Progress is shown below.")
-    
-    # Store current settings
-    current_iterations = int(st.session_state.get("cfg_iterations", 3))
-    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    
-    # Get threshold settings
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    
-    # Generate 1000 configurations
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    all_generated_configs: list[dict[str, Any]] = []
-    
-    for config_idx in range(MAX_GENERATION_ITERATIONS):
-        status_text.text(f"Generating configuration {config_idx + 1}/{MAX_GENERATION_ITERATIONS}...")
-        
-        # Generate one configuration using the core logic
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        
-        # Use the first variant
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        
-        # Run iterations
-        for iteration in range(current_iterations):
-            successful_points, success, _ = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y
-            )
-        
-        # Store configuration
-        if successful_points:
-            config_data = {
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": current_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold
-            }
-            all_generated_configs.append(config_data)
-        
-        progress_bar.progress((config_idx + 1) / 1000)
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_30_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-        
-        # Calculate perpendicular variance for each configuration
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(all_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-        
-        # Sort by perpendicular variance (descending) and take top 100
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_100 = deviations[:100]
-        
-        # Store results in session state
-        st.session_state["_generate_30_results"] = top_100
-        st.rerun()
+    _run_simple_generation(
+        request_key="_generate_30_requested",
+        results_key="_generate_30_results",
+        num_configs=MAX_GENERATION_ITERATIONS,
+        num_iterations=int(st.session_state.get("cfg_iterations", 3)),
+        top_n=100,
+        title="Generating 1000 Configurations...",
+        caption="This may take several minutes. Progress is shown below.",
+        label=str(MAX_GENERATION_ITERATIONS),
+    )
 
 if st.session_state.get("_generate_5000_requested", False) and not st.session_state.get("_generate_5000_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 5 Configurations...")
-    st.caption("This may take several minutes. Progress is shown below.")
-    
-    # Store current settings (iterations forced to 50 for this button)
-    current_iterations = 50
-    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    
-    # Get threshold settings
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    
-    # Generate 5 configurations
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    all_generated_configs: list[dict[str, Any]] = []
-    st.session_state["_prefer_high_d2_change_sampling"] = False
-    for config_idx in range(5):
-        status_text.text(f"Generating configuration {config_idx + 1}/5 | iteration 0/{current_iterations}...")
-        
-        # Generate one configuration using the core logic
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        
-        # Use the first variant
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        
-        # Run iterations
-        for iteration in range(current_iterations):
-            status_text.text(
-                f"Generating configuration {config_idx + 1}/5 | iteration {iteration + 1}/{current_iterations}..."
-            )
-            successful_points, success, _ = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y
-            )
-        
-        # Store configuration
-        if successful_points:
-            config_data = {
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": current_iterations,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold
-            }
-            all_generated_configs.append(config_data)
-        
-        progress_bar.progress((config_idx + 1) / 5)
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_5000_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-        
-        # Calculate perpendicular variance for each configuration
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(all_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-        
-        # Sort by perpendicular variance (descending) and take top 500
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_500 = deviations[:500]
-        
-        # Store results in session state
-        st.session_state["_generate_5000_results"] = top_500
-        st.rerun()
+    _run_simple_generation(
+        request_key="_generate_5000_requested",
+        results_key="_generate_5000_results",
+        num_configs=5,
+        num_iterations=50,
+        top_n=500,
+        title="Generating 5 Configurations...",
+        caption="This may take several minutes. Progress is shown below.",
+        label="5",
+        set_prefer_high_d2_false=True,
+        per_iter_status=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -6061,6 +6365,19 @@ def _run_full_ts_generation(
                     break
 
             _total_iters += _iters_used
+            # Strict external-point rough/strict-order guard
+            if successful_points:
+                successful_points = [
+                    sp for sp in successful_points
+                    if _check_external_rough_constraint(
+                        pts_flat=all_pts_flat,
+                        is_fixed_flat=all_is_fixed_flat,
+                        successful_points=[sp],
+                        pdp_variant=pdp_variant,
+                        rough_x=rough_x,
+                        rough_y=rough_y,
+                    )
+                ]
             if successful_points:
                 config_entry: dict[str, Any] = {
                     "successful_points": successful_points,
@@ -6125,45 +6442,87 @@ def _run_full_ts_generation(
                 st.session_state.pop(k, None)
 
 
-# ============= Generate 200 configs x 200 iterations (reinsertion) ============
-if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
+# ---------------------------------------------------------------------------
+# Helper: simple batch generation on existing all_pts_flat (no full-ts rebuild)
+# Deduplicates _generate_30 / _generate_5000 / _generate_50 handlers.
+# ---------------------------------------------------------------------------
+def _run_simple_generation(
+    *,
+    request_key: str,
+    results_key: str,
+    num_configs: int,
+    num_iterations: int,
+    top_n: int,
+    title: str,
+    caption: str = "",
+    label: str | None = None,
+    set_prefer_high_d2_false: bool = False,
+    per_iter_status: bool = False,
+    status_prefix: str | None = None,
+    early_stop: bool = False,
+    show_timing: bool = False,
+    pre_info: str | None = None,
+    cleanup_session_keys: dict[str, Any] | None = None,
+) -> None:
+    """Run *num_configs* × *num_iterations* of ``run_multipoint_iteration`` on the
+    current ``all_pts_flat``, rank by perpendicular variance, store top *top_n*.
+
+    Used by the three "simple" generation buttons that don't rebuild flattened
+    data from ``all_objects_points``.
+    """
+    _label = label if label is not None else str(num_configs)
+
     st.markdown("---")
-    st.markdown("### Generating 200 Configurations (reinsertion zone: t=131–138, 200 iterations each)...")
-    st.caption("Using 8 timestamps from the reinsertion zone. This may take several minutes.")
-    
-    # Use current settings but force 200 iterations
-    current_iterations = 200
+    st.markdown(f"### {title}")
+    if caption:
+        st.caption(caption)
+
+    # Resolve PDP parameters
     pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+    pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
     buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
     buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
     rough_x = st.session_state.get("cfg_rough_x", 0.0)
     rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    
-    # Get threshold settings
+
     mode, pct_threshold, max_mismatch_val = get_threshold_settings()
     max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    
-    # Generate 50 configurations
+
+    if set_prefer_high_d2_false:
+        st.session_state["_prefer_high_d2_change_sampling"] = False
+
+    if pre_info:
+        st.info(pre_info)
+
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     all_generated_configs: list[dict[str, Any]] = []
-    st.session_state["_prefer_high_d2_change_sampling"] = False
-    for config_idx in range(200):
-        status_text.text(f"Generating configuration {config_idx + 1}/200 | iteration 0/{current_iterations}...")
-        
-        # Generate one configuration using the core logic
+
+    _t_gen_start = time.perf_counter() if show_timing else 0.0
+    _total_iters = 0
+    _early_stops = 0
+
+    for config_idx in range(num_configs):
+        if not per_iter_status and status_prefix is None:
+            status_text.text(f"Generating configuration {config_idx + 1}/{_label}...")
+
         current_points = all_pts_flat.copy()
         successful_points: list[SuccessfulPoint] = []
-        
-        # Use the first variant
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        
-        # Run iterations
-        for iteration in range(current_iterations):
-            status_text.text(
-                f"Generating configuration {config_idx + 1}/200 | iteration {iteration + 1}/{current_iterations}..."
-            )
+        _stagnant = 0
+        _iters_used = num_iterations
+
+        for iteration in range(num_iterations):
+            if status_prefix is not None:
+                status_text.text(
+                    f"{status_prefix} — config {config_idx + 1}/{_label} | "
+                    f"iter {iteration + 1}/{num_iterations}"
+                )
+            elif per_iter_status:
+                status_text.text(
+                    f"Generating configuration {config_idx + 1}/{_label} | "
+                    f"iteration {iteration + 1}/{num_iterations}..."
+                )
+            _sp_before = len(successful_points)
             successful_points, success, _ = run_multipoint_iteration(
                 current_points=current_points,
                 successful_points=successful_points,
@@ -6171,52 +6530,102 @@ if st.session_state.get("_generate_50_requested", False) and not st.session_stat
                 buffer_x=buffer_x,
                 buffer_y=buffer_y,
                 rough_x=rough_x,
-                rough_y=rough_y
+                rough_y=rough_y,
             )
-        
-        # Store configuration
+            if early_stop:
+                _n_added = len(successful_points) - _sp_before
+                if _n_added > 0 and _check_stagnation(successful_points, _n_added):
+                    _stagnant += 1
+                else:
+                    _stagnant = 0
+                if _stagnant >= EARLY_STOP_PATIENCE:
+                    _iters_used = iteration + 1
+                    _early_stops += 1
+                    break
+
+        _total_iters += _iters_used
+        # Strict external-point rough/strict-order guard: drop any generated point
+        # that violates class consistency w.r.t. external (fixed) anchors.
         if successful_points:
-            config_data = {
+            successful_points = [
+                sp for sp in successful_points
+                if _check_external_rough_constraint(
+                    pts_flat=all_pts_flat,
+                    is_fixed_flat=all_is_fixed_flat,
+                    successful_points=[sp],
+                    pdp_variant=pdp_variant,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                )
+            ]
+        if successful_points:
+            all_generated_configs.append({
                 "successful_points": successful_points,
                 "config_number": config_idx + 1,
                 "pdp_variant": pdp_variant,
-                "iterations": current_iterations,
+                "iterations": _iters_used,
                 "buffer_x": buffer_x,
                 "buffer_y": buffer_y,
                 "rough_x": rough_x,
                 "rough_y": rough_y,
                 "threshold_mode": mode,
-                "max_threshold": max_threshold
-            }
-            all_generated_configs.append(config_data)
-        
-        progress_bar.progress((config_idx + 1) / 200)
-    
+                "max_threshold": max_threshold,
+            })
+
+        progress_bar.progress((config_idx + 1) / num_configs)
+
     progress_bar.empty()
     status_text.empty()
-    
+
+    if show_timing:
+        _t_gen_elapsed = time.perf_counter() - _t_gen_start
+        _max_possible = num_configs * num_iterations
+        _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
+        st.info(
+            f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
+            f"({_t_gen_elapsed / max(1, num_configs):.2f}s/config, "
+            f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
+            f"Early stopped {_early_stops}/{num_configs} configs — "
+            f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+        )
+
+    # Apply post-generation session cleanup (e.g. reset _cfg_timestamp_step)
+    if cleanup_session_keys:
+        for k, v in cleanup_session_keys.items():
+            st.session_state[k] = v
+
     if not all_generated_configs:
         st.error("No configurations were successfully generated.")
-        st.session_state["_generate_50_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-        
-        # Calculate perpendicular variance for each configuration
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(all_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-        
-        # Sort by perpendicular variance (descending) and take top 25
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_5 = deviations[:25]
-        
-        # Store results in session state
-        st.session_state["_generate_50_results"] = top_5
-        st.rerun()
+        st.session_state[request_key] = False
+        return
+
+    st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
+
+    deviations: list[tuple[int, float, dict[str, Any]]] = []
+    for config in all_generated_configs:
+        sp = config.get("successful_points", [])
+        pv = _perpendicular_variance(all_points_plot, sp)
+        deviations.append((config.get("config_number", 0), pv, config))
+
+    deviations.sort(key=lambda x: x[1], reverse=True)
+    st.session_state[results_key] = deviations[:top_n]
+    st.rerun()
+
+
+# ============= Generate 200 configs x 200 iterations (reinsertion) ============
+if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
+    _run_simple_generation(
+        request_key="_generate_50_requested",
+        results_key="_generate_50_results",
+        num_configs=200,
+        num_iterations=200,
+        top_n=25,
+        title="Generating 200 Configurations (reinsertion zone: t=131–138, 200 iterations each)...",
+        caption="Using 8 timestamps from the reinsertion zone. This may take several minutes.",
+        label="200",
+        set_prefer_high_d2_false=True,
+        per_iter_status=True,
+    )
 
 # ============= Generate 100 configs × 2500 iterations (ext30) ============
 if st.session_state.get("_generate_ext30_requested", False) and not st.session_state.get("_generate_ext30_results", None):
@@ -6344,110 +6753,21 @@ if st.session_state.get("_generate_ext30_fe_requested", False) and not st.sessio
 
 # ============= Generate 100 configs × 2500 iterations — half timestamps (ext30_half) ============
 if st.session_state.get("_generate_ext30_half_requested", False) and not st.session_state.get("_generate_ext30_half_results", None):
-    st.markdown("---")
-    st.markdown("### Generating 100 Configurations (2500 iterations, ½ timestamps)...")
-    st.caption("Zelfde als 'Generate 100 & Top 3' maar gebruikt om de andere timestamp (step=2).")
-
-    pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-    buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-    buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-    rough_x = st.session_state.get("cfg_rough_x", 0.0)
-    rough_y = st.session_state.get("cfg_rough_y", 0.0)
-    mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-    max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
-    _ext30h_iterations = 2500
-
-    # Display number of timestamps after ½-filtering
-    st.info(f"Aantal timestamps na filtering: {len(selected_ts_window)}")
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    all_generated_configs: list[dict[str, Any]] = []
-
-    _ext30h_num_configs = MAX_FILTER_CONFIGS
-    _t_gen_start = time.perf_counter()
-    _total_iters = 0
-    _early_stops = 0
-    for config_idx in range(_ext30h_num_configs):
-        current_points = all_pts_flat.copy()
-        successful_points: list[SuccessfulPoint] = []
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        _stagnant = 0
-        _iters_used = _ext30h_iterations
-
-        for iteration in range(_ext30h_iterations):
-            status_text.text(f"½-ts — config {config_idx + 1}/{_ext30h_num_configs} | iter {iteration + 1}/{_ext30h_iterations}")
-            _sp_before = len(successful_points)
-            successful_points, success, _ = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=successful_points,
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-            )
-            _n_added = len(successful_points) - _sp_before
-            if _n_added > 0 and _check_stagnation(successful_points, _n_added):
-                _stagnant += 1
-            else:
-                _stagnant = 0
-            if _stagnant >= EARLY_STOP_PATIENCE:
-                _iters_used = iteration + 1
-                _early_stops += 1
-                break
-
-        _total_iters += _iters_used
-        if successful_points:
-            all_generated_configs.append({
-                "successful_points": successful_points,
-                "config_number": config_idx + 1,
-                "pdp_variant": pdp_variant,
-                "iterations": _iters_used,
-                "buffer_x": buffer_x,
-                "buffer_y": buffer_y,
-                "rough_x": rough_x,
-                "rough_y": rough_y,
-                "threshold_mode": mode,
-                "max_threshold": max_threshold,
-            })
-
-        progress_bar.progress((config_idx + 1) / _ext30h_num_configs)
-
-    progress_bar.empty()
-    status_text.empty()
-    _t_gen_elapsed = time.perf_counter() - _t_gen_start
-    _max_possible = _ext30h_num_configs * _ext30h_iterations
-    _saved_pct = (1 - _total_iters / max(1, _max_possible)) * 100
-    st.info(
-        f"⏱ Generation took {_t_gen_elapsed:.2f}s total "
-        f"({_t_gen_elapsed / max(1, _ext30h_num_configs):.2f}s/config, "
-        f"{_t_gen_elapsed / max(1, _total_iters) * 1000:.1f}ms/iter) | "
-        f"Early stopped {_early_stops}/{_ext30h_num_configs} configs — "
-        f"{_total_iters:,}/{_max_possible:,} iters used ({_saved_pct:.0f}% saved)"
+    _run_simple_generation(
+        request_key="_generate_ext30_half_requested",
+        results_key="_generate_ext30_half_results",
+        num_configs=MAX_FILTER_CONFIGS,
+        num_iterations=2500,
+        top_n=3,
+        title="Generating 100 Configurations (2500 iterations, ½ timestamps)...",
+        caption="Zelfde als 'Generate 100 & Top 3' maar gebruikt om de andere timestamp (step=2).",
+        label=str(MAX_FILTER_CONFIGS),
+        status_prefix="½-ts",
+        early_stop=True,
+        show_timing=True,
+        pre_info=f"Aantal timestamps na filtering: {len(selected_ts_window)}",
+        cleanup_session_keys={"_cfg_timestamp_step": 1},
     )
-    # Reset timestamp step back to 1
-    st.session_state["_cfg_timestamp_step"] = 1
-
-    if not all_generated_configs:
-        st.error("No configurations were successfully generated.")
-        st.session_state["_generate_ext30_half_requested"] = False
-    else:
-        st.success(f"Successfully generated {len(all_generated_configs)} configurations!")
-
-        deviations: list[tuple[int, float, dict[str, Any]]] = []
-        for config in all_generated_configs:
-            successful_points = config.get("successful_points", [])
-            pv = _perpendicular_variance(all_points_plot, successful_points)
-            config_num = config.get("config_number", 0)
-            deviations.append((config_num, pv, config))
-
-        deviations.sort(key=lambda x: x[1], reverse=True)
-        top_3 = deviations[:3]
-
-        st.session_state["_generate_ext30_half_results"] = top_3
-        st.rerun()
 
 
 # ============= Recursive 6-Event Overtake Generation ============
@@ -6990,17 +7310,20 @@ st.session_state["_6evs_prev_general_sig"] = _gen_sig
 st.session_state["_6evs_prev_general_variant"] = _gen_variant
 
 with st.expander("⚙️ 6-Event generation settings", expanded=False):
+    # Migrate stale session value (old default was 10) to new default 15.
+    if int(st.session_state.get("_6evs_max_halvings", 15)) == 10:
+        st.session_state["_6evs_max_halvings"] = 15
     # ── Core walk parameters (adjustable before running) ──
     _6evs_core_col1, _6evs_core_col2, _6evs_core_col3, _6evs_core_col4 = st.columns([1, 1, 1, 1], gap="small")
     with _6evs_core_col1:
         _6evs_max_halvings = st.number_input(
             "Max halving steps",
             min_value=1, max_value=30,
-            value=int(st.session_state.get("_6evs_max_halvings", 10)),
+            value=int(st.session_state.get("_6evs_max_halvings", 15)),
             step=1,
             key="_6evs_max_halvings",
             help="Number of vector-halving attempts per iteration before giving up. "
-                 "Higher = more likely to find a PDP-preserving move but slower. Default: 10.",
+                 "Higher = more likely to find a PDP-preserving move but slower. Default: 15.",
         )
     with _6evs_core_col2:
         _6evs_point_sel_options = ["Single point", "Multiple random points", "Consecutive time stamps"]
@@ -7039,6 +7362,79 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             help=f"Multiply the auto-computed maxdist ({maxdist:.2f} m) by this factor. "
                  "< 1 = smaller steps (fine-tuning), > 1 = larger steps (exploration).",
         )
+
+    # ── Sub-controls for "Consecutive time stamps" mode ──
+    # Only render when the user selected that mode. These map to the same
+    # cfg_* session-state keys read by select_points_to_move via the
+    # _override_consecutive_* keys.
+    if _6evs_point_selection == "Consecutive time stamps":
+        _6evs_cts_avail_objs: list[int] = sorted(int(x) for x in config_df["o"].unique().tolist())  # type: ignore[attr-defined]
+        if not _6evs_cts_avail_objs:
+            _6evs_cts_avail_objs = [0, 1]
+        _6evs_cts_obj_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in _6evs_cts_avail_objs]
+        _6evs_cts_obj_options: list[str] = _6evs_cts_obj_labels + ["random"]
+
+        def _6evs_max_ts_for(_oid: int) -> int:
+            _d = config_df[config_df["o"] == _oid]  # type: ignore[attr-defined]
+            if len(_d) == 0:  # type: ignore[arg-type]
+                return 3
+            return int(_d["t"].nunique())  # type: ignore[attr-defined]
+
+        _6evs_cts_col1, _6evs_cts_col2, _6evs_cts_col3 = st.columns([1, 1, 1], gap="small")
+        with _6evs_cts_col1:
+            _prev_6evs_obj = st.session_state.get("_6evs_consecutive_object", "random")
+            try:
+                _6evs_obj_idx = _6evs_cts_obj_options.index(_prev_6evs_obj)
+            except ValueError:
+                _6evs_obj_idx = len(_6evs_cts_obj_options) - 1  # "random"
+            _6evs_consecutive_object = st.selectbox(
+                "Object (6-ev)",
+                options=_6evs_cts_obj_options,
+                index=_6evs_obj_idx,
+                key="_6evs_consecutive_object",
+                help="Which object's consecutive timestamps to move. "
+                     "'random' picks a different object each iteration.",
+            )
+            if _6evs_consecutive_object == "random":
+                _6evs_consecutive_object_id = -1
+            else:
+                _i = _6evs_cts_obj_labels.index(_6evs_consecutive_object)
+                _6evs_consecutive_object_id = _6evs_cts_avail_objs[_i]
+
+        with _6evs_cts_col2:
+            if _6evs_consecutive_object_id == -1:
+                _6evs_cts_max_ts = max((_6evs_max_ts_for(o) for o in _6evs_cts_avail_objs), default=3)
+            else:
+                _6evs_cts_max_ts = _6evs_max_ts_for(_6evs_consecutive_object_id)
+            _6evs_group_num_timestamps = st.number_input(
+                "Consecutive timestamps (6-ev)",
+                min_value=1,
+                max_value=max(1, _6evs_cts_max_ts),
+                value=int(st.session_state.get("_6evs_group_num_timestamps", min(6, _6evs_cts_max_ts))),
+                step=1,
+                key="_6evs_group_num_timestamps",
+                help="How many consecutive timestamps to move per iteration (e.g. 6).",
+            )
+
+        with _6evs_cts_col3:
+            _6evs_max_first_ts = max(0, _6evs_cts_max_ts - int(_6evs_group_num_timestamps))
+            _6evs_first_ts_options: list[object] = ["random"] + list(range(_6evs_max_first_ts + 1))
+            _prev_6evs_first_ts = st.session_state.get("_6evs_consecutive_first_timestamp", "random")
+            if isinstance(_prev_6evs_first_ts, str):
+                _6evs_first_ts_idx = 0
+            else:
+                try:
+                    _6evs_first_ts_idx = _6evs_first_ts_options.index(int(_prev_6evs_first_ts))
+                except ValueError:
+                    _6evs_first_ts_idx = 0
+            _6evs_consecutive_first_timestamp = st.selectbox(
+                "First timestamp (6-ev)",
+                options=_6evs_first_ts_options,
+                index=_6evs_first_ts_idx,
+                key="_6evs_consecutive_first_timestamp",
+                help=f"Starting timestamp index (0 to {_6evs_max_first_ts}), or 'random' for a "
+                     f"new random valid start each iteration.",
+            )
     # Second row: damping & auto-stop
     _6evs_core2_col1, _6evs_core2_col2, _6evs_core2_col3, _6evs_core2_col4 = st.columns([1, 1, 1, 1], gap="small")
     with _6evs_core2_col1:
@@ -7126,6 +7522,19 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
 
     st.markdown("---")
     # ── PDP variant & tolerance controls ──
+    # Force-zero buffer/rough fields that aren't used by the current variant
+    # (e.g. "fundamental" uses none of them, so all four should display 0).
+    _6evs_cur_variant = st.session_state.get("_6evs_pdp_variant", "fundamental")
+    _6evs_needs = {
+        "_6evs_buffer_x": _6evs_cur_variant in ("buffer", "bufferrough", "realistic"),
+        "_6evs_buffer_y": _6evs_cur_variant in ("buffer", "bufferrough"),
+        "_6evs_rough_x":  _6evs_cur_variant in ("rough", "bufferrough"),
+        "_6evs_rough_y":  _6evs_cur_variant in ("rough", "bufferrough", "realistic"),
+    }
+    for _k_zero, _is_used in _6evs_needs.items():
+        if not _is_used and float(st.session_state.get(_k_zero, 0.0)) != 0.0:
+            st.session_state[_k_zero] = 0.0
+
     _6evs_pcol1, _6evs_pcol2, _6evs_pcol2b, _6evs_pcol3, _6evs_pcol4 = st.columns([1, 1, 1, 1, 1], gap="small")
     with _6evs_pcol1:
         _6evs_pdp_variant_options = ["fundamental", "realistic", "buffer", "rough", "bufferrough"]
@@ -7147,6 +7556,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             value=st.session_state.get("_6evs_buffer_x", 0.0),
             step=0.1, format="%.1f",
             key="_6evs_buffer_x",
+            disabled=not _6evs_needs["_6evs_buffer_x"],
             help="Tolerance on longitudinal (driving-direction) ordering. "
                  "Points within this distance are considered equivalent in d0. "
                  "Only used by buffer/bufferrough/realistic variants.",
@@ -7158,6 +7568,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             value=st.session_state.get("_6evs_buffer_y", 0.0),
             step=0.1, format="%.1f",
             key="_6evs_buffer_y",
+            disabled=not _6evs_needs["_6evs_buffer_y"],
             help="Tolerance on lateral (cross-lane) ordering. "
                  "Points within this distance are considered equivalent in d1. "
                  "Only used by buffer/bufferrough/realistic variants.",
@@ -7169,6 +7580,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             value=st.session_state.get("_6evs_rough_x", 0.0),
             step=0.05, format="%.2f",
             key="_6evs_rough_x",
+            disabled=not _6evs_needs["_6evs_rough_x"],
             help="Equality tolerance on longitudinal ordering. "
                  "Points within this distance are treated as equal in d0. "
                  "Only used by rough/bufferrough/realistic variants.",
@@ -7180,6 +7592,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
             value=st.session_state.get("_6evs_rough_y", 0.30),
             step=0.05, format="%.2f",
             key="_6evs_rough_y",
+            disabled=not _6evs_needs["_6evs_rough_y"],
             help="Equality tolerance on lateral ordering. "
                  "Points within this distance are treated as equal in d1. "
                  "Only used by rough/bufferrough/realistic variants.",
@@ -7191,7 +7604,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
     with _6evs_ds_col1:
         _6evs_dir_scaling_enabled = st.checkbox(
             "↔️ Directional scaling",
-            value=st.session_state.get("_6evs_dir_scaling_enabled", True),
+            value=st.session_state.get("_6evs_dir_scaling_enabled", False),
             key="_6evs_dir_scaling_enabled",
             help="Scale step size independently per axis. "
                  "X-component scaled by d0, Y-component scaled by d1. "
@@ -7200,13 +7613,13 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
     with _6evs_ds_col2:
         _6evs_dir_lat_min = st.number_input(
             "d0 – Longitudinal scale (along road)",
-            min_value=0.0001, max_value=2.00,
-            value=float(st.session_state.get("_6evs_dir_lat_min", 0.20)),
-            step=0.05, format="%.4f",
+            min_value=0.0001, max_value=100.00,
+            value=float(st.session_state.get("_6evs_dir_lat_min", 20.0)),
+            step=0.5, format="%.4f",
             key="_6evs_dir_lat_min",
             disabled=not st.session_state.get("_6evs_dir_scaling_enabled", True),
             help="Step size fraction for the X-axis (longitudinal / along road) component (d0). "
-                 "0.20 = X-component is 20% of maxdist. "
+                 "10.0 = X-component is 1000% of maxdist. "
                  "dx = dist × d0 × cos(θ).",
         )
     with _6evs_ds_col3:
@@ -7270,6 +7683,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
                 "🎯 Soft PDP scoring",
                 value=st.session_state.get("_6evs_soft_pdp_enabled", False),
                 key="_6evs_soft_pdp_enabled",
+                disabled=bool(st.session_state.get("cfg_strict_order_match", True)),
                 help="Accept moves that partially preserve PDP order. "
                      "Instead of requiring 100% match, accept if match % ≥ threshold. "
                      "Allows more exploration at the cost of slight order violations.",
@@ -7442,14 +7856,14 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         _6evs_settings["Rough Y"] = _6evs_rough_y
     _6evs_settings.update({
         "Strategy": "exponential",
-        "Max halving steps": int(st.session_state.get("_6evs_max_halvings", 10)),
+        "Max halving steps": int(st.session_state.get("_6evs_max_halvings", 15)),
         "Timestamps": [0, 34, 67, 183, 213, 249],
         "Point selection": st.session_state.get("_6evs_point_selection", "Single point"),
         "Movement direction": st.session_state.get("_6evs_move_direction", "Same direction"),
         "Maxdist multiplier": float(st.session_state.get("_6evs_maxdist_mult", 1.0)),
         "Maxdist (effective)": round(maxdist * float(st.session_state.get("_6evs_maxdist_mult", 1.0)), 2),
         "Directional scaling": bool(st.session_state.get("_6evs_dir_scaling_enabled", True)),
-        "d0 (longitudinal, along road)": float(st.session_state.get("_6evs_dir_lat_min", 0.20))
+        "d0 (longitudinal, along road)": float(st.session_state.get("_6evs_dir_lat_min", 20.0))
             if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
         "d1 (lateral, across lanes)": float(st.session_state.get("_6evs_dir_long_max", 1.00))
             if st.session_state.get("_6evs_dir_scaling_enabled", True) else "disabled",
@@ -7532,12 +7946,25 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
     try:
         pdp_variant = st.session_state.get("_6evs_pdp_variant") or _gen_variant
-        buffer_x = st.session_state.get("_6evs_buffer_x", _gen_bx) if pdp_variant in ("buffer", "bufferrough") else 0.0
+        # HARD-FORCED STRICT: 6-event search now ALWAYS enforces 100 % PDP-ordering
+        # match (0 mismatches), regardless of the session-level strict flag.
+        # This guarantees external anchors and inter-point inequalities are honoured
+        # exactly, eliminating the "road departure despite correct ordering" issue.
+        # NOTE: we do NOT mutate st.session_state["cfg_strict_order_match"] here
+        # because Streamlit forbids writing to a key bound to an instantiated widget.
+        # Instead we override every downstream variable derived from it.
+        _strict_6evs = True
+        buffer_x = st.session_state.get("_6evs_buffer_x", _gen_bx) if pdp_variant in ("buffer", "bufferrough", "realistic") else 0.0
         buffer_y = st.session_state.get("_6evs_buffer_y", _gen_by) if pdp_variant in ("buffer", "bufferrough") else 0.0
+        # Rough is an INDEPENDENT semantic (ρ-equality band in the PDP matrix).
+        # It is NOT silently zeroed by strict-order-match, because strict-order
+        # only forces 100 % matrix match (zero mismatches), not ρ=0.
+        # The user's rough_x/rough_y settings are always honoured.
         rough_x = st.session_state.get("_6evs_rough_x", _gen_rx) if pdp_variant in ("rough", "bufferrough") else 0.0
-        rough_y = st.session_state.get("_6evs_rough_y", _gen_ry) if pdp_variant in ("rough", "bufferrough") else 0.0
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_threshold = pct_threshold if mode == "Percentage" else max_mismatch_val
+        rough_y = st.session_state.get("_6evs_rough_y", _gen_ry) if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0
+        # Strict overrides any percentage / max-mismatch threshold the user may have set.
+        mode, pct_threshold, max_mismatch_val = "Percentage", 1.0, 0
+        max_threshold = pct_threshold
 
         status_text = st.empty()
         progress_bar = st.progress(0)
@@ -7568,6 +7995,8 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         # How many iterations to run in this batch (default 1)
         _6evs_batch_count = st.session_state.pop("_6evs_batch_count", 1)
 
+        _thresh_6evs, _maxmm_6evs = 1.0, 0  # Hard-forced strict (overrides UI threshold settings).
+
         # Create IncrementalPDPChecker once for O(k·N) PDP checks instead of O(N²)
         _6evs_pdp_checker = IncrementalPDPChecker(
             original_points=_6evs_pts_flat,
@@ -7576,13 +8005,71 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             buffer_y=buffer_y if pdp_variant in ("buffer", "bufferrough") else 0.0,
             rough_x=rough_x if pdp_variant in ("rough", "bufferrough") else 0.0,
             rough_y=rough_y if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0,
-            match_threshold=pct_threshold,
-            max_mismatches=max_mismatch_val if mode != "Percentage" else None,
+            match_threshold=_thresh_6evs,
+            max_mismatches=_maxmm_6evs,
         )
         # Apply already-accepted successful_points to the checker base state
         if sp_dict:
             _sp_base_map: dict[int, np.ndarray] = {idx: sp["point"] for idx, sp in sp_dict.items()}
             _6evs_pdp_checker.update_points(_sp_base_map)
+
+        # ── STRICT FUNDAMENTAL PURGE OF CARRIED-OVER STATE ──
+        # Any sp_dict loaded from a previous batch (possibly produced by an
+        # older, less-strict version of the generator) must be revalidated
+        # against the SAME exact pairwise PDP comparison the display uses
+        # (variant="fundamental", no buffer, no roughness, 0 mismatches).
+        # If the cumulative state already violates strict ordering, drop the
+        # offending point(s) iteratively until clean. This is what guarantees
+        # the user never has to click any "wipe" button between runs.
+        if sp_dict:
+            def _config_from_dict(_d: dict[int, "SuccessfulPoint"]) -> np.ndarray:
+                _cfg = _6evs_pts_flat.copy()
+                for _fi, _spv in _d.items():
+                    if 0 <= _fi < len(_cfg):
+                        _cfg[_fi] = _spv["point"]
+                return _cfg
+
+            def _is_clean(_d: dict[int, "SuccessfulPoint"]) -> bool:
+                if not _d:
+                    return True
+                _d1, _d2 = check_pdp_match(
+                    _6evs_pts_flat,
+                    _config_from_dict(_d),
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x, buffer_y=buffer_y,
+                    rough_x=rough_x, rough_y=rough_y,
+                    match_threshold=1.0, max_mismatches=0,
+                )
+                return bool(_d1 and _d2)
+
+            if not _is_clean(sp_dict):
+                # Drop entries one-by-one (largest displacement first) until clean
+                _evicted: list[int] = []
+                while sp_dict and not _is_clean(sp_dict):
+                    # Score: distance from original position
+                    _worst_idx = max(
+                        sp_dict.keys(),
+                        key=lambda _k: float(np.linalg.norm(
+                            np.asarray(sp_dict[_k]["point"]) - np.asarray(_6evs_pts_flat[_k])
+                        )) if 0 <= _k < len(_6evs_pts_flat) else 0.0,
+                    )
+                    _evicted.append(_worst_idx)
+                    sp_dict.pop(_worst_idx, None)
+                if _evicted:
+                    st.warning(
+                        f"⚠ Strict mode: evicted {len(_evicted)} carried-over point(s) "
+                        f"that violated strict pairwise PDP ordering: {_evicted}"
+                    )
+                # Reset checker and rebuild base state from cleaned sp_dict
+                _6evs_pdp_checker.reset_to_original()
+                if sp_dict:
+                    _6evs_pdp_checker.update_points(
+                        {idx: sp["point"] for idx, sp in sp_dict.items()}
+                    )
+                current_points = _6evs_pts_flat.copy()
+                for _fidx, _sp in sp_dict.items():
+                    if 0 <= _fidx < len(current_points):
+                        current_points[_fidx] = _sp["point"]
 
         # Compute road edges for distance tracking
         _6evs_iter_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
@@ -7621,16 +8108,16 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         # Total accumulated iterations (including from previous batches) for SA schedule
         _sa_total_iter_start = _next_cnum - 1  # iterations already done before this batch
 
-        # Soft PDP scoring
-        _soft_pdp_enabled = st.session_state.get("_6evs_soft_pdp_enabled", False)
-        _soft_pdp_thresh = st.session_state.get("_6evs_soft_pdp_thresh", 0.95) if _soft_pdp_enabled else 1.0
+        # Soft PDP scoring — DISABLED in 6-event search because strict ordering is forced.
+        _soft_pdp_enabled = False
+        _soft_pdp_thresh = 1.0
 
         # Multi-point coordinated moves
         _coord_enabled = st.session_state.get("_6evs_coord_enabled", False)
         _coord_prob = st.session_state.get("_6evs_coord_prob", 0.20) if _coord_enabled else 0.0
 
         # ── Core walk parameters (from top-of-expander controls) ──
-        _6evs_cfg_max_halvings = int(st.session_state.get("_6evs_max_halvings", 10))
+        _6evs_cfg_max_halvings = int(st.session_state.get("_6evs_max_halvings", 15))
         _6evs_cfg_point_sel = st.session_state.get("_6evs_point_selection", "Single point")
         _6evs_cfg_move_dir = st.session_state.get("_6evs_move_direction", "Same direction")
         _6evs_cfg_maxdist_mult = float(st.session_state.get("_6evs_maxdist_mult", 1.00))
@@ -7651,6 +8138,32 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         st.session_state["_override_damping_min"] = _6evs_cfg_damping_lo
         st.session_state["_override_damping_max"] = _6evs_cfg_damping_hi
 
+        # For "Consecutive time stamps" mode, also push the 6-event-specific
+        # object / number-of-timestamps / first-timestamp choices through the
+        # _override_ keys so they take precedence over the main-UI cfg_ keys.
+        if _6evs_cfg_point_sel == "Consecutive time stamps":
+            _6evs_obj_label = st.session_state.get("_6evs_consecutive_object", "random")
+            if _6evs_obj_label == "random":
+                st.session_state["_override_consecutive_object_id"] = -1
+            else:
+                _cts_avail = sorted(int(x) for x in config_df["o"].unique().tolist())  # type: ignore[attr-defined]
+                _cts_labels = [OBJECT_LABELS[i] if i < len(OBJECT_LABELS) else f"obj_{i}" for i in _cts_avail]
+                if _6evs_obj_label in _cts_labels:
+                    st.session_state["_override_consecutive_object_id"] = _cts_avail[_cts_labels.index(_6evs_obj_label)]
+                else:
+                    st.session_state["_override_consecutive_object_id"] = -1
+            st.session_state["_override_group_num_timestamps"] = int(
+                st.session_state.get("_6evs_group_num_timestamps", 6)
+            )
+            st.session_state["_override_consecutive_first_timestamp"] = st.session_state.get(
+                "_6evs_consecutive_first_timestamp", "random"
+            )
+        else:
+            # Clear stale overrides if user switched away
+            st.session_state.pop("_override_consecutive_object_id", None)
+            st.session_state.pop("_override_group_num_timestamps", None)
+            st.session_state.pop("_override_consecutive_first_timestamp", None)
+
         # Rolling acceptance window for auto-stop
         _auto_stop_recent: list[bool] = []
 
@@ -7670,8 +8183,8 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     buffer_y=buffer_y if pdp_variant in ("buffer", "bufferrough") else 0.0,
                     rough_x=rough_x if pdp_variant in ("rough", "bufferrough") else 0.0,
                     rough_y=rough_y if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0,
-                    match_threshold=pct_threshold,
-                    max_mismatches=max_mismatch_val if mode != "Percentage" else None,
+                    match_threshold=_thresh_6evs,
+                    max_mismatches=_maxmm_6evs,
                 )
                 if _pop_dicts[_pi]:
                     _pc.update_points({idx: sp["point"] for idx, sp in _pop_dicts[_pi].items()})
@@ -7723,8 +8236,8 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     buffer_y=buffer_y if pdp_variant in ("buffer", "bufferrough") else 0.0,
                     rough_x=rough_x if pdp_variant in ("rough", "bufferrough") else 0.0,
                     rough_y=rough_y if pdp_variant in ("rough", "bufferrough", "realistic") else 0.0,
-                    match_threshold=pct_threshold,
-                    max_mismatches=max_mismatch_val if mode != "Percentage" else None,
+                    match_threshold=_thresh_6evs,
+                    max_mismatches=_maxmm_6evs,
                 )
                 _pop_checkers[_member] = _active_checker
                 # Reset walk state — each iteration starts from a fresh (shifted) original
@@ -7753,6 +8266,60 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             _saved_maxdist = maxdist
             globals()["maxdist"] = _effective_maxdist
 
+            # ── Build a display-equivalent chain validator that the engine
+            # will consult on every halving step. This way a chain rejection
+            # forces the engine to keep halving (instead of accepting after
+            # ~4 halvings only to be rejected externally, wasting 11 of 15).
+            _val_labels_pre: list[str] = []
+            _val_orig_pts_pre: list[tuple[float, float]] = []
+            _val_fidx_to_pos_pre: dict[int, int] = {}
+            _val_gi_pre = 0
+            for _vo_pre in _6evs_sorted_oids:
+                _va_pre = _6evs_points_plot[_vo_pre]
+                _vlbl_pre = OBJECT_LABELS[int(_vo_pre) % len(OBJECT_LABELS)]
+                for _vli_pre in range(_va_pre.shape[0]):
+                    _val_labels_pre.append(f"{_vlbl_pre}_t{_vli_pre}")
+                    _val_orig_pts_pre.append((float(_va_pre[_vli_pre, 0]), float(_va_pre[_vli_pre, 1])))
+                    _val_fidx_to_pos_pre[_val_gi_pre + _vli_pre] = len(_val_orig_pts_pre) - 1
+                _val_gi_pre += _va_pre.shape[0]
+            _val_ext_raw_pre = (
+                st.session_state.get("external_points", [])
+                if st.session_state.get("use_external_points", False) else []
+            )
+            for _vei_pre, _vep_pre in enumerate(_val_ext_raw_pre):
+                if len(_vep_pre) >= 2:
+                    _val_labels_pre.append(f"ext_{_vei_pre}")
+                    _val_orig_pts_pre.append((float(_vep_pre[0]), float(_vep_pre[1])))
+
+            def _val_chain_pre(_pts: list[tuple[float, float]], _ax: int) -> list[str]:
+                _idx = sorted(range(len(_pts)), key=lambda _i: (_pts[_i][_ax], _i))
+                return [_val_labels_pre[_i] for _i in _idx]
+
+            _val_orig_x_pre = _val_chain_pre(_val_orig_pts_pre, 0)
+            _val_orig_y_pre = _val_chain_pre(_val_orig_pts_pre, 1)
+            # Pre-compute already-accepted sp_dict positions overlay (only
+            # candidate moves change per halving step).
+            _val_sp_overlay_pre: dict[int, tuple[float, float]] = {}
+            for _fi_pre, _sp_pre in sp_dict.items():
+                _pos_pre = _val_fidx_to_pos_pre.get(int(_fi_pre))
+                if _pos_pre is not None:
+                    _pt_pre = _sp_pre["point"]
+                    _val_sp_overlay_pre[_pos_pre] = (float(_pt_pre[0]), float(_pt_pre[1]))
+
+            def _chain_validator(_cand_positions: dict[int, np.ndarray]) -> bool:
+                _gen_pts = list(_val_orig_pts_pre)
+                # Apply already-accepted sp_dict
+                for _p, _xy in _val_sp_overlay_pre.items():
+                    _gen_pts[_p] = _xy
+                # Apply this halving's candidate positions
+                for _ci, _cp in _cand_positions.items():
+                    _cpos = _val_fidx_to_pos_pre.get(int(_ci))
+                    if _cpos is not None:
+                        _gen_pts[_cpos] = (float(_cp[0]), float(_cp[1]))
+                _gx = _val_chain_pre(_gen_pts, 0)
+                _gy = _val_chain_pre(_gen_pts, 1)
+                return _gx == _val_orig_x_pre and _gy == _val_orig_y_pre
+
             # ONE attempt: pick random point + direction, configurable halvings.
             # If PDP fails, point stays at start.
             sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
@@ -7768,16 +8335,69 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 sa_temperature=_sa_temp,
                 soft_pdp_threshold=_soft_pdp_thresh,
                 coordinated_move_prob=_coord_prob,
+                force_strict_exact=True,  # 6-event search ALWAYS forces strict
+                extra_validator=_chain_validator,
             )
 
             # Restore global maxdist
             globals()["maxdist"] = _saved_maxdist
+
+            # ── DISPLAY-EQUIVALENT STRICT CHAIN VALIDATION ──
+            # Re-validate the resulting sp_dict_candidate against the EXACT
+            # same sorted-chain comparison the display uses (single externals,
+            # no replication, no variant tolerance). Guarantees zero false
+            # positives at display time. If the chain check fails, treat the
+            # iteration as failed and keep the previous sp_dict.
+            if _6evs_ok and sp_dict_candidate:
+                # Build origineel chain from _6evs_points_plot + single externals
+                _val_labels: list[str] = []
+                _val_orig_pts: list[tuple[float, float]] = []
+                _val_fidx_to_pos: dict[int, int] = {}
+                _val_gi = 0
+                for _vo in _6evs_sorted_oids:
+                    _va = _6evs_points_plot[_vo]
+                    _vlbl = OBJECT_LABELS[int(_vo) % len(OBJECT_LABELS)]
+                    for _vli in range(_va.shape[0]):
+                        _val_labels.append(f"{_vlbl}_t{_vli}")
+                        _val_orig_pts.append((float(_va[_vli, 0]), float(_va[_vli, 1])))
+                        _val_fidx_to_pos[_val_gi + _vli] = len(_val_orig_pts) - 1
+                    _val_gi += _va.shape[0]
+                # Use unreplicated externals (one entry per ext point), as display does
+                _val_ext_raw = (
+                    st.session_state.get("external_points", [])
+                    if st.session_state.get("use_external_points", False) else []
+                )
+                for _vei, _vep in enumerate(_val_ext_raw):
+                    if len(_vep) >= 2:
+                        _val_labels.append(f"ext_{_vei}")
+                        _val_orig_pts.append((float(_vep[0]), float(_vep[1])))
+                # Build gegenereerd by overlaying sp_dict_candidate
+                _val_gen_pts = list(_val_orig_pts)
+                for _vfi, _vsp in sp_dict_candidate.items():
+                    _vpos = _val_fidx_to_pos.get(int(_vfi))
+                    if _vpos is not None:
+                        _vp = _vsp["point"]
+                        _val_gen_pts[_vpos] = (float(_vp[0]), float(_vp[1]))
+
+                def _val_chain(_pts: list[tuple[float, float]], _ax: int) -> list[str]:
+                    _idx = sorted(range(len(_pts)), key=lambda _i: (_pts[_i][_ax], _i))
+                    return [_val_labels[_i] for _i in _idx]
+
+                _val_orig_x = _val_chain(_val_orig_pts, 0)
+                _val_orig_y = _val_chain(_val_orig_pts, 1)
+                _val_gen_x = _val_chain(_val_gen_pts, 0)
+                _val_gen_y = _val_chain(_val_gen_pts, 1)
+                if _val_gen_x != _val_orig_x or _val_gen_y != _val_orig_y:
+                    # Chain violation — reject this iteration
+                    _6evs_ok = False
 
             if _6evs_ok:
                 sp_dict = sp_dict_candidate
                 _pop_dicts[_member] = sp_dict  # write back to population
             else:
                 _6evs_iters_failed += 1
+                # Point stays at start position of this iteration
+                _6evs_ok = False
 
             # Track for auto-stop rolling window
             _auto_stop_recent.append(_6evs_ok)
@@ -7896,6 +8516,10 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
         st.session_state["_6evs_prev_results_backup"] = list(_6evs_existing_results)
         st.session_state["_6evs_edge_distances"] = _6evs_edge_distances
         st.session_state["_6evs_iter_diagnostics"] = _6evs_iter_diagnostics
+        # Store geometry references so the display-side stale-result sanitation
+        # can re-validate every stored iteration against the strict guard.
+        st.session_state["_6evs_pts_flat_for_validation"] = _6evs_pts_flat
+        st.session_state["_6evs_is_fixed_flat_for_validation"] = list(_6evs_is_fixed_flat)
         st.session_state["_6evs_trajectories"] = {
             k: [p.tolist() if hasattr(p, 'tolist') else list(p) for p in v]
             for k, v in _6evs_trajectories.items()
@@ -8631,14 +9255,15 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                 ax_right.plot(generated_pts[:, 0], generated_pts[:, 1], '-', color=color, linewidth=1.5, alpha=0.7, label=label)
 
                 for j, ((x, y), tval) in enumerate(zip(original_pts, original_vals)):
-                    _draw_car_rect(ax_left, float(x), float(y), color, alpha=0.7, zorder=5)
+                    _draw_car_rect(ax_left, float(x), float(y), color, alpha=0.7, zorder=5,
+                                   front_back=_get_endpoints(o_id, float(tval)))
                     off = offsets[j % len(offsets)]
                     tnum = float(tval)
                     lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
                     if label and lbl:
                         try:
                             ax_left.annotate(
-                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
+                                f"$\\mathit{{{label}}}_{{t_{lbl}}}$",
                                 xy=(x, y),
                                 xytext=off,
                                 textcoords="offset points",
@@ -8651,14 +9276,15 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                             logger.warning(f"[RENDER] LaTeX annotation failed for {label}_{lbl}: {e}")
 
                 for j, ((x, y), tval) in enumerate(zip(generated_pts, generated_vals)):
-                    _draw_car_rect(ax_right, float(x), float(y), color, alpha=1.0, zorder=5)
+                    _draw_car_rect(ax_right, float(x), float(y), color, alpha=1.0, zorder=5,
+                                   front_back=_get_endpoints(o_id, float(tval)))
                     off = offsets[j % len(offsets)]
                     tnum = float(tval)
                     lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
                     if label and lbl:
                         try:
                             ax_right.annotate(
-                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
+                                f"$\\mathit{{{label}}}_{{t_{lbl}}}$",
                                 xy=(x, y),
                                 xytext=off,
                                 textcoords="offset points",
@@ -8681,7 +9307,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
             buf.seek(0)
             
             # Display image
-            st.image(buf, use_container_width=True)
+            st.image(buf, width='stretch')
             
             # Download button
             buf.seek(0)
@@ -8742,7 +9368,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
     df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.2f}")
     
     # Display table
-    st.dataframe(df_metrics, use_container_width=True, height=400)
+    st.dataframe(df_metrics, width='stretch', height=400)
     
     # Add download button for CSV
     csv = df_metrics.to_csv(index=False)
@@ -8809,7 +9435,7 @@ These metrics help identify configurations with extreme local variations, even i
     buf_metrics = io.BytesIO()
     fig_metrics.savefig(buf_metrics, format='png', dpi=100, bbox_inches='tight')
     buf_metrics.seek(0)
-    st.image(buf_metrics, use_container_width=True)
+    st.image(buf_metrics, width='stretch')
     
     st.markdown("---")
     
@@ -9027,7 +9653,8 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                 # Add point annotations
                 offsets = [(3, 3), (3, -8), (-8, 3)]
                 for j, ((x, y), tval) in enumerate(zip(pts_array, vals_array)):
-                    _draw_car_rect(ax_right, float(x), float(y), color, alpha=1.0, zorder=5)
+                    _draw_car_rect(ax_right, float(x), float(y), color, alpha=1.0, zorder=5,
+                                   front_back=_get_endpoints(o_id, float(tval)))
                     off = offsets[j % len(offsets)]
                     try:
                         tnum = float(tval)
@@ -9037,7 +9664,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     # Only add label if both label and lbl are valid
                     if label and lbl:
                         try:
-                            label_text = f"$\\mathit{{{label}}}_{{{lbl}}}$"
+                            label_text = f"$\\mathit{{{label}}}_{{t_{lbl}}}$"
                             ax_right.annotate(
                                 label_text,
                                 xy=(x, y),
@@ -9062,7 +9689,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
             buf.seek(0)
             
             # Display image
-            st.image(buf, use_container_width=True)
+            st.image(buf, width='stretch')
             
             # Download button
             buf.seek(0)
@@ -9123,7 +9750,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
     df_metrics['Max Distance Dev (m)'] = df_metrics['Max Distance Dev (m)'].apply(lambda x: f"{x:.3f}")
     
     # Display table
-    st.dataframe(df_metrics, use_container_width=True, height=400)
+    st.dataframe(df_metrics, width='stretch', height=400)
     
     # Add download button for CSV
     csv = df_metrics.to_csv(index=False)
@@ -9190,7 +9817,7 @@ These metrics help identify configurations with extreme local variations, even i
     buf_metrics = io.BytesIO()
     fig_metrics.savefig(buf_metrics, format='png', dpi=100, bbox_inches='tight')
     buf_metrics.seek(0)
-    st.image(buf_metrics, use_container_width=True)
+    st.image(buf_metrics, width='stretch')
     
     st.markdown("---")
     
@@ -9387,7 +10014,7 @@ Configurations are ranked by perpendicular variance (highest first).""")
             buf = io.BytesIO()
             fig_gen.savefig(buf, format='png', dpi=100, bbox_inches='tight')
             buf.seek(0)
-            st.image(buf, use_container_width=True)
+            st.image(buf, width='stretch')
             
             st.markdown("---")
     
@@ -9403,7 +10030,7 @@ Configurations are ranked by perpendicular variance (highest first).""")
                 "max_angle_deviation": "Max Angle Δ (°)",
                 "max_distance_deviation": "Max Distance Δ (m)"
             }
-        ), use_container_width=True)
+        ), width='stretch')
     
     # Clear button
     if st.button("Clear Results & Cache", key="clear_top5_results"):
@@ -9596,7 +10223,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _buf_s = io.BytesIO()
         fig_static.savefig(_buf_s, format='png', dpi=150)
         _buf_s.seek(0)
-        st.image(_buf_s, use_container_width=True)
+        st.image(_buf_s, width='stretch')
 
         # ---------- Animated GIF: trajectory building up over timestamps ----------
         # Collect all timestamps across all objects (sorted)
@@ -9738,7 +10365,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 "max_angle_deviation": "Max Angle Δ (°)",
                 "max_distance_deviation": "Max Distance Δ (m)",
             }
-        ), use_container_width=True)
+        ), width='stretch')
 
     # Clear button
     if st.button("Clear Results & Cache", key="clear_ext30_results"):
@@ -9923,7 +10550,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _buf_s = io.BytesIO()
         fig_static.savefig(_buf_s, format='png', dpi=150)
         _buf_s.seek(0)
-        st.image(_buf_s, use_container_width=True)
+        st.image(_buf_s, width='stretch')
 
         # ---------- Animated GIF: trajectory building up over timestamps ----------
         _r30_all_ts: list[float] = []
@@ -10056,7 +10683,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 "max_angle_deviation": "Max Angle Δ (°)",
                 "max_distance_deviation": "Max Distance Δ (m)",
             }
-        ), use_container_width=True)
+        ), width='stretch')
 
     # Clear button
     if st.button("Clear Results & Cache (rough)", key="clear_ext30_rough_results"):
@@ -10246,7 +10873,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _buf_s = io.BytesIO()
         fig_static.savefig(_buf_s, format='png', dpi=150)
         _buf_s.seek(0)
-        st.image(_buf_s, use_container_width=True)
+        st.image(_buf_s, width='stretch')
 
         # ---------- Animated GIF: trajectory building up over timestamps ----------
         _brc_all_ts: list[float] = []
@@ -10381,7 +11008,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 "group_size": "Group Size",
                 "object_id": "Object",
             }
-        ), use_container_width=True)
+        ), width='stretch')
 
     # Clear button
     if st.button("Clear Results & Cache (bufferrough consec)", key="clear_br_consec_results"):
@@ -10571,7 +11198,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _buf_s = io.BytesIO()
         fig_static.savefig(_buf_s, format='png', dpi=150)
         _buf_s.seek(0)
-        st.image(_buf_s, use_container_width=True)
+        st.image(_buf_s, width='stretch')
 
         # ---------- Animated GIF: trajectory building up over timestamps ----------
         _brcrd_all_ts: list[float] = []
@@ -10706,7 +11333,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 "group_size": "Group Size",
                 "object_id": "Object",
             }
-        ), use_container_width=True)
+        ), width='stretch')
 
     # Clear button
     if st.button("Clear Results & Cache (bufferrough consec rand dirs)", key="clear_br_consec_rd_results"):
@@ -10891,7 +11518,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
         _buf_s = io.BytesIO()
         fig_static.savefig(_buf_s, format='png', dpi=150)
         _buf_s.seek(0)
-        st.image(_buf_s, use_container_width=True)
+        st.image(_buf_s, width='stretch')
 
         # ---------- Animated GIF ----------
         _fe_all_ts: list[float] = []
@@ -11015,7 +11642,7 @@ Each configuration includes an **animated GIF** download showing the trajectory 
                 "max_angle_deviation": "Max Angle Δ (°)",
                 "max_distance_deviation": "Max Distance Δ (m)",
             }
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Fixed-EP Results", key="clear_ext30_fe_results"):
         st.session_state["_generate_ext30_fe_requested"] = False
@@ -11137,7 +11764,7 @@ def _display_top_n_with_gif(
         ax_s.set_title(f"Config #{_dn_cnum} — PV={_dn_dev:.4f} m² — {_dn_ts_info} timestamps")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         # --- Animated GIF ---
         _dn_all_ts: list[float] = []
@@ -11224,7 +11851,7 @@ def _display_top_n_with_gif(
         st.dataframe(_dn_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key=clear_key):
         st.session_state[requested_key] = False
@@ -11354,7 +11981,7 @@ if st.session_state.get("_generate_half_ts_results", None):
         ax_s.set_title(f"Config #{_hts_cnum}  (PV={_hts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         # --- Animated GIF: build up per object over timestamps ---
         _hts_all_ts_vals: list[float] = []
@@ -11436,7 +12063,7 @@ if st.session_state.get("_generate_half_ts_results", None):
         st.dataframe(_hts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_half_ts_results"):
         st.session_state["_generate_half_ts_requested"] = False
@@ -11554,7 +12181,7 @@ if st.session_state.get("_generate_quarter_ts_results", None):
         ax_s.set_title(f"Config #{_qts_cnum}  (PV={_qts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         # --- Animated GIF: build up per object over timestamps ---
         _qts_all_ts_vals: list[float] = []
@@ -11636,7 +12263,7 @@ if st.session_state.get("_generate_quarter_ts_results", None):
         st.dataframe(_qts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_quarter_ts_results"):
         st.session_state["_generate_quarter_ts_requested"] = False
@@ -11749,7 +12376,7 @@ if st.session_state.get("_generate_eighth_ts_results", None):
         ax_s.set_title(f"Config #{_ets_cnum}  (PV={_ets_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         _ets_all_ts_vals: list[float] = []
         for oid in _ets_sorted_oids:
@@ -11827,7 +12454,7 @@ if st.session_state.get("_generate_eighth_ts_results", None):
         st.dataframe(_ets_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_eighth_ts_results"):
         st.session_state["_generate_eighth_ts_requested"] = False
@@ -11940,7 +12567,7 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
         ax_s.set_title(f"Config #{_sts_cnum}  (PV={_sts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         _sts_all_ts_vals: list[float] = []
         for oid in _sts_sorted_oids:
@@ -12018,7 +12645,7 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
         st.dataframe(_sts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_sixteenth_ts_results"):
         st.session_state["_generate_sixteenth_ts_requested"] = False
@@ -12031,6 +12658,98 @@ if st.session_state.get("_generate_sixteenth_ts_results", None):
 # ============= Display 6-Event Single Iteration results ============
 if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_results_raw = st.session_state["_generate_6ev_single_results"]
+
+    # Build per-display points/externals so auto-purge uses the SAME data as
+    # the chain visualization (no reliance on possibly-stale session arrays).
+    _6evs_pp_disp = st.session_state.get("_6evs_points_plot", all_points_plot)
+    _6evs_sorted_oids_disp = sorted(_6evs_pp_disp.keys())
+    _6evs_ext_pts_disp = (
+        st.session_state.get("external_points", [])
+        if st.session_state.get("use_external_points", False) else []
+    )
+    # Map each successful_point flat-idx to its (oid, local_idx) inside _6evs_pp.
+    _6evs_fidx_to_oid_li: dict[int, tuple[int, int]] = {}
+    _gi = 0
+    for _oid in _6evs_sorted_oids_disp:
+        _n = _6evs_pp_disp[_oid].shape[0]
+        for _li in range(_n):
+            _6evs_fidx_to_oid_li[_gi + _li] = (int(_oid), int(_li))
+        _gi += _n
+
+    # ── AUTO-PURGE STALE STORED ITERATIONS ──
+    # Validate every entry using the SAME sorted-chain ordering test the
+    # display uses (object points + single externals, NO replication, NO
+    # variant tolerance). If origineel-chain differs from gegenereerd-chain
+    # on EITHER axis, drop the entry. Guarantees zero red labels at display.
+    if _6evs_results_raw:
+        # Build ORIGINAL chain (object points untouched + externals)
+        _orig_pts_disp: list[tuple[float, float]] = []
+        _disp_labels: list[str] = []
+        for _oid in _6evs_sorted_oids_disp:
+            _arr = _6evs_pp_disp[_oid]
+            _ll = OBJECT_LABELS[int(_oid) % len(OBJECT_LABELS)]
+            for _li in range(_arr.shape[0]):
+                _disp_labels.append(f"{_ll}_t{_li}")
+                _orig_pts_disp.append((float(_arr[_li, 0]), float(_arr[_li, 1])))
+        for _ei, _ep in enumerate(_6evs_ext_pts_disp):
+            if len(_ep) >= 2:
+                _disp_labels.append(f"ext_{_ei}")
+                _orig_pts_disp.append((float(_ep[0]), float(_ep[1])))
+
+        def _chain_of(_pts: list[tuple[float, float]], _axis: int) -> list[str]:
+            _idx = sorted(range(len(_pts)), key=lambda _i: (_pts[_i][_axis], _i))
+            return [_disp_labels[_i] for _i in _idx]
+
+        _orig_chain_x = _chain_of(_orig_pts_disp, 0)
+        _orig_chain_y = _chain_of(_orig_pts_disp, 1)
+
+        _kept: list = []
+        _dropped_cnums: list[int] = []
+        for _entry in _6evs_results_raw:
+            try:
+                _ec, _epv, _ecfg = _entry
+                _esp = _ecfg.get("successful_points", [])
+                # Build gegenereerd points by overlaying sp on a fresh copy
+                _gen_arrs: dict[int, np.ndarray] = {
+                    _o: _6evs_pp_disp[_o].copy() for _o in _6evs_sorted_oids_disp
+                }
+                for _spv in _esp:
+                    _fi = int(_spv["original_parent_idx"])
+                    _ol = _6evs_fidx_to_oid_li.get(_fi)
+                    if _ol is None:
+                        continue
+                    _o, _li = _ol
+                    if _o in _gen_arrs and 0 <= _li < _gen_arrs[_o].shape[0]:
+                        _gen_arrs[_o][_li] = _spv["point"]
+                _gen_pts_disp: list[tuple[float, float]] = []
+                for _oid in _6evs_sorted_oids_disp:
+                    _ga = _gen_arrs[_oid]
+                    for _li in range(_ga.shape[0]):
+                        _gen_pts_disp.append((float(_ga[_li, 0]), float(_ga[_li, 1])))
+                for _ei, _ep in enumerate(_6evs_ext_pts_disp):
+                    if len(_ep) >= 2:
+                        _gen_pts_disp.append((float(_ep[0]), float(_ep[1])))
+                _gen_chain_x = _chain_of(_gen_pts_disp, 0)
+                _gen_chain_y = _chain_of(_gen_pts_disp, 1)
+                if _gen_chain_x == _orig_chain_x and _gen_chain_y == _orig_chain_y:
+                    _kept.append(_entry)
+                else:
+                    _dropped_cnums.append(int(_ec))
+            except Exception:
+                _kept.append(_entry)
+        if _dropped_cnums:
+            st.session_state["_generate_6ev_single_results"] = _kept
+            _6evs_results_raw = _kept
+            _bidx = int(st.session_state.get("_6evs_browse_idx", 0))
+            _max_valid = len(_kept)
+            if _bidx > _max_valid:
+                st.session_state["_6evs_browse_idx"] = _max_valid
+            st.warning(
+                f"⚠ Auto-purged {len(_dropped_cnums)} opgeslagen iteratie(s) die de "
+                f"strikte chain-ordening schonden. "
+                f"Verwijderd: cnum {_dropped_cnums[:5]}{'...' if len(_dropped_cnums) > 5 else ''}"
+            )
+
     # Prepend the original (unmodified) configuration as index 0
     _6evs_original_entry = (0, 0.0, {"successful_points": [], "move_succeeded": True})
     _6evs_results = [_6evs_original_entry] + list(_6evs_results_raw)
@@ -12052,6 +12771,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _gen_rx_d = st.session_state.get("_6evs_rough_x", 0.0)
     _gen_ry_d = st.session_state.get("_6evs_rough_y", 0.4)
 
+    # One-time migration: old sessions used lane2 center -3.5; align with 3.7m lane width.
+    if not st.session_state.get("_6evs_lane_defaults_migrated_v2", False):
+        if "_6evs_lane2_center" not in st.session_state or abs(float(st.session_state.get("_6evs_lane2_center", -3.5)) + 3.5) < 1e-9:
+            st.session_state["_6evs_lane2_center"] = -_6EVS_LANE_WIDTH
+        st.session_state["_6evs_lane_defaults_migrated_v2"] = True
+
     # Settings summary (including lane settings)
     with st.expander("⚙️ Chosen settings", expanded=False):
         _6evs_show_lanes = st.checkbox("Show lanes", value=st.session_state.get("_6evs_show_lanes", True), key="_6evs_show_lanes")
@@ -12063,7 +12788,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             )
         with _lane_col2:
             _6evs_lane2_center = st.number_input(
-                "Lane 2 center (y)", value=st.session_state.get("_6evs_lane2_center", -3.5),
+                "Lane 2 center (y)", value=st.session_state.get("_6evs_lane2_center", -_6EVS_LANE_WIDTH),
                 step=0.5, format="%.1f", key="_6evs_lane2_center",
             )
         _6evs_lc = LANE_CONFIGURATIONS.get(selected_c_int, {})
@@ -12191,7 +12916,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_disp_rx = st.session_state.get("_6evs_rough_x", _gen_rx_d)
     _6evs_disp_ry = st.session_state.get("_6evs_rough_y", _gen_ry_d)
     _6evs_sp = _6evs_cfg.get("successful_points", [])
-    _6evs_n_moves = len(_6evs_sp)
+    # Cumulative successful moves up to (and including) the currently-browsed
+    # iteration. Each iteration moves ONE point; if the same point is moved
+    # multiple times, sp_dict only stores its latest entry, so len(_6evs_sp)
+    # is the count of UNIQUE points moved (capped at the dataset size).
+    # The true "points moved" count is the number of iterations whose
+    # move_succeeded flag is True.
+    _6evs_n_moves = sum(
+        1 for (_cn, _pv, _cf) in _6evs_results[1:_6evs_browse_idx + 1]
+        if _cf.get("move_succeeded", True)
+    )
     # Count unique point indices that have been moved
     _6evs_unique_moved = len({int(sp["original_parent_idx"]) for sp in _6evs_sp})
 
@@ -12217,7 +12951,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _mv_dist = float(np.linalg.norm(np.asarray(_mv_new) - np.asarray(_mv_parent))) if _mv_parent is not None and _mv_new is not None else 0.0
             _6evs_moved_info = f"🔄 Iteration #{_6evs_cnum}: moved **{_mv_lbl}{_subscript(_mv_li)}** (flat idx {_6evs_moved_fidx}) — Δ = {_mv_dist:.4f} m"
     elif not _6evs_move_succeeded:
-        _6evs_moved_info = f"❌ Iteration #{_6evs_cnum}: move **failed** — point stayed at start position (10 halvings without valid PDP move)"
+        _6evs_moved_info = (f"❌ Iteration #{_6evs_cnum}: move **failed** — "
+                            f"point stayed at start position (no valid PDP move within the halving budget)")
 
     if _6evs_browse_idx == 0:
         st.markdown("#### Original configuration")
@@ -12232,7 +12967,6 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.info(_6evs_moved_info)
         else:
             st.warning(_6evs_moved_info)
-
     _6evs_gen_map: dict[int, np.ndarray] = {}
     for sp in _6evs_sp:
         _6evs_gen_map[int(sp["original_parent_idx"])] = sp["point"]
@@ -12252,6 +12986,37 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_gi += n_pts
 
     # ---- Compute axis ranges ----
+    # FIXED x-axis bounds: derived ONLY from the original trajectories so the
+    # range NEVER shifts when new iterations are added or when browsing.
+    # Cached per dataset (id(_6evs_pp)) so the same range persists for the
+    # entire lifetime of the loaded data.
+    _6evs_axis_cache_key = id(_6evs_pp)
+    _6evs_axis_cache = st.session_state.get("_6evs_axis_bounds_cache")
+    if _6evs_axis_cache is not None and _6evs_axis_cache.get("key") == _6evs_axis_cache_key:
+        _6evs_x_data_min = _6evs_axis_cache["xmin"]
+        _6evs_x_data_max = _6evs_axis_cache["xmax"]
+        _6evs_global_all_y = _6evs_axis_cache["ys"]
+    else:
+        _6evs_global_all_x: list[float] = []
+        _6evs_global_all_y: list[float] = []
+        # Bounds are based ONLY on originals — generated points are NOT
+        # included so adding new iterations cannot change the x-axis range.
+        for _oid in _6evs_sorted_oids:
+            _orig_arr = _6evs_pp[_oid]
+            if _orig_arr.size:
+                _6evs_global_all_x.extend(_orig_arr[:, 0].tolist())
+                _6evs_global_all_y.extend(_orig_arr[:, 1].tolist())
+        _6evs_x_data_min = min(_6evs_global_all_x) if _6evs_global_all_x else 0
+        _6evs_x_data_max = max(_6evs_global_all_x) if _6evs_global_all_x else 1
+        st.session_state["_6evs_axis_bounds_cache"] = {
+            "key": _6evs_axis_cache_key,
+            "xmin": _6evs_x_data_min,
+            "xmax": _6evs_x_data_max,
+            "ys": _6evs_global_all_y,
+        }
+        _6evs_global_all_y = _6evs_global_all_y
+
+    # Also collect current-iteration points (used elsewhere if needed)
     _6evs_all_x: list[float] = []
     _6evs_all_y: list[float] = []
     for orig, gen, ts in _6evs_plot_data:
@@ -12260,9 +13025,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _6evs_all_y.extend(orig[:, 1].tolist())
         _6evs_all_y.extend(gen[:, 1].tolist())
 
-    # X-axis: data range + 20% margin on each side
-    _6evs_x_data_min = min(_6evs_all_x) if _6evs_all_x else 0
-    _6evs_x_data_max = max(_6evs_all_x) if _6evs_all_x else 1
+    # X-axis: data range + 20% margin on each side (using STABLE global bounds)
     _6evs_x_range = _6evs_x_data_max - _6evs_x_data_min
     _6evs_x_margin = max(_6evs_x_range * 0.20, 5.0)
     _6evs_xlo = _6evs_x_data_min - _6evs_x_margin
@@ -12327,14 +13090,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
         # Original: dashed + point labels
         ax_s.plot(orig[:, 0], orig[:, 1], lw=1.0, color=clr, alpha=0.4, ls='--', label=f"{lbl} orig")
         for li in range(orig.shape[0]):
-            _draw_car_rect(ax_s, float(orig[li, 0]), float(orig[li, 1]), clr, alpha=0.4, zorder=2, linewidth=1.0)
+            _draw_car_rect(ax_s, float(orig[li, 0]), float(orig[li, 1]), clr, alpha=0.4, zorder=2, linewidth=1.0,
+                           front_back=_get_endpoints(oid, float(ts[li])))
             ax_s.annotate(f"{lbl}{_subscript(li)}", xy=(orig[li, 0], orig[li, 1]),
                           fontsize=5, color=clr, alpha=0.5,
                           xytext=(3, 3), textcoords='offset points')
         # Generated: solid + car rectangles
         ax_s.plot(gen[:, 0], gen[:, 1], lw=1.8, color=clr, alpha=1.0, label=f"{lbl} gen")
         for li in range(gen.shape[0]):
-            _draw_car_rect(ax_s, float(gen[li, 0]), float(gen[li, 1]), clr, alpha=1.0, zorder=5)
+            _draw_car_rect(ax_s, float(gen[li, 0]), float(gen[li, 1]), clr, alpha=1.0, zorder=5,
+                           front_back=_get_endpoints(oid, float(ts[li])))
             ax_s.annotate(f"{lbl}{_subscript(li)}", xy=(gen[li, 0], gen[li, 1]),
                           fontsize=5, color=clr, alpha=0.9,
                           xytext=(3, -8), textcoords='offset points')
@@ -12431,9 +13196,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
     ax_s.set_xlim(_6evs_xlo, _6evs_xhi)
     ax_s.set_ylim(_6evs_ylo, _6evs_yhi)
-    ax_s.legend(fontsize=7, loc='upper left')
-    ax_s.set_xlabel("d0 / x-axis (m)")
-    ax_s.set_ylabel("d1 / y-axis (m)")
+    # Larger ticks; drop the half-integer y-ticks (-7.5, -2.5, 2.5, 7.5) for readability
+    ax_s.set_yticks([-10, -5, 0, 5, 10])
+    ax_s.tick_params(axis='both', which='major', labelsize=14)
+    ax_s.legend(fontsize=13, loc='upper left', ncol=3, columnspacing=1.0,
+                handletextpad=0.5, labelspacing=0.4, framealpha=0.85)
+    ax_s.set_xlabel("d0 / x-axis (m)", fontsize=14)
+    ax_s.set_ylabel("d1 / y-axis (m)", fontsize=14)
     # Build plot subtitle with settings
     _6evs_sub_parts = [_6evs_disp_variant]
     if _6evs_disp_variant in ('buffer', 'bufferrough'):
@@ -12450,25 +13219,374 @@ if st.session_state.get("_generate_6ev_single_results", None):
     else:
         _6evs_plot_title = (f"6-Event — Iteration {_6evs_cnum}/{_6evs_n_generated} cumulative  |  "
                             f"{_6evs_n_moves} pts moved, {_6evs_unique_moved} unique\n{_6evs_subtitle}")
-    ax_s.set_title(_6evs_plot_title, fontsize=9)
+    ax_s.set_title(_6evs_plot_title, fontsize=13)
     ax_s.grid(True, alpha=0.3)
     fig_s.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.12)
     buf_s = io.BytesIO()
     fig_s.savefig(buf_s, format='png', dpi=150)
     buf_s.seek(0)
-    st.image(buf_s, use_container_width=True)
+    st.image(buf_s, width='stretch')
     plt.close(fig_s)
+
+    # Placeholder so download/ZIP buttons render ABOVE the ordering chains.
+    # Populated further down using `_6evs_top_buttons.<widget>(...)` syntax.
+    _6evs_top_buttons = st.container()
+
+    # ============================================================
+    # ORDERING DEBUG TABLE — d0 + d1 with deviations highlighted
+    # ============================================================
+    # Build labels (object-first, e.g. A_t0..A_t5, B_t0..B_t5, ext_0, ext_1)
+    _ord_labels: list[str] = []
+    _ord_orig_pts: list[tuple[float, float]] = []
+    _ord_gen_pts: list[tuple[float, float]] = []
+    _ord_is_ext: list[bool] = []
+    for _ord_oi, _ord_oid in enumerate(_6evs_sorted_oids):
+        _ord_lbl_letter = OBJECT_LABELS[int(_ord_oid) % len(OBJECT_LABELS)]
+        _ord_orig_arr, _ord_gen_arr, _ord_ts_arr = _6evs_plot_data[_ord_oi]
+        for _ord_li in range(_ord_orig_arr.shape[0]):
+            _ord_labels.append(f"{_ord_lbl_letter}_t{_ord_li}")
+            _ord_orig_pts.append((float(_ord_orig_arr[_ord_li, 0]), float(_ord_orig_arr[_ord_li, 1])))
+            _ord_gen_pts.append((float(_ord_gen_arr[_ord_li, 0]), float(_ord_gen_arr[_ord_li, 1])))
+            _ord_is_ext.append(False)
+    if _6evs_ext_pts:
+        for _ei, _ep in enumerate(_6evs_ext_pts):
+            if len(_ep) >= 2:
+                _ord_labels.append(f"ext_{_ei}")
+                _ord_orig_pts.append((float(_ep[0]), float(_ep[1])))
+                _ord_gen_pts.append((float(_ep[0]), float(_ep[1])))  # externals never move
+                _ord_is_ext.append(True)
+
+    def _ord_sort_chain(values: list[float], labels: list[str]) -> list[str]:
+        """Return labels sorted ascending by value (stable)."""
+        idx_sorted = sorted(range(len(values)), key=lambda i: (values[i], i))
+        return [labels[i] for i in idx_sorted]
+
+    if _ord_labels:
+        _ord_orig_x = [p[0] for p in _ord_orig_pts]
+        _ord_orig_y = [p[1] for p in _ord_orig_pts]
+        _ord_gen_x = [p[0] for p in _ord_gen_pts]
+        _ord_gen_y = [p[1] for p in _ord_gen_pts]
+        _ord_chain_orig_x = _ord_sort_chain(_ord_orig_x, _ord_labels)
+        _ord_chain_gen_x = _ord_sort_chain(_ord_gen_x, _ord_labels)
+        _ord_chain_orig_y = _ord_sort_chain(_ord_orig_y, _ord_labels)
+        _ord_chain_gen_y = _ord_sort_chain(_ord_gen_y, _ord_labels)
+
+        # Determine which positions deviate between orig and gen chain
+        def _diff_positions(orig_chain: list[str], gen_chain: list[str]) -> set[int]:
+            return {i for i, (a, b) in enumerate(zip(orig_chain, gen_chain)) if a != b}
+
+        _diff_x = _diff_positions(_ord_chain_orig_x, _ord_chain_gen_x)
+        _diff_y = _diff_positions(_ord_chain_orig_y, _ord_chain_gen_y)
+
+
+
+        def _render_chain_html(chain: list[str], values: list[float],
+                                value_lookup: dict[str, float],
+                                bad_positions: set[int],
+                                ext_labels_set: set[str]) -> str:
+            """Render an ordered chain of labels with values, color-coding
+            positions that differ from the original ordering."""
+            parts: list[str] = []
+            for i, lbl in enumerate(chain):
+                _val = value_lookup.get(lbl, float('nan'))
+                _is_ext = lbl in ext_labels_set
+                _is_bad = i in bad_positions
+                _color = "#d62728" if _is_bad else ("#444" if not _is_ext else "#1f77b4")
+                _weight = "bold" if (_is_bad or _is_ext) else "normal"
+                _bg = "#fff3cd" if _is_ext else "transparent"
+                parts.append(
+                    f"<span style='color:{_color}; font-weight:{_weight}; "
+                    f"background:{_bg}; padding:2px 4px; border-radius:3px; "
+                    f"margin:1px; display:inline-block; font-family:monospace; "
+                    f"font-size:13px;'>"
+                    f"{lbl}<sub style='font-size:10px;'>{_val:+.3f}</sub></span>"
+                )
+            return " &lt; ".join(parts)
+
+        _ord_ext_set = {lbl for lbl, is_ext in zip(_ord_labels, _ord_is_ext) if is_ext}
+        _ord_orig_x_lookup = dict(zip(_ord_labels, _ord_orig_x))
+        _ord_gen_x_lookup = dict(zip(_ord_labels, _ord_gen_x))
+        _ord_orig_y_lookup = dict(zip(_ord_labels, _ord_orig_y))
+        _ord_gen_y_lookup = dict(zip(_ord_labels, _ord_gen_y))
+
+        _ord_n_violations = len(_diff_x) + len(_diff_y)
+        _ord_status_color = "#d62728" if _ord_n_violations > 0 else "#2ca02c"
+        _ord_status_txt = (f"⚠ {_ord_n_violations} positie-afwijking(en) t.o.v. originele ordening"
+                           if _ord_n_violations > 0
+                           else "✓ Ordening identiek aan origineel — strict-match OK")
+
+        st.markdown(
+            f"<div style='margin-top:10px; padding:8px; border-left:4px solid {_ord_status_color}; "
+            f"background:#fafafa;'>"
+            f"<b style='color:{_ord_status_color};'>{_ord_status_txt}</b><br>"
+            f"<small style='color:#666;'>Externe punten in geel; rood = label staat op een "
+            f"andere positie dan in het origineel. Subscript = waarde op die as.</small>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("**d0 (x-as) — origineel:**", help="Ascending links → rechts")
+        st.markdown(_render_chain_html(_ord_chain_orig_x, _ord_orig_x,
+                                       _ord_orig_x_lookup, set(), _ord_ext_set),
+                    unsafe_allow_html=True)
+        st.markdown("**d0 (x-as) — gegenereerd:**")
+        st.markdown(_render_chain_html(_ord_chain_gen_x, _ord_gen_x,
+                                       _ord_gen_x_lookup, _diff_x, _ord_ext_set),
+                    unsafe_allow_html=True)
+
+        st.markdown("**d1 (y-as) — origineel:**", help="Ascending links → rechts")
+        st.markdown(_render_chain_html(_ord_chain_orig_y, _ord_orig_y,
+                                       _ord_orig_y_lookup, set(), _ord_ext_set),
+                    unsafe_allow_html=True)
+        st.markdown("**d1 (y-as) — gegenereerd:**")
+        st.markdown(_render_chain_html(_ord_chain_gen_y, _ord_gen_y,
+                                       _ord_gen_y_lookup, _diff_y, _ord_ext_set),
+                    unsafe_allow_html=True)
+
+        # Per-axis pairwise mismatch table vs externals
+        if _ord_ext_set:
+            _pair_rows: list[dict] = []
+            for _lbl, _is_ext in zip(_ord_labels, _ord_is_ext):
+                if _is_ext:
+                    continue
+                for _ext_lbl in _ord_ext_set:
+                    for _axis_name, _orig_lookup, _gen_lookup in (
+                        ("d0", _ord_orig_x_lookup, _ord_gen_x_lookup),
+                        ("d1", _ord_orig_y_lookup, _ord_gen_y_lookup),
+                    ):
+                        _orig_diff = _orig_lookup[_lbl] - _orig_lookup[_ext_lbl]
+                        _gen_diff = _gen_lookup[_lbl] - _gen_lookup[_ext_lbl]
+                        _orig_sign = "+" if _orig_diff > 0 else ("-" if _orig_diff < 0 else "0")
+                        _gen_sign = "+" if _gen_diff > 0 else ("-" if _gen_diff < 0 else "0")
+                        if _orig_sign != _gen_sign:
+                            _pair_rows.append({
+                                "punt": _lbl, "ext": _ext_lbl, "as": _axis_name,
+                                "orig Δ": round(_orig_diff, 3),
+                                "gen Δ": round(_gen_diff, 3),
+                                "orig teken": _orig_sign, "gen teken": _gen_sign,
+                            })
+            if _pair_rows:
+                st.markdown("**❌ Externe-anker schendingen (teken-omkering):**")
+                st.dataframe(_pair_rows, width='stretch')
+            else:
+                st.markdown("**✓ Geen externe-anker schendingen.**")
 
     # ---- Download static PNG ----
     buf_s.seek(0)
     _png_label = "C0_original" if _6evs_browse_idx == 0 else f"iter{_6evs_cnum}"
-    st.download_button(
+    _6evs_top_buttons.download_button(
         label=f"⬇ Download static PNG — {_png_label}",
         data=buf_s.getvalue(),
         file_name=f"6event_{_png_label}_static.png",
         mime="image/png",
         key="_6evs_static_png_dl",
     )
+
+    # ---- Download ALL static PNGs as ZIP ----
+    # Helper: rebuild the static PNG for any iteration index, no Streamlit calls.
+    # Mirrors the inline rendering above; uses CONSTANT axis ranges (computed from
+    # iteration 0 = original) so all PNGs in the ZIP share the same frame.
+    _zip_ext_pts = st.session_state.get("external_points", []) if st.session_state.get("use_external_points", False) else []
+    _zip_show_lanes = st.session_state.get("_6evs_show_lanes", True)
+    _zip_l1c = st.session_state.get("_6evs_lane1_center", 0.0)
+    _zip_l2c = st.session_state.get("_6evs_lane2_center", -3.5)
+    _zip_lw = _6EVS_LANE_WIDTH
+
+    def _6evs_build_png_for_iter(_zi: int) -> bytes:
+        _zcnum, _zdev, _zcfg = _6evs_results[_zi]
+        _zsp = _zcfg.get("successful_points", [])
+        # Cumulative successful moves up to and including this iteration
+        _znmoves = sum(
+            1 for (_cn, _pv, _cf) in _6evs_results[1:_zi + 1]
+            if _cf.get("move_succeeded", True)
+        )
+        _zunique = len({int(sp["original_parent_idx"]) for sp in _zsp})
+        _zgen_map: dict[int, np.ndarray] = {}
+        for sp in _zsp:
+            _zgen_map[int(sp["original_parent_idx"])] = sp["point"]
+        _zplot_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        _zgi = 0
+        for _zoid in _6evs_sorted_oids:
+            _zn = _6evs_pp[_zoid].shape[0]
+            _zorig = _6evs_pp[_zoid]
+            _zts = _6evs_vp[_zoid]
+            _zgen = _zorig.copy()
+            for _zli in range(_zn):
+                _zfi = _zgi + _zli
+                if _zfi in _zgen_map:
+                    _zgen[_zli] = _zgen_map[_zfi]
+            _zplot_data.append((_zorig, _zgen, _zts))
+            _zgi += _zn
+        # Use the SAME axis range as the currently-displayed plot
+        _zxlo, _zxhi, _zylo, _zyhi = _6evs_xlo, _6evs_xhi, _6evs_ylo, _6evs_yhi
+        _zfig = Figure(figsize=(_6evs_fw, _6evs_fh), dpi=150)
+        _zax = _zfig.add_subplot(111)
+        if _zip_show_lanes:
+            _zrtop = max(_zip_l1c + _zip_lw / 2, _zip_l2c + _zip_lw / 2)
+            _zrbot = min(_zip_l1c - _zip_lw / 2, _zip_l2c - _zip_lw / 2)
+            _zax.axhspan(_zrbot, _zrtop, color='#A9A9A9', alpha=0.55, zorder=0)
+            _zax.axhline(_zrtop, color='black', linewidth=1.0, linestyle='-', zorder=1)
+            _zax.axhline(_zrbot, color='black', linewidth=1.0, linestyle='-', zorder=1)
+            _zdiv = (_zip_l1c + _zip_l2c) / 2.0
+            _zax.axhline(_zdiv, color='white', linewidth=2.5, linestyle=(0, (5, 4)), zorder=1)
+        for _zoidx, _zoid in enumerate(_6evs_sorted_oids):
+            _zorig, _zgen, _zts = _zplot_data[_zoidx]
+            _zlbl = OBJECT_LABELS[int(_zoid) % len(OBJECT_LABELS)]
+            _zclr = f"C{int(_zoid)}"
+            _zax.plot(_zorig[:, 0], _zorig[:, 1], lw=1.0, color=_zclr, alpha=0.4, ls='--', label=f"{_zlbl} orig")
+            for _zli in range(_zorig.shape[0]):
+                _draw_car_rect(_zax, float(_zorig[_zli, 0]), float(_zorig[_zli, 1]), _zclr, alpha=0.4, zorder=2, linewidth=1.0,
+                               front_back=_get_endpoints(_zoid, float(_zts[_zli])))
+                _zax.annotate(f"{_zlbl}{_subscript(_zli)}", xy=(_zorig[_zli, 0], _zorig[_zli, 1]),
+                              fontsize=5, color=_zclr, alpha=0.5, xytext=(3, 3), textcoords='offset points')
+            _zax.plot(_zgen[:, 0], _zgen[:, 1], lw=1.8, color=_zclr, alpha=1.0, label=f"{_zlbl} gen")
+            for _zli in range(_zgen.shape[0]):
+                _draw_car_rect(_zax, float(_zgen[_zli, 0]), float(_zgen[_zli, 1]), _zclr, alpha=1.0, zorder=5,
+                               front_back=_get_endpoints(_zoid, float(_zts[_zli])))
+                _zax.annotate(f"{_zlbl}{_subscript(_zli)}", xy=(_zgen[_zli, 0], _zgen[_zli, 1]),
+                              fontsize=5, color=_zclr, alpha=0.9, xytext=(3, -8), textcoords='offset points')
+        if _zip_ext_pts:
+            _zec = [(float(_p[0]), float(_p[1])) for _p in _zip_ext_pts if len(_p) >= 2]
+            if _zec:
+                _zea = np.array(_zec)
+                _zax.scatter(_zea[:, 0], _zea[:, 1], s=40, marker='o', color='gray',
+                             edgecolors='black', linewidths=1.5, zorder=5, label='External ref.')
+                for _zei, (_zex, _zey) in enumerate(_zec):
+                    _zax.annotate(f"ext_{_zei}", xy=(_zex, _zey), xytext=(5, 5),
+                                  textcoords="offset points", fontsize=5, color='gray', ha='left', va='bottom')
+        # Buffer / rough zones (compute tangent/normal from generated centerline)
+        _ztan = None
+        _znorm = None
+        try:
+            from collections import defaultdict as _zdd
+            _zbt: _zdd[float, list[tuple[float, float]]] = _zdd(list)
+            for _zo, _zg, _zt in _zplot_data:
+                for _zpi in range(_zg.shape[0]):
+                    _zbt[float(_zt[_zpi])].append((float(_zg[_zpi, 0]), float(_zg[_zpi, 1])))
+            _zcs = []
+            for _zk in sorted(_zbt.keys()):
+                _zpa = _zbt[_zk]
+                _zcs.append((np.mean([p[0] for p in _zpa]), np.mean([p[1] for p in _zpa])))
+            if len(_zcs) >= 2:
+                _zcl = np.array(_zcs)
+                _zv = _zcl[-1] - _zcl[0]
+                _zvn = float(np.linalg.norm(_zv))
+                if _zvn > 1e-6:
+                    _ztan = _zv / _zvn
+                    _znorm = np.array([-_ztan[1], _ztan[0]])
+        except Exception:
+            pass
+        for _zo, _zg, _zt in _zplot_data:
+            for _zpi in range(_zg.shape[0]):
+                _zgx, _zgy = float(_zg[_zpi, 0]), float(_zg[_zpi, 1])
+                _zcp = np.array([_zgx, _zgy])
+                if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic') and _6evs_disp_bx > 0:
+                    if _ztan is not None and _znorm is not None:
+                        _zbp = [_zcp - _6evs_disp_bx * _ztan, _zcp + _6evs_disp_bx * _ztan]
+                        for _zbpt in _zbp:
+                            _zax.scatter([_zbpt[0]], [_zbpt[1]], s=18, zorder=5, color='purple', alpha=0.5, marker='x')
+                        _zax.plot([_zbp[0][0], _zbp[1][0]], [_zbp[0][1], _zbp[1][1]],
+                                  color='purple', alpha=0.5, linewidth=1, linestyle='--', zorder=4)
+                    else:
+                        _zax.scatter([_zgx - _6evs_disp_bx], [_zgy], s=18, zorder=5, color='purple', alpha=0.5, marker='x')
+                        _zax.scatter([_zgx + _6evs_disp_bx], [_zgy], s=18, zorder=5, color='purple', alpha=0.5, marker='x')
+                        _zax.plot([_zgx - _6evs_disp_bx, _zgx + _6evs_disp_bx], [_zgy, _zgy],
+                                  color='purple', alpha=0.5, linewidth=1, linestyle='--', zorder=4)
+                if _6evs_disp_variant in ('rough', 'bufferrough') and (_6evs_disp_rx > 0 or _6evs_disp_ry > 0):
+                    _zdrx = _6evs_disp_rx if _6evs_disp_rx > 0 else 0.15
+                    _zdry = _6evs_disp_ry if _6evs_disp_ry > 0 else 0.15
+                    if _ztan is not None and _znorm is not None:
+                        _zcorn = [
+                            _zcp - _zdrx * _ztan - _zdry * _znorm,
+                            _zcp + _zdrx * _ztan - _zdry * _znorm,
+                            _zcp + _zdrx * _ztan + _zdry * _znorm,
+                            _zcp - _zdrx * _ztan + _zdry * _znorm,
+                        ]
+                        _zpoly = matplotlib.patches.Polygon(_zcorn, closed=True,
+                            edgecolor='green', facecolor='green', alpha=0.2,
+                            linewidth=1.5, linestyle=':', zorder=3)
+                        _zax.add_patch(_zpoly)
+                    else:
+                        _zrect = matplotlib.patches.Rectangle(
+                            (_zgx - _zdrx, _zgy - _zdry), 2 * _zdrx, 2 * _zdry,
+                            edgecolor='green', facecolor='green', alpha=0.2,
+                            linewidth=1.5, linestyle=':', zorder=3)
+                        _zax.add_patch(_zrect)
+        _zax.set_xlim(_zxlo, _zxhi)
+        _zax.set_ylim(_zylo, _zyhi)
+        _zax.set_yticks([-10, -5, 0, 5, 10])
+        _zax.tick_params(axis='both', which='major', labelsize=14)
+        _zax.legend(fontsize=13, loc='upper left', ncol=3, columnspacing=1.0,
+                    handletextpad=0.5, labelspacing=0.4, framealpha=0.85)
+        _zax.set_xlabel("d0 / x-axis (m)", fontsize=14)
+        _zax.set_ylabel("d1 / y-axis (m)", fontsize=14)
+        _zsp_parts = [_6evs_disp_variant]
+        if _6evs_disp_variant in ('buffer', 'bufferrough'):
+            _zsp_parts.append(f"buf_x={_6evs_disp_bx}")
+            _zsp_parts.append(f"buf_y={_6evs_disp_by}")
+        if _6evs_disp_variant in ('rough', 'bufferrough'):
+            _zsp_parts.append(f"rough_x={_6evs_disp_rx}")
+            _zsp_parts.append(f"rough_y={_6evs_disp_ry}")
+        if _zip_ext_pts:
+            _zsp_parts.append(f"{len(_zip_ext_pts)} ext.pts")
+        _zsub = "  |  ".join(_zsp_parts)
+        if _zi == 0:
+            _ztitle = f"6-Event — Original\n{_zsub}"
+        else:
+            _ztitle = (f"6-Event — Iteration {_zcnum}/{_6evs_n_generated} cumulative  |  "
+                       f"{_znmoves} pts moved, {_zunique} unique\n{_zsub}")
+        _zax.set_title(_ztitle, fontsize=13)
+        _zax.grid(True, alpha=0.3)
+        _zfig.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.12)
+        _zbuf = io.BytesIO()
+        _zfig.savefig(_zbuf, format='png', dpi=150)
+        plt.close(_zfig)
+        return _zbuf.getvalue()
+
+    _zip_col1, _zip_col2 = _6evs_top_buttons.columns([1, 3], gap="small")
+    _zip_clicked = _zip_col1.button(
+        f"📦 Build ZIP of all {_6evs_n_iters} static PNGs",
+        key="_6evs_static_png_zip_build",
+        help="Renders every iteration (including iteration 0 = original) as PNG and bundles them into a ZIP. May take a while for many iterations.",
+    )
+    if st.session_state.get("_6evs_static_png_zip_bytes") is not None:
+        _zip_n = st.session_state.get("_6evs_static_png_zip_count", 0)
+        _zip_col2.download_button(
+            label=f"⬇ Download ZIP ({_zip_n} PNGs, {len(st.session_state['_6evs_static_png_zip_bytes']) / (1024*1024):.1f} MB)",
+            data=st.session_state["_6evs_static_png_zip_bytes"],
+            file_name=f"6event_all_{_zip_n}_static_pngs.zip",
+            mime="application/zip",
+            key="_6evs_static_png_zip_dl",
+        )
+    # Progress widgets ALSO render in the top container so the user sees
+    # them next to the button instead of scrolling past the ordering chains.
+    _zip_progress_slot = _6evs_top_buttons.empty()
+    _zip_status_slot = _6evs_top_buttons.empty()
+    if _zip_clicked:
+        _zip_buf = io.BytesIO()
+        _zip_progress = _zip_progress_slot.progress(0.0, text="Starting …")
+        _zip_status = _zip_status_slot
+        _zip_total = _6evs_n_iters
+        try:
+            with zipfile.ZipFile(_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as _zf:
+                for _zi in range(_zip_total):
+                    _zcn, _, _ = _6evs_results[_zi]
+                    _zlabel = "C0_original" if _zi == 0 else f"iter{_zcn}"
+                    _zpng = _6evs_build_png_for_iter(_zi)
+                    _zf.writestr(f"6event_{_zlabel}_static.png", _zpng)
+                    # Update every iteration so the user always sees progress
+                    _zip_progress.progress(
+                        (_zi + 1) / _zip_total,
+                        text=f"Rendering PNG {_zi + 1} / {_zip_total} …",
+                    )
+            _zip_progress_slot.empty()
+            _zip_status_slot.empty()
+            st.session_state["_6evs_static_png_zip_bytes"] = _zip_buf.getvalue()
+            st.session_state["_6evs_static_png_zip_count"] = _zip_total
+            st.rerun()
+        except Exception as _zip_exc:
+            _zip_progress_slot.empty()
+            _zip_status_slot.error(f"ZIP build failed: {_zip_exc}")
 
     # ============= Density plots across ALL iterations =============
     # Collect generated coordinates per object across every iteration
@@ -12555,18 +13673,20 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _ax.set_title(title, fontsize=9)
         _ax.grid(True, alpha=0.3)
 
-    _dens_n_iters = len(_6evs_results) - 1  # iterations only (excl. original)
+    _dens_n_iters = 0  # density plots intentionally disabled
     if _dens_n_iters >= 1:
         st.markdown("---")
         st.markdown(
             f"### Density plots — {_dens_n_iters} cumulative iteration{'s' if _dens_n_iters != 1 else ''}"
         )
 
-        # Identify which oids correspond to k and l
+        # Identify which oids correspond to the first two tracked objects.
+        _primary_label_0 = OBJECT_LABELS[0] if len(OBJECT_LABELS) > 0 else "A"
+        _primary_label_1 = OBJECT_LABELS[1] if len(OBJECT_LABELS) > 1 else "B"
         _dens_k_oids = [oid for oid in _6evs_sorted_oids
-                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "k"]
+                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == _primary_label_0]
         _dens_l_oids = [oid for oid in _6evs_sorted_oids
-                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "l"]
+                        if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == _primary_label_1]
 
         # Gather x,y arrays
         _dens_k_x = np.array([p[0] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
@@ -12597,7 +13717,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_dk = io.BytesIO()
             _fig_dk.savefig(_buf_dk, format='png', dpi=150)
             _buf_dk.seek(0)
-            st.image(_buf_dk, use_container_width=True)
+            st.image(_buf_dk, width='stretch')
             plt.close(_fig_dk)
 
         # --- Plot 2: l-objects density ---
@@ -12611,7 +13731,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_dl = io.BytesIO()
             _fig_dl.savefig(_buf_dl, format='png', dpi=150)
             _buf_dl.seek(0)
-            st.image(_buf_dl, use_container_width=True)
+            st.image(_buf_dl, width='stretch')
             plt.close(_fig_dl)
 
         # --- Plot 3: k + l combined density ---
@@ -12625,7 +13745,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_da = io.BytesIO()
             _fig_da.savefig(_buf_da, format='png', dpi=150)
             _buf_da.seek(0)
-            st.image(_buf_da, use_container_width=True)
+            st.image(_buf_da, width='stretch')
             plt.close(_fig_da)
 
     # ============= Baseline C0 Documentation (original configuration) =============
@@ -12730,7 +13850,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 height=500, margin=dict(b=120),
             )
             _c0_fig.frames = _c0_frames
-            st.plotly_chart(_c0_fig, use_container_width=True)
+            st.plotly_chart(_c0_fig, width='stretch')
 
         # ---- (ii) Slider visualization: Plotly chart with per-timestamp slider ----
         st.markdown("#### Interactive Slider Visualization")
@@ -12814,7 +13934,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                 xaxis=dict(range=[_6evs_xlo, _6evs_xhi]),
                 yaxis=dict(range=[_6evs_ylo, _6evs_yhi]),
             )
-            st.plotly_chart(_c0_sfig, use_container_width=True)
+            st.plotly_chart(_c0_sfig, width='stretch')
 
         st.markdown("---")
 
@@ -13427,7 +14547,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                     if st.button(
                         f"▶ #{_pi_idx}",
                         key=f"_6evs_jump_{_pi_idx}",
-                        use_container_width=True,
+                        width='stretch',
                     ):
                         st.session_state["_6evs_jump_to"] = _pi_idx
                         st.rerun()
@@ -13528,15 +14648,17 @@ if st.session_state.get("_generate_6ev_single_results", None):
         _ax.set_title(title, fontsize=9)
         _ax.grid(True, alpha=0.3)
 
-    _dens_n_iters = len(_6evs_results) - 1
+    _dens_n_iters = 0  # density plots intentionally disabled
     if _dens_n_iters >= 1:
         st.markdown("---")
         st.markdown(
             f"### Density plots - {_dens_n_iters} cumulative iteration{'s' if _dens_n_iters != 1 else ''}"
         )
 
-        _dens_k_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "k"]
-        _dens_l_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == "l"]
+        _primary_label_0 = OBJECT_LABELS[0] if len(OBJECT_LABELS) > 0 else "A"
+        _primary_label_1 = OBJECT_LABELS[1] if len(OBJECT_LABELS) > 1 else "B"
+        _dens_k_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == _primary_label_0]
+        _dens_l_oids = [oid for oid in _6evs_sorted_oids if OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)] == _primary_label_1]
 
         _dens_k_x = np.array([p[0] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
         _dens_k_y = np.array([p[1] for oid in _dens_k_oids for p in _dens_pts.get(oid, [])])
@@ -13570,7 +14692,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_dk = io.BytesIO()
             _fig_dk.savefig(_buf_dk, format="png", dpi=150)
             _buf_dk.seek(0)
-            st.image(_buf_dk, use_container_width=True)
+            st.image(_buf_dk, width='stretch')
             plt.close(_fig_dk)
 
         if len(_dens_l_x) >= 1:
@@ -13587,7 +14709,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_dl = io.BytesIO()
             _fig_dl.savefig(_buf_dl, format="png", dpi=150)
             _buf_dl.seek(0)
-            st.image(_buf_dl, use_container_width=True)
+            st.image(_buf_dl, width='stretch')
             plt.close(_fig_dl)
 
         if len(_dens_all_x) >= 1:
@@ -13604,11 +14726,11 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _buf_da = io.BytesIO()
             _fig_da.savefig(_buf_da, format="png", dpi=150)
             _buf_da.seek(0)
-            st.image(_buf_da, use_container_width=True)
+            st.image(_buf_da, width='stretch')
             plt.close(_fig_da)
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
-    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4, _6evs_btn_col5 = st.columns([2, 1, 2, 2, 2])
+    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4, _6evs_btn_col5, _6evs_btn_col6 = st.columns([2, 1, 2, 2, 2, 2])
     with _6evs_btn_col1:
         if st.button("🔄 Next iteration (+1)", key="_6evs_gen_next", type="primary",
                      help="Pick a random point and move it (1 iteration), starting from the current state"):
@@ -13650,6 +14772,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             st.session_state["_generate_6ev_single_requested"] = True
             st.session_state["_generate_6ev_single_results"] = None
             st.rerun()
+    with _6evs_btn_col6:
+        if st.button("➕ 1000 from latest", key="_6evs_gen_batch_1000_latest",
+                     help="Always append 1000 new iterations after the latest generated iteration. Click repeatedly to keep adding."):
+            _6evs_latest = _6evs_results[-1]
+            st.session_state["_6evs_continue_from"] = _6evs_latest
+            st.session_state["_6evs_batch_count"] = 1000
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
 
     # ---- Animation row ----
     _6evs_anim_active = st.session_state.get("_6evs_anim_active", False)
@@ -13658,7 +14789,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
     with _anim_col1:
         _6evs_anim_n = st.number_input(
             "Anim. iterations", min_value=2, max_value=5000, value=100, step=10,
-            key="_6evs_anim_n_input", label_visibility="collapsed",
+            key="_6evs_anim_n_input_v2", label_visibility="collapsed",
             help="Number of iterations to generate and then animate through.",
             disabled=_6evs_anim_active,
         )
@@ -14065,7 +15196,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
 
         # Show positions table in an expander
         with st.expander("📍 Event positions", expanded=False):
-            st.dataframe(_6evs_csv_df, use_container_width=True, hide_index=True)
+            st.dataframe(_6evs_csv_df, width='stretch', hide_index=True)
 
         st.download_button(
             label=f"⬇ Download configuration CSV — {_cfg_label}",
@@ -14382,7 +15513,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             # ---- Direction Entropy (from trajectory data) ----
             if _traj_data and len(_traj_data) >= 2:
                 import math as _math_ent
-                _n_sectors = 8  # divide 360° into 8 sectors of 45°
+                _n_sectors = 16  # divide 360° into 16 sectors of 22.5°
                 _all_angles: list[float] = []
                 _sector_counts = [0] * _n_sectors
                 for _tidx_str, _tpts in _traj_data.items():
@@ -14394,7 +15525,9 @@ if st.session_state.get("_generate_6ev_single_results", None):
                             continue
                         _angle = float(np.arctan2(_delta[1], _delta[0]))  # radians [-π, π]
                         _all_angles.append(_angle)
-                        _sector_idx = int((_angle + _math_ent.pi) / (2 * _math_ent.pi) * _n_sectors) % _n_sectors
+                        # Bin centred on each cardinal/inter-cardinal direction:
+                        # sector 0 = E (around 0°), 1 = NE, ... shift by half-width before binning.
+                        _sector_idx = int(((_angle + _math_ent.pi / _n_sectors) % (2 * _math_ent.pi)) / (2 * _math_ent.pi) * _n_sectors) % _n_sectors
                         _sector_counts[_sector_idx] += 1
 
                 if _all_angles:
@@ -14404,9 +15537,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
                     _max_entropy = _math_ent.log2(_n_sectors)  # uniform distribution
                     _norm_entropy = _entropy / _max_entropy if _max_entropy > 0 else 0.0
 
-                    # Polar bar chart of direction distribution
-                    _sector_labels = ['E (0°)', 'NE (45°)', 'N (90°)', 'NW (135°)',
-                                      'W (180°)', 'SW (225°)', 'S (270°)', 'SE (315°)']
+                    # Polar bar chart of direction distribution (16 sectors of 22.5°)
+                    _sector_labels = [f"{int(round(i * 360.0 / _n_sectors))}°" for i in range(_n_sectors)]
                     _theta = np.linspace(0, 2 * np.pi, _n_sectors, endpoint=False)
                     _widths = np.full(_n_sectors, 2 * np.pi / _n_sectors)
 
@@ -14422,7 +15554,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                     st.markdown("##### Movement direction entropy")
                     _ent_c1, _ent_c2 = st.columns([1, 2])
                     with _ent_c1:
-                        st.pyplot(fig_ent, use_container_width=True)
+                        st.pyplot(fig_ent, width='stretch')
                         plt.close(fig_ent)
                     with _ent_c2:
                         _ent_quality = "excellent" if _norm_entropy > 0.9 else "good" if _norm_entropy > 0.7 else "moderate" if _norm_entropy > 0.5 else "poor"
@@ -14451,8 +15583,14 @@ if st.session_state.get("_generate_6ev_single_results", None):
         for li in range(orig.shape[0]):
             _6evs_orig_flat_list.append(orig[li])
             _6evs_gen_flat_list.append(gen[li])
-    # Include external (fixed) reference points in PDP matrices
+    # Include external (fixed) reference points in the DISPLAY PDP matrix.
+    # We append each external point ONCE (one row per unique external point).
+    # An external point is a fixed location in space — it has no time dimension,
+    # so duplicating it per timestamp would just inflate the matrix without
+    # adding constraints (all duplicates are pairwise-equal by construction).
     _6evs_mat_ext_pts = st.session_state.get("external_points", []) if st.session_state.get("use_external_points", False) else []
+    if st.session_state.get("cfg_snap_ext_to_road_edge", False):
+        _6evs_mat_ext_pts = _snap_ext_points_to_road_edges(list(_6evs_mat_ext_pts))
     _6evs_n_ext_in_matrix = 0
     for _ep in _6evs_mat_ext_pts:
         if len(_ep) >= 2:
@@ -14464,13 +15602,19 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_gen_flat = np.array(_6evs_gen_flat_list) if _6evs_gen_flat_list else np.array([]).reshape(0, 2)
 
     if _6evs_orig_flat.shape[0] > 0:
+        # Rough is the matrix CONSTRUCTION semantic (ρ-equality band), independent
+        # of strict-order-match (which only forces 100 % match, not ρ=0).
+        # Always use the user's rough_x/rough_y so the displayed mismatch map
+        # matches what the search engine actually evaluated.
+        _eff_disp_rx = _6evs_disp_rx if _6evs_disp_variant in ('rough', 'bufferrough') else 0.0
+        _eff_disp_ry = _6evs_disp_ry if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic') else 0.0
         _6evs_pdp_detail = check_pdp_match_detailed(
             _6evs_orig_flat, _6evs_gen_flat,
             pdp_variant=_6evs_disp_variant,
             buffer_x=_6evs_disp_bx if _6evs_disp_variant in ('buffer', 'bufferrough', 'realistic') else 0.0,
-            buffer_y=0.0,
-            rough_x=_6evs_disp_rx if _6evs_disp_variant in ('rough', 'bufferrough') else 0.0,
-            rough_y=_6evs_disp_ry if _6evs_disp_variant in ('rough', 'bufferrough', 'realistic') else 0.0,
+            buffer_y=_6evs_disp_by if _6evs_disp_variant in ('buffer', 'bufferrough') else 0.0,
+            rough_x=_eff_disp_rx,
+            rough_y=_eff_disp_ry,
         )
 
         _6evs_d1_pct = _6evs_pdp_detail.get("d1_percentage", 0.0) * 100
@@ -14525,13 +15669,13 @@ if st.session_state.get("_generate_6ev_single_results", None):
         for oid in _6evs_sorted_oids:
             _6evs_obj_labels_short.append(OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)])
 
-        # Build label list matching flat order (obj-first: k₀ k₁ k₂ ... l₀ l₁ l₂ ... e₀ e₁ ...)
+        # Build label list matching flat order (obj-first: A_{t_0} A_{t_1} A_{t_2} ... B_{t_0} B_{t_1} B_{t_2} ... e₀ e₁ ...)
         _6evs_flat_labels: list[str] = []
         for idx_o, oid in enumerate(_6evs_sorted_oids):
             lbl = _6evs_obj_labels_short[idx_o]
             ts_arr = _6evs_vp[oid]
             for li in range(len(ts_arr)):
-                _6evs_flat_labels.append(f"{lbl}{_subscript(li)}")
+                _6evs_flat_labels.append(f"$\\mathit{{{lbl}}}_{{t_{li}}}$")
         # Append labels for external points
         for _ei in range(_6evs_n_ext_in_matrix):
             _6evs_flat_labels.append(f"e{_subscript(_ei)}")
@@ -14572,53 +15716,89 @@ if st.session_state.get("_generate_6ev_single_results", None):
         def _6evs_create_heatmap(matrix: np.ndarray, title: str) -> Figure:
             n = matrix.shape[0]
             display = _6evs_reorder_matrix(matrix)
-            fig_hm, ax_hm = plt.subplots(figsize=(3.5, 3.5))
+            fig_hm, ax_hm = plt.subplots(figsize=(4, 4))
             ax_hm.imshow(display, cmap=_6evs_hm_cmap, vmin=0, vmax=2, aspect='equal')
             if len(_6evs_reorder_labels) == n and n <= 24:
                 ax_hm.set_xticks(range(n))
                 ax_hm.set_yticks(range(n))
-                _hm_fsize = 5 if n <= 16 else 4
+                _hm_fsize = 10 if n <= 16 else 9
                 ax_hm.set_xticklabels(_6evs_reorder_labels, fontsize=_hm_fsize, rotation=90)
                 ax_hm.set_yticklabels(_6evs_reorder_labels, fontsize=_hm_fsize)
+                ax_hm.tick_params(axis='x', pad=4)
+                ax_hm.tick_params(axis='y', pad=4)
             else:
+                # Hide tick text but keep tick spacing so the axes box matches
+                # the labelled version (consistent padding regardless of N).
                 ax_hm.set_xticks([])
                 ax_hm.set_yticks([])
             ax_hm.set_title(title, fontsize=9, fontweight='bold')
-            fig_hm.tight_layout()
+            # Fixed margins on every matrix so all four heatmaps share identical
+            # padding (no tight_layout, which varies with label sizes).
+            fig_hm.subplots_adjust(left=0.18, right=0.96, top=0.90, bottom=0.18)
             return fig_hm
+
+        def _6evs_fig_to_png_bytes(fig: Figure) -> bytes:
+            """Render figure to PNG bytes for st.download_button."""
+            from io import BytesIO as _BIO
+            _b = _BIO()
+            fig.savefig(_b, format="png", dpi=150, bbox_inches=None)
+            _b.seek(0)
+            return _b.getvalue()
+
+        def _6evs_render_matrix_panel(matrix: np.ndarray, title: str, dl_key: str, file_stem: str) -> None:
+            """Render one heatmap + a per-matrix PNG download button."""
+            _fig = _6evs_create_heatmap(matrix, title)
+            st.pyplot(_fig, width='stretch')
+            try:
+                _png_bytes = _6evs_fig_to_png_bytes(_fig)
+                st.download_button(
+                    label="⬇ PNG",
+                    data=_png_bytes,
+                    file_name=f"{file_stem}.png",
+                    mime="image/png",
+                    key=dl_key,
+                    width='stretch',
+                )
+            finally:
+                plt.close(_fig)
 
         _6evs_orig_d1 = _6evs_pdp_detail.get("original_d1_matrix")
         _6evs_orig_d2 = _6evs_pdp_detail.get("original_d2_matrix")
         _6evs_gen_d1 = _6evs_pdp_detail.get("generated_d1_matrix")
         _6evs_gen_d2 = _6evs_pdp_detail.get("generated_d2_matrix")
 
-        hmc1, hmc2, hmc3, hmc4 = st.columns(4, gap="small")
-        with hmc1:
-            st.markdown("**Original d0**")
-            if _6evs_orig_d1 is not None:
-                _fig1 = _6evs_create_heatmap(_6evs_orig_d1, "Original d0 (x)")
-                st.pyplot(_fig1, use_container_width=True)
-                plt.close(_fig1)
-        with hmc2:
-            st.markdown("**Original d1**")
-            if _6evs_orig_d2 is not None:
-                _fig2 = _6evs_create_heatmap(_6evs_orig_d2, "Original d1 (y)")
-                st.pyplot(_fig2, use_container_width=True)
-                plt.close(_fig2)
-        with hmc3:
-            st.markdown("**Generated d0**")
-            if _6evs_gen_d1 is not None:
-                _fig3 = _6evs_create_heatmap(_6evs_gen_d1, "Generated d0 (x)")
-                st.pyplot(_fig3, use_container_width=True)
-                plt.close(_fig3)
-        with hmc4:
-            st.markdown("**Generated d1**")
-            if _6evs_gen_d2 is not None:
-                _fig4 = _6evs_create_heatmap(_6evs_gen_d2, "Generated d1 (y)")
-                st.pyplot(_fig4, use_container_width=True)
-                plt.close(_fig4)
+        # ---- Raw inequality matrices (orig vs gen) ----
+        # Colormap: green=0 (j>i), yellow=1 (equal within ρ, incl. diagonal), red=2 (j<i)
+        if _6evs_orig_d1 is not None and _6evs_gen_d1 is not None and _6evs_orig_d2 is not None and _6evs_gen_d2 is not None:
+            st.markdown("##### PDP Inequality Matrices")
+            st.caption("Green = j > i  ·  Yellow = equal within ρ (incl. diagonal i==j)  ·  Red = j < i")
+            _ineq_c1, _ineq_c2, _ineq_c3, _ineq_c4 = st.columns(4, gap="small")
+            _6evs_iter_tag = f"iter{_6evs_browse_idx}"
+            with _ineq_c1:
+                _6evs_render_matrix_panel(
+                    _6evs_orig_d1, "Original — d0 (x)",
+                    dl_key=f"_6evs_dl_orig_d0_{_6evs_iter_tag}",
+                    file_stem=f"pdp_orig_d0_{_6evs_iter_tag}",
+                )
+            with _ineq_c2:
+                _6evs_render_matrix_panel(
+                    _6evs_orig_d2, "Original — d1 (y)",
+                    dl_key=f"_6evs_dl_orig_d1_{_6evs_iter_tag}",
+                    file_stem=f"pdp_orig_d1_{_6evs_iter_tag}",
+                )
+            with _ineq_c3:
+                _6evs_render_matrix_panel(
+                    _6evs_gen_d1, "Generated — d0 (x)",
+                    dl_key=f"_6evs_dl_gen_d0_{_6evs_iter_tag}",
+                    file_stem=f"pdp_gen_d0_{_6evs_iter_tag}",
+                )
+            with _ineq_c4:
+                _6evs_render_matrix_panel(
+                    _6evs_gen_d2, "Generated — d1 (y)",
+                    dl_key=f"_6evs_dl_gen_d1_{_6evs_iter_tag}",
+                    file_stem=f"pdp_gen_d1_{_6evs_iter_tag}",
+                )
 
-        st.caption("Legend: 🟩 Green (0) = j > i | 🟨 Yellow (1) = j ≈ i | 🟥 Red (2) = j < i | ▪ Border = differs from original")
 
         # ---- PDP Mismatch Heatmap (binary diff: where orig != gen) ----
         if _6evs_orig_d1 is not None and _6evs_gen_d1 is not None and _6evs_orig_d2 is not None and _6evs_gen_d2 is not None:
@@ -14631,14 +15811,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
             def _create_mm_heatmap(matrix: np.ndarray, title: str, cmap, vmax: int = 2) -> Figure:
                 display_mm = _6evs_reorder_matrix(matrix)
                 n = matrix.shape[0]
-                fig_mm, ax_mm = plt.subplots(figsize=(3.5, 3.5))
+                fig_mm, ax_mm = plt.subplots(figsize=(4, 4))
                 ax_mm.imshow(display_mm, cmap=cmap, vmin=0, vmax=vmax, aspect='equal')
                 if len(_6evs_reorder_labels) == n and n <= 24:
                     ax_mm.set_xticks(range(n))
                     ax_mm.set_yticks(range(n))
-                    _fs = 5 if n <= 16 else 4
+                    _fs = 10 if n <= 16 else 9
                     ax_mm.set_xticklabels(_6evs_reorder_labels, fontsize=_fs, rotation=90)
                     ax_mm.set_yticklabels(_6evs_reorder_labels, fontsize=_fs)
+                    ax_mm.tick_params(axis='x', pad=4)
+                    ax_mm.tick_params(axis='y', pad=4)
                 else:
                     ax_mm.set_xticks([])
                     ax_mm.set_yticks([])
@@ -14650,15 +15832,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _mmc1, _mmc2, _mmc3 = st.columns(3, gap="small")
             with _mmc1:
                 _fig_mm1 = _create_mm_heatmap(_mm_d1, "d0 (x) mismatches", _LCM_mm(['#FFFFFF', '#CC0000']), vmax=1)
-                st.pyplot(_fig_mm1, use_container_width=True)
+                st.pyplot(_fig_mm1, width='stretch')
                 plt.close(_fig_mm1)
             with _mmc2:
                 _fig_mm2 = _create_mm_heatmap(_mm_d2, "d1 (y) mismatches", _LCM_mm(['#FFFFFF', '#CC0000']), vmax=1)
-                st.pyplot(_fig_mm2, use_container_width=True)
+                st.pyplot(_fig_mm2, width='stretch')
                 plt.close(_fig_mm2)
             with _mmc3:
                 _fig_mm3 = _create_mm_heatmap(_mm_combined, "Combined mismatches", _mm_cmap)
-                st.pyplot(_fig_mm3, use_container_width=True)
+                st.pyplot(_fig_mm3, width='stretch')
                 plt.close(_fig_mm3)
 
             _n_cells = _mm_d1.shape[0] ** 2
@@ -14690,7 +15872,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
                     "Δd0": round(float(gen[li, 0] - orig[li, 0]), 4),
                     "Δd1": round(float(gen[li, 1] - orig[li, 1]), 4),
                 })
-        st.dataframe(pd.DataFrame(_6evs_table_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(_6evs_table_rows), width='stretch')
 
     st.markdown("---")
 
@@ -14811,7 +15993,7 @@ if st.session_state.get("_generate_four_ts_results", None):
         ax_s.set_title(f"Config #{_fts_cnum}  (PV={_fts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         _fts_all_ts_vals: list[float] = []
         for oid in _fts_sorted_oids:
@@ -14889,7 +16071,7 @@ if st.session_state.get("_generate_four_ts_results", None):
         st.dataframe(_fts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_four_ts_results"):
         st.session_state["_generate_four_ts_requested"] = False
@@ -15002,7 +16184,7 @@ if st.session_state.get("_generate_two_ts_results", None):
         ax_s.set_title(f"Config #{_tts_cnum}  (PV={_tts_dev:.4f} m²)")
         fig_s.subplots_adjust(left=0.08, right=0.97, top=0.92, bottom=0.10)
         buf_s = io.BytesIO(); fig_s.savefig(buf_s, format='png', dpi=150); buf_s.seek(0)
-        st.image(buf_s, use_container_width=True)
+        st.image(buf_s, width='stretch')
 
         _tts_all_ts_vals: list[float] = []
         for oid in _tts_sorted_oids:
@@ -15080,7 +16262,7 @@ if st.session_state.get("_generate_two_ts_results", None):
         st.dataframe(_tts_df[["rank", "config_num", "perp_variance", "max_angle_deviation", "max_distance_deviation"]].rename(
             columns={"rank": "Rank", "config_num": "Config #", "perp_variance": "Perp. Variance (m²)",
                      "max_angle_deviation": "Max Angle Δ (°)", "max_distance_deviation": "Max Distance Δ (m)"}
-        ), use_container_width=True)
+        ), width='stretch')
 
     if st.button("Clear Results & Cache", key="clear_two_ts_results"):
         st.session_state["_generate_two_ts_requested"] = False
@@ -15138,7 +16320,7 @@ if st.session_state.get("_generate_recursive_6event_results", None):
                 "Valid Configs": _rnd["n_configs"],
                 "Early Stopped": _rnd["early_stopped"],
             })
-        st.dataframe(_r6_table_data, use_container_width=True)
+        st.dataframe(_r6_table_data, width='stretch')
 
     # Show top 3 from final round
     for _r6_rank, (_r6_cnum, _r6_dev, _r6_cfg) in enumerate(_r6_results, 1):
@@ -15853,17 +17035,16 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
     offsets = [(3, 3), (3, -8), (-8, 3)]
 
     def make_label(prefix: str, tval: float, gen_marker: str = "") -> str:
-        """Helper to build a LaTeX label with italic letter and subscript number."""
+        """Helper to build a LaTeX label with A/B object names and t-subscripts."""
         try:
             tnum = float(tval)
         except (TypeError, ValueError):
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
+        display_prefix = {"k": "A", "l": "B"}.get(prefix, str(prefix))
         if gen_marker:
-            # e.g., k'_0 becomes $\mathit{k}'_0$
-            return f"$\\mathit{{{prefix}}}{gen_marker}_{{{lbl}}}$"
-        # e.g., k_0 becomes $\mathit{k}_0$
-        return f"$\\mathit{{{prefix}}}_{{{lbl}}}$"
+            return f"$\\mathit{{{display_prefix}}}{gen_marker}_{{t_{lbl}}}$"
+        return f"$\\mathit{{{display_prefix}}}_{{t_{lbl}}}$"
 
     def _get_original_index(sp: SuccessfulPoint) -> int | None:
         """Return original parent index if present, otherwise None."""
@@ -16500,6 +17681,10 @@ with tab_static:
                 for _i_obj, _oid in enumerate(_sorted_oids):
                     _lbl = OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]
                     _pts_o, _ts_o = all_objects_points[_oid]
+                    if _ts_o.size == 0:
+                        row[f"{_lbl}_x"] = "—"
+                        row[f"{_lbl}_y"] = "—"
+                        continue
                     _tdiffs = np.abs(_ts_o - _ev_t)
                     _ci = int(np.argmin(_tdiffs))
                     if _tdiffs[_ci] < 1e-3:
@@ -16510,7 +17695,7 @@ with tab_static:
                         row[f"{_lbl}_y"] = "—"
                 _ev_rows.append(row)
             st.markdown("**6-Event coordinates (original)**")
-            st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, width='stretch')
 
     with col2:
         st.markdown("<div class='figure-title'>Generated configuration</div>", unsafe_allow_html=True)
@@ -16626,6 +17811,10 @@ with tab_static:
                 for _i_obj, _oid_g in enumerate(_sorted_oids_g):
                     _lbl = OBJECT_LABELS[_i_obj % len(OBJECT_LABELS)]
                     _vals_g = all_vals_plot[_oid_g]
+                    if _vals_g.size == 0:
+                        row_g[f"{_lbl}_x"] = "—"
+                        row_g[f"{_lbl}_y"] = "—"
+                        continue
                     _tdiffs_g = np.abs(_vals_g - _ev_t)
                     _ci_g = int(np.argmin(_tdiffs_g))
                     if _tdiffs_g[_ci_g] < 1e-3:
@@ -16642,292 +17831,294 @@ with tab_static:
                 _ev_rows_g.append(row_g)
             if _gen_sp:
                 st.markdown("**6-Event coordinates (generated)**")
-                st.dataframe(pd.DataFrame(_ev_rows_g), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(_ev_rows_g), hide_index=True, width='stretch')
 
-    # ============= Heat Maps for PDP Inequality Matrices ============
-    st.markdown("---")
-    st.markdown("### PDP Inequality Matrix Heat Maps")
+    # Hide heat maps in 6-event single-iteration mode (keep only labeled inequality matrices)
+    if not _6ev_vis_map:
+        # ============= Heat Maps for PDP Inequality Matrices ============
+        st.markdown("---")
+        st.markdown("### PDP Inequality Matrix Heat Maps")
 
-    # Determine when to update heat maps based on animation settings:
-    # a) Auto-advance with wait_interval >= 1000ms: update every step
-    # b) Auto-advance with wait_interval < 1000ms: update only at end of iteration
-    # c) Manual modes: update only at end of last step/iteration/config
+        # Determine when to update heat maps based on animation settings:
+        # a) Auto-advance with wait_interval >= 1000ms: update every step
+        # b) Auto-advance with wait_interval < 1000ms: update only at end of iteration
+        # c) Manual modes: update only at end of last step/iteration/config
 
-    anim_mode = st.session_state.get("cfg_anim_mode", "Auto-advance")
-    wait_interval = int(st.session_state.get("cfg_wait_interval", 2000))
-    anim_running = st.session_state.get("anim_running", False)
-    search_steps = int(st.session_state.get("anim_search_steps", 0))
+        anim_mode = st.session_state.get("cfg_anim_mode", "Auto-advance")
+        wait_interval = int(st.session_state.get("cfg_wait_interval", 2000))
+        anim_running = st.session_state.get("anim_running", False)
+        search_steps = int(st.session_state.get("anim_search_steps", 0))
 
-    # Determine if we should update heat maps now
-    should_update_heatmaps = False
+        # Determine if we should update heat maps now
+        should_update_heatmaps = False
 
-    if not anim_running:
-        # Not running animation - always update (final state)
-        should_update_heatmaps = True
-    elif anim_mode == "Auto-advance":
-        if wait_interval >= 1000:
-            # a) Auto-advance with slow interval: update every step
+        if not anim_running:
+            # Not running animation - always update (final state)
             should_update_heatmaps = True
+        elif anim_mode == "Auto-advance":
+            if wait_interval >= 1000:
+                # a) Auto-advance with slow interval: update every step
+                should_update_heatmaps = True
+            else:
+                # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 10)
+                # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
+                should_update_heatmaps = (search_steps == 0)
         else:
-            # b) Auto-advance with fast interval: only at end of iteration (step 0 after reset, or step 10)
-            # We detect end of iteration when search_steps is 0 (just completed) or animation just finished
+            # c) Manual modes: only update at end of step/iteration/config
+            # In manual mode, we update after each manual advancement (when not in middle of search)
             should_update_heatmaps = (search_steps == 0)
-    else:
-        # c) Manual modes: only update at end of step/iteration/config
-        # In manual mode, we update after each manual advancement (when not in middle of search)
-        should_update_heatmaps = (search_steps == 0)
 
-    pdp_detailed = None
+        pdp_detailed = None
 
-    if n_total_points > 0 and should_update_heatmaps:
-        # Get PDP variant parameters from session_state
-        pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
-        pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
-        buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
-        buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
-        rough_x = st.session_state.get("cfg_rough_x", 0.0)
-        rough_y = st.session_state.get("cfg_rough_y", 0.0)
-        match_threshold = get_match_threshold()
+        if n_total_points > 0 and should_update_heatmaps:
+            # Get PDP variant parameters from session_state
+            pdp_variants_list = st.session_state.get("cfg_pdp_variants", ["fundamental"])
+            pdp_variant = pdp_variants_list[0] if pdp_variants_list else "fundamental"
+            buffer_x = st.session_state.get("cfg_buffer_x", DEFAULT_BUFFER_X)
+            buffer_y = st.session_state.get("cfg_buffer_y", DEFAULT_BUFFER_Y)
+            rough_x = st.session_state.get("cfg_rough_x", 0.0)
+            rough_y = st.session_state.get("cfg_rough_y", 0.0)
+            match_threshold = get_match_threshold()
 
-        # Build generated configuration INCLUDING current candidate point
-        generated_points: np.ndarray = all_pts_flat.copy()
-        successful_points_hm: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
+            # Build generated configuration INCLUDING current candidate point
+            generated_points: np.ndarray = all_pts_flat.copy()
+            successful_points_hm: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
 
-        # Track the latest generated point for each original index
-        latest_generated: dict[int, np.ndarray] = {}
-        for sp in successful_points_hm:
-            orig_idx = int(sp["original_parent_idx"])
-            latest_generated[orig_idx] = sp["point"]
+            # Track the latest generated point for each original index
+            latest_generated: dict[int, np.ndarray] = {}
+            for sp in successful_points_hm:
+                orig_idx = int(sp["original_parent_idx"])
+                latest_generated[orig_idx] = sp["point"]
 
-        # Include current candidate point being tested (for live heat map update)
-        anim_generated_points = st.session_state.get("anim_generated_points", {})
-        gen_pt = st.session_state.get("anim_generated_point", None)
+            # Include current candidate point being tested (for live heat map update)
+            anim_generated_points = st.session_state.get("anim_generated_points", {})
+            gen_pt = st.session_state.get("anim_generated_point", None)
 
-        if anim_generated_points:
-            for idx, pt in anim_generated_points.items():
-                latest_generated[int(idx)] = np.array(pt)
-        elif gen_pt is not None:
-            parent_idx = int(st.session_state.get("anim_parent_idx", 0))
-            if parent_idx < n_total_points:
-                current_original_parent_idx = parent_idx
-            else:
-                sidx = parent_idx - n_total_points
-                if 0 <= sidx < len(successful_points_hm):
-                    current_original_parent_idx = int(successful_points_hm[sidx]["original_parent_idx"])
+            if anim_generated_points:
+                for idx, pt in anim_generated_points.items():
+                    latest_generated[int(idx)] = np.array(pt)
+            elif gen_pt is not None:
+                parent_idx = int(st.session_state.get("anim_parent_idx", 0))
+                if parent_idx < n_total_points:
+                    current_original_parent_idx = parent_idx
                 else:
-                    current_original_parent_idx = 0
-            latest_generated[current_original_parent_idx] = np.array(gen_pt)
+                    sidx = parent_idx - n_total_points
+                    if 0 <= sidx < len(successful_points_hm):
+                        current_original_parent_idx = int(successful_points_hm[sidx]["original_parent_idx"])
+                    else:
+                        current_original_parent_idx = 0
+                latest_generated[current_original_parent_idx] = np.array(gen_pt)
 
-        # Apply all generated points to the configuration
-        for flat_idx in range(n_total_points):
-            if flat_idx in latest_generated:
-                generated_points[flat_idx] = latest_generated[flat_idx]
+            # Apply all generated points to the configuration
+            for flat_idx in range(n_total_points):
+                if flat_idx in latest_generated:
+                    generated_points[flat_idx] = latest_generated[flat_idx]
 
-        # Get threshold settings to pass to detailed check
-        mode, pct_threshold, max_mismatch_val = get_threshold_settings()
-        max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
+            # Get threshold settings to pass to detailed check
+            mode, pct_threshold, max_mismatch_val = get_threshold_settings()
+            max_mismatches_param = max_mismatch_val if mode == "Max mismatches" else None
 
-        # Compute detailed results with the current configuration
-        pdp_detailed = check_pdp_match_detailed(
-            all_pts_flat,
-            generated_points,
-            pdp_variant=pdp_variant,
-            buffer_x=buffer_x,
-            buffer_y=buffer_y,
-            rough_x=rough_x,
-            rough_y=rough_y,
-            match_threshold=match_threshold,
-            max_mismatches=max_mismatches_param
-        )
-        # Store for later use
-        st.session_state["pdp_detailed_results"] = pdp_detailed
-    elif n_total_points > 0:
-        # Use cached results if not updating
-        pdp_detailed: dict[str, Any] | None = st.session_state.get("pdp_detailed_results", None)
+            # Compute detailed results with the current configuration
+            pdp_detailed = check_pdp_match_detailed(
+                all_pts_flat,
+                generated_points,
+                pdp_variant=pdp_variant,
+                buffer_x=buffer_x,
+                buffer_y=buffer_y,
+                rough_x=rough_x,
+                rough_y=rough_y,
+                match_threshold=match_threshold,
+                max_mismatches=max_mismatches_param
+            )
+            # Store for later use
+            st.session_state["pdp_detailed_results"] = pdp_detailed
+        elif n_total_points > 0:
+            # Use cached results if not updating
+            pdp_detailed: dict[str, Any] | None = st.session_state.get("pdp_detailed_results", None)
 
-    if pdp_detailed is not None:
-        # Get match percentages
-        d1_pct = pdp_detailed.get("d1_percentage", 0.0) * 100
-        d2_pct = pdp_detailed.get("d2_percentage", 0.0) * 100
-        avg_pct = pdp_detailed.get("avg_percentage", (d1_pct/100 + d2_pct/100) / 2.0) * 100
-        d1_match = pdp_detailed.get("d1_match", False)
-        d2_match = pdp_detailed.get("d2_match", False)
+        if pdp_detailed is not None:
+            # Get match percentages
+            d1_pct = pdp_detailed.get("d1_percentage", 0.0) * 100
+            d2_pct = pdp_detailed.get("d2_percentage", 0.0) * 100
+            avg_pct = pdp_detailed.get("avg_percentage", (d1_pct/100 + d2_pct/100) / 2.0) * 100
+            d1_match = pdp_detailed.get("d1_match", False)
+            d2_match = pdp_detailed.get("d2_match", False)
 
-        # Get threshold settings for display
-        mode, pct_threshold, max_mismatches = get_threshold_settings()
-        d1_mismatches = pdp_detailed.get("d1_mismatches", 0)
-        d2_mismatches = pdp_detailed.get("d2_mismatches", 0)
-        total_cells = pdp_detailed.get("total_cells", 0)
+            # Get threshold settings for display
+            mode, pct_threshold, max_mismatches = get_threshold_settings()
+            d1_mismatches = pdp_detailed.get("d1_mismatches", 0)
+            d2_mismatches = pdp_detailed.get("d2_mismatches", 0)
+            total_cells = pdp_detailed.get("total_cells", 0)
 
-        # Re-evaluate match based on new threshold settings
-        d1_match, d2_match = check_threshold_match(d1_pct/100, d2_pct/100, total_cells, d1_mismatches, d2_mismatches)
-        avg_match = d1_match and d2_match
+            # Re-evaluate match based on new threshold settings
+            d1_match, d2_match = check_threshold_match(d1_pct/100, d2_pct/100, total_cells, d1_mismatches, d2_mismatches)
+            avg_match = d1_match and d2_match
 
-        # Display match percentages with threshold info
-        if mode == "Percentage":
-            threshold_display = f"{int(pct_threshold * 100)}%"
-            if pct_threshold < 1.0:
-                # Show average for relaxed thresholds
-                st.markdown(f"**Threshold:** {threshold_display} | **d0:** {d1_pct:.1f}% | **d1:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
+            # Display match percentages with threshold info
+            if mode == "Percentage":
+                threshold_display = f"{int(pct_threshold * 100)}%"
+                if pct_threshold < 1.0:
+                    # Show average for relaxed thresholds
+                    st.markdown(f"**Threshold:** {threshold_display} | **d0:** {d1_pct:.1f}% | **d1:** {d2_pct:.1f}% | **Avg:** {avg_pct:.1f}% {'YES' if avg_match else 'NO'}")
+                else:
+                    # Show individual matches for strict threshold
+                    st.markdown(f"**Threshold:** {threshold_display} | **d0 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d1 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
             else:
-                # Show individual matches for strict threshold
-                st.markdown(f"**Threshold:** {threshold_display} | **d0 Match:** {d1_pct:.1f}% {'YES' if d1_match else 'NO'} | **d1 Match:** {d2_pct:.1f}% {'YES' if d2_match else 'NO'}")
-        else:
-            # Max mismatches mode
-            threshold_display = f"≤{max_mismatches} mismatches"
-            st.markdown(f"**Threshold:** {threshold_display} | **d0:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d1:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
+                # Max mismatches mode
+                threshold_display = f"≤{max_mismatches} mismatches"
+                st.markdown(f"**Threshold:** {threshold_display} | **d0:** {d1_mismatches} mismatches {'YES' if d1_match else 'NO'} | **d1:** {d2_mismatches} mismatches {'YES' if d2_match else 'NO'}")
 
-        # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
-        hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
+            # Create 4 heat map columns: orig_d1, orig_d2 | gen_d1, gen_d2
+            hm_col1, hm_col2, hm_col3, hm_col4 = st.columns(4, gap="small")
 
-        # Color map: 0=green (greater precedence), 1=yellow (equal), 2=red (less precedence)
-        from matplotlib.colors import ListedColormap
-        hm_cmap = ListedColormap(['#00AA00', '#FFFF00', '#FF0000'])  # green, yellow, red
+            # Color map: 0=green (greater precedence), 1=yellow (equal), 2=red (less precedence)
+            from matplotlib.colors import ListedColormap
+            hm_cmap = ListedColormap(['#00AA00', '#FFFF00', '#FF0000'])  # green, yellow, red
 
-        # Labels should be: k0, l0, k1, l1, k2, l2 (sorted by timestamp first, then by object)
-        # But data in all_pts_flat is: k0, k1, k2, l0, l1, l2 (sorted by object first, then by timestamp)
-        # We need to reorder the matrix to match the desired label order
+            # Labels should be: k0, l0, k1, l1, k2, l2 (sorted by timestamp first, then by object)
+            # But data in all_pts_flat is: k0, k1, k2, l0, l1, l2 (sorted by object first, then by timestamp)
+            # We need to reorder the matrix to match the desired label order
 
-        def get_reorder_indices(n: int) -> list[int]:
-            """Get indices to reorder from (k0,k1,k2,l0,l1,l2) to (k0,l0,k1,l1,k2,l2)."""
-            if n != 6:
-                return list(range(n))  # No reordering if not exactly 6 points
-            # Original order: k0(0), k1(1), k2(2), l0(3), l1(4), l2(5)
-            # Desired order:  k0(0), l0(3), k1(1), l1(4), k2(2), l2(5)
-            return [0, 3, 1, 4, 2, 5]
+            def get_reorder_indices(n: int) -> list[int]:
+                """Get indices to reorder from (k0,k1,k2,l0,l1,l2) to (k0,l0,k1,l1,k2,l2)."""
+                if n != 6:
+                    return list(range(n))  # No reordering if not exactly 6 points
+                # Original order: k0(0), k1(1), k2(2), l0(3), l1(4), l2(5)
+                # Desired order:  k0(0), l0(3), k1(1), l1(4), k2(2), l2(5)
+                return [0, 3, 1, 4, 2, 5]
 
-        def reorder_matrix(matrix: np.ndarray) -> np.ndarray:
-            """Reorder matrix rows and columns to match desired label order."""
-            n = matrix.shape[0]
-            if n != 6:
-                return matrix
-            idx = get_reorder_indices(n)
-            # Reorder both rows and columns
-            return matrix[np.ix_(idx, idx)]
+            def reorder_matrix(matrix: np.ndarray) -> np.ndarray:
+                """Reorder matrix rows and columns to match desired label order."""
+                n = matrix.shape[0]
+                if n != 6:
+                    return matrix
+                idx = get_reorder_indices(n)
+                # Reorder both rows and columns
+                return matrix[np.ix_(idx, idx)]
 
-        def get_point_labels(n: int) -> list[str]:
-            """Generate labels: k0, l0, k1, l1, k2, l2 (sorted by timestamp, then object)."""
-            if n > 6:
-                return []  # Don't show labels if more than 6 points
-            labels = []
-            for t in range(3):  # 3 timestamps
-                for obj in ["k", "l"]:  # 2 objects per timestamp
-                    if len(labels) < n:
-                        labels.append(f"{obj}{t}")
-            return labels
+            def get_point_labels(n: int) -> list[str]:
+                """Generate labels: A_{t_0}, B_{t_0}, A_{t_1}, B_{t_1}, ... with math notation."""
+                if n > 6:
+                    return []  # Don't show labels if more than 6 points
+                labels = []
+                for t in range(3):  # 3 timestamps
+                    for obj in ["A", "B"]:  # 2 objects per timestamp
+                        if len(labels) < n:
+                            labels.append(f"$\\mathit{{{obj}}}_{{t_{t}}}$")
+                return labels
 
-        def create_heatmap_figure(matrix: np.ndarray, title: str, 
-                                   comparison_matrix: np.ndarray = None,
-                                   highlight_differences: bool = False) -> Figure:
-            """Create a heat map figure for an inequality matrix.
+            def create_heatmap_figure(matrix: np.ndarray, title: str, 
+                                       comparison_matrix: np.ndarray = None,
+                                       highlight_differences: bool = False) -> Figure:
+                """Create a heat map figure for an inequality matrix.
 
-            Args:
-                matrix: The matrix to display
-                title: Title for the heatmap
-                comparison_matrix: Original matrix to compare against (for highlighting differences)
-                highlight_differences: If True and comparison_matrix provided, highlight differing cells
-            """
-            fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
-            n = matrix.shape[0]
+                Args:
+                    matrix: The matrix to display
+                    title: Title for the heatmap
+                    comparison_matrix: Original matrix to compare against (for highlighting differences)
+                    highlight_differences: If True and comparison_matrix provided, highlight differing cells
+                """
+                fig_hm, ax_hm = plt.subplots(figsize=(3, 3))
+                n = matrix.shape[0]
 
-            # Reorder matrix to match label order (k0, l0, k1, l1, k2, l2)
-            display_matrix = reorder_matrix(matrix)
+                # Reorder matrix to match label order (k0, l0, k1, l1, k2, l2)
+                display_matrix = reorder_matrix(matrix)
 
-            # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
-            ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
+                # Create heat map with discrete colors (0, 1, 2 -> green, yellow, red)
+                ax_hm.imshow(display_matrix, cmap=hm_cmap, vmin=0, vmax=2, aspect='equal')
 
-            # Highlight differences if requested - subtle style with transparent fill and thin black border
-            if highlight_differences and comparison_matrix is not None:
-                comparison_display = reorder_matrix(comparison_matrix)
-                # Color map for semi-transparent overlays (same colors but with alpha)
-                diff_colors = {
-                    0: (0.0, 0.67, 0.0, 0.3),   # green with alpha
-                    1: (1.0, 1.0, 0.0, 0.3),     # yellow with alpha
-                    2: (1.0, 0.0, 0.0, 0.3),     # red with alpha
-                }
-                # Find cells where values differ
-                for i in range(n):
-                    for j in range(n):
-                        if display_matrix[i, j] != comparison_display[i, j]:
-                            # Get the cell's color with transparency
-                            cell_val = int(display_matrix[i, j])
-                            fill_color = diff_colors.get(cell_val, (0.5, 0.5, 0.5, 0.3))
-                            # Draw a rectangle with transparent fill and thin black border
-                            rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                                fill=True, facecolor=fill_color,
-                                                edgecolor='black', linewidth=1.5)
-                            ax_hm.add_patch(rect)
+                # Highlight differences if requested - subtle style with transparent fill and thin black border
+                if highlight_differences and comparison_matrix is not None:
+                    comparison_display = reorder_matrix(comparison_matrix)
+                    # Color map for semi-transparent overlays (same colors but with alpha)
+                    diff_colors = {
+                        0: (0.0, 0.67, 0.0, 0.3),   # green with alpha
+                        1: (1.0, 1.0, 0.0, 0.3),     # yellow with alpha
+                        2: (1.0, 0.0, 0.0, 0.3),     # red with alpha
+                    }
+                    # Find cells where values differ
+                    for i in range(n):
+                        for j in range(n):
+                            if display_matrix[i, j] != comparison_display[i, j]:
+                                # Get the cell's color with transparency
+                                cell_val = int(display_matrix[i, j])
+                                fill_color = diff_colors.get(cell_val, (0.5, 0.5, 0.5, 0.3))
+                                # Draw a rectangle with transparent fill and thin black border
+                                rect = plt.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+                                                    fill=True, facecolor=fill_color,
+                                                    edgecolor='black', linewidth=1.5)
+                                ax_hm.add_patch(rect)
 
-            # Add axis labels only if 6 or fewer points
-            point_labels = get_point_labels(n)
-            if point_labels:
-                ax_hm.set_xticks(range(n))
-                ax_hm.set_yticks(range(n))
-                ax_hm.set_xticklabels(point_labels, fontsize=7)
-                ax_hm.set_yticklabels(point_labels, fontsize=7)
+                # Add axis labels only if 6 or fewer points
+                point_labels = get_point_labels(n)
+                if point_labels:
+                    ax_hm.set_xticks(range(n))
+                    ax_hm.set_yticks(range(n))
+                    ax_hm.set_xticklabels(point_labels, fontsize=11)
+                    ax_hm.set_yticklabels(point_labels, fontsize=11)
+                else:
+                    ax_hm.set_xticks([])
+                    ax_hm.set_yticks([])
+
+                ax_hm.set_title(title, fontsize=9, fontweight='bold')
+                # No axis titles (removed 'Point j' and 'Point i')
+
+                fig_hm.tight_layout()
+                return fig_hm
+
+            # Create heat map for each matrix
+            orig_d1_matrix = pdp_detailed.get("original_d1_matrix")  # type: ignore[assignment]
+            orig_d2_matrix = pdp_detailed.get("original_d2_matrix")  # type: ignore[assignment]
+            gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")  # type: ignore[assignment]
+            gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")  # type: ignore[assignment]
+
+            # Determine if we should highlight differences (when threshold < 100% or max_mismatches > 0)
+            if mode == "Percentage":
+                highlight_diffs = pct_threshold < 1.0
             else:
-                ax_hm.set_xticks([])
-                ax_hm.set_yticks([])
+                # In absolute mode, always highlight differences since we're explicitly allowing mismatches
+                highlight_diffs = max_mismatches > 0
 
-            ax_hm.set_title(title, fontsize=9, fontweight='bold')
-            # No axis titles (removed 'Point j' and 'Point i')
+            with hm_col1:
+                st.markdown("**Original d0**")
+                if orig_d1_matrix is not None:
+                    fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d0 (x)")
+                    st.pyplot(fig_hm1, width='stretch')
+                    plt.close(fig_hm1)
 
-            fig_hm.tight_layout()
-            return fig_hm
+            with hm_col2:
+                st.markdown("**Original d1**")
+                if orig_d2_matrix is not None:
+                    fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d1 (y)")
+                    st.pyplot(fig_hm2, width='stretch')
+                    plt.close(fig_hm2)
 
-        # Create heat map for each matrix
-        orig_d1_matrix = pdp_detailed.get("original_d1_matrix")  # type: ignore[assignment]
-        orig_d2_matrix = pdp_detailed.get("original_d2_matrix")  # type: ignore[assignment]
-        gen_d1_matrix = pdp_detailed.get("generated_d1_matrix")  # type: ignore[assignment]
-        gen_d2_matrix = pdp_detailed.get("generated_d2_matrix")  # type: ignore[assignment]
+            with hm_col3:
+                st.markdown("**Generated d0**")
+                if gen_d1_matrix is not None:
+                    fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d0 (x)",
+                                                   comparison_matrix=orig_d1_matrix,
+                                                   highlight_differences=highlight_diffs)
+                    st.pyplot(fig_hm3, width='stretch')
+                    plt.close(fig_hm3)
 
-        # Determine if we should highlight differences (when threshold < 100% or max_mismatches > 0)
-        if mode == "Percentage":
-            highlight_diffs = pct_threshold < 1.0
+            with hm_col4:
+                st.markdown("**Generated d1**")
+                if gen_d2_matrix is not None:
+                    fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d1 (y)",
+                                                   comparison_matrix=orig_d2_matrix,
+                                                   highlight_differences=highlight_diffs)
+                    st.pyplot(fig_hm4, width='stretch')
+                    plt.close(fig_hm4)
+
+            # Legend
+            if highlight_diffs:
+                st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
+            else:
+                st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
+
         else:
-            # In absolute mode, always highlight differences since we're explicitly allowing mismatches
-            highlight_diffs = max_mismatches > 0
-
-        with hm_col1:
-            st.markdown("**Original d0**")
-            if orig_d1_matrix is not None:
-                fig_hm1 = create_heatmap_figure(orig_d1_matrix, "Original d0 (x)")
-                st.pyplot(fig_hm1, use_container_width=True)
-                plt.close(fig_hm1)
-
-        with hm_col2:
-            st.markdown("**Original d1**")
-            if orig_d2_matrix is not None:
-                fig_hm2 = create_heatmap_figure(orig_d2_matrix, "Original d1 (y)")
-                st.pyplot(fig_hm2, use_container_width=True)
-                plt.close(fig_hm2)
-
-        with hm_col3:
-            st.markdown("**Generated d0**")
-            if gen_d1_matrix is not None:
-                fig_hm3 = create_heatmap_figure(gen_d1_matrix, "Generated d0 (x)",
-                                               comparison_matrix=orig_d1_matrix,
-                                               highlight_differences=highlight_diffs)
-                st.pyplot(fig_hm3, use_container_width=True)
-                plt.close(fig_hm3)
-
-        with hm_col4:
-            st.markdown("**Generated d1**")
-            if gen_d2_matrix is not None:
-                fig_hm4 = create_heatmap_figure(gen_d2_matrix, "Generated d1 (y)",
-                                               comparison_matrix=orig_d2_matrix,
-                                               highlight_differences=highlight_diffs)
-                st.pyplot(fig_hm4, use_container_width=True)
-                plt.close(fig_hm4)
-
-        # Legend
-        if highlight_diffs:
-            st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i | * Border = differs from original")
-        else:
-            st.caption("Legend: Green (0) = j > i | Yellow (1) = j ~ i (equal) | Red (2) = j < i")
-
-    else:
-        st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
+            st.info("Heat maps will appear after generating a configuration. Use the animation controls above to generate a configuration.")
 
 
 with tab_animation:
@@ -17126,7 +18317,7 @@ with tab_animation:
         default_num_configs = int(st.session_state.get("cfg_num_configs", 1))
 
         search_steps = int(st.session_state.get("anim_search_steps", 0))
-        max_search_steps = 10
+        max_search_steps = 15
 
         distance = float(st.session_state.get("anim_distance", maxdist))
         angle = float(st.session_state.get("anim_angle", 0.0))
@@ -18728,7 +19919,7 @@ with tab_static:
         )
 
         # Display without zoom/pan controls
-        st.plotly_chart(fig_angles, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
+        st.plotly_chart(fig_angles, width='stretch', config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
 
         # Display statistics summary
         st.subheader("ðŸ“ˆ Angle Statistics per Vector Pair")
@@ -18741,7 +19932,7 @@ with tab_static:
                 "Count": int(stats['count'])
             })
         if stats_data:
-            st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
+            st.dataframe(pd.DataFrame(stats_data), width='stretch')
 
         # Show angle values in expandable table
         with st.expander("ðŸ“Š Angle Values (degrees)"):
@@ -18760,7 +19951,7 @@ with tab_static:
                             "Mod 90°": f"{angle_mod90:.2f}"
                         })
             if angle_table_data:
-                st.dataframe(pd.DataFrame(angle_table_data), use_container_width=True)
+                st.dataframe(pd.DataFrame(angle_table_data), width='stretch')
     else:
         st.info("Generate configurations to see angle comparisons between original and generated point configurations.")
 
@@ -18845,11 +20036,11 @@ with tab_slicing:
                     showlegend=True,
                 )
 
-                st.plotly_chart(_fig_slice, use_container_width=True)
+                st.plotly_chart(_fig_slice, width='stretch')
 
                 # Show data table for selected timestamp
                 with st.expander("Data at selected timestamp", expanded=False):
-                    st.dataframe(_slice_df_t, use_container_width=True)
+                    st.dataframe(_slice_df_t, width='stretch')
             else:
                 st.warning("Only one timestamp available \u2014 nothing to slice.")
         else:

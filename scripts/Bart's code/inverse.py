@@ -3732,7 +3732,7 @@ def make_d1_order_latex() -> str:
         
         for val, t in zip(coords_d1.tolist(), ts.tolist()):  # type: ignore[misc]
             lbl = _format_t_subscript(t)
-            entries.append((float(val), rf"{label}_{{{lbl}}}"))
+            entries.append((float(val), rf"\mathit{{{label}}}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -3770,7 +3770,7 @@ def make_d2_order_latex() -> str:
         
         for val, t in zip(coords_d2.tolist(), ts.tolist()):  # type: ignore[misc]
             lbl = _format_t_subscript(t)
-            entries.append((float(val), rf"{label}_{{{lbl}}}"))
+            entries.append((float(val), rf"\mathit{{{label}}}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -3832,7 +3832,7 @@ def make_d1_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[0]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
+    entries.append((float(gen_pt[0]), rf"\mathit{{{parent_label}}}{parent_primes}_{{t_{lbl_parent}}}"))
 
     # Track the latest generated point for each original index
     latest_generated: dict[int, np.ndarray] = {}
@@ -3851,9 +3851,9 @@ def make_d1_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][0]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(latest_generated[flat_idx][0]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
         else:
-            entries.append((float(pt[0]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(pt[0]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_1:"
@@ -3912,7 +3912,7 @@ def make_d2_order_latex_generated() -> str:
     current_gen_count = generation_counts.get(base_idx, 0)
     label_gen_count = current_gen_count + (0 if in_search else 1)
     parent_primes = _prime_str(label_gen_count)
-    entries.append((float(gen_pt[1]), rf"{parent_label}{parent_primes}_{{{lbl_parent}}}"))
+    entries.append((float(gen_pt[1]), rf"\mathit{{{parent_label}}}{parent_primes}_{{t_{lbl_parent}}}"))
 
     latest_generated: dict[int, np.ndarray] = {}
     for sp in successful_points:
@@ -3930,9 +3930,9 @@ def make_d2_order_latex_generated() -> str:
         gen_cnt = generation_counts.get(flat_idx, 0)
         primes = _prime_str(gen_cnt)
         if flat_idx in latest_generated:
-            entries.append((float(latest_generated[flat_idx][1]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(latest_generated[flat_idx][1]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
         else:
-            entries.append((float(pt[1]), rf"{label}{primes}_{{{lbl}}}"))
+            entries.append((float(pt[1]), rf"\mathit{{{label}}}{primes}_{{t_{lbl}}}"))
 
     if not entries:
         return r"d_2:"
@@ -4157,6 +4157,11 @@ def get_threshold_params() -> tuple[float, int | None]:
         - For percentage mode: (percentage, None)
         - For absolute mode: (1.0, max_mismatches_value)
     """
+    if bool(st.session_state.get("cfg_strict_order_match", True)):
+        # Strict mode must be exact: use absolute mismatch path so checker
+        # does an exact upper-triangle mismatch count on every validation.
+        return 1.0, 0
+
     mode, pct, abs_val = get_threshold_settings()
     if mode == "Percentage":
         return pct, None
@@ -8074,7 +8079,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     if label and lbl:
                         try:
                             ax_left.annotate(
-                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
+                                f"$\\mathit{{{label}}}_{{t_{lbl}}}$",
                                 xy=(x, y),
                                 xytext=off,
                                 textcoords="offset points",
@@ -8094,7 +8099,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     if label and lbl:
                         try:
                             ax_right.annotate(
-                                f"$\\mathit{{{label}}}_{{{lbl}}}$",
+                                f"$\\mathit{{{label}}}_{{t_{lbl}}}$",
                                 xy=(x, y),
                                 xytext=off,
                                 textcoords="offset points",
@@ -8473,7 +8478,7 @@ Configurations are ranked by perpendicular variance (highest first). Each visual
                     # Only add label if both label and lbl are valid
                     if label and lbl:
                         try:
-                            label_text = f"$\\mathit{{{label}}}_{{{lbl}}}$"
+                            label_text = f"$\\mathit{{{label}}}_{{t_{lbl}}}$"
                             ax_right.annotate(
                                 label_text,
                                 xy=(x, y),
@@ -12341,7 +12346,7 @@ if st.session_state.get("_generate_6ev_single_results", None):
             )
 
     # ---- Generate Next / Generate N buttons (right below graph) ----
-    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3 = st.columns([2, 1, 2])
+    _6evs_btn_col1, _6evs_btn_col2, _6evs_btn_col3, _6evs_btn_col4 = st.columns([2, 1, 2, 2])
     with _6evs_btn_col1:
         if st.button("🔄 Next iteration (+1)", key="_6evs_gen_next", type="primary",
                      help="Pick a random point and move it (1 iteration), starting from the current state"):
@@ -12362,6 +12367,15 @@ if st.session_state.get("_generate_6ev_single_results", None):
             _6evs_cur = _6evs_results[_6evs_browse_idx]
             st.session_state["_6evs_continue_from"] = _6evs_cur
             st.session_state["_6evs_batch_count"] = int(_6evs_n_gen)
+            st.session_state["_generate_6ev_single_requested"] = True
+            st.session_state["_generate_6ev_single_results"] = None
+            st.rerun()
+    with _6evs_btn_col4:
+        if st.button("➕ 1000 from latest", key="_6evs_gen_batch_1000_latest",
+                     help="Always append 1000 new iterations after the latest generated iteration. Click repeatedly to keep adding."):
+            _6evs_latest = _6evs_results[-1]
+            st.session_state["_6evs_continue_from"] = _6evs_latest
+            st.session_state["_6evs_batch_count"] = 1000
             st.session_state["_generate_6ev_single_requested"] = True
             st.session_state["_generate_6ev_single_results"] = None
             st.rerun()
@@ -12788,8 +12802,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
         for li in range(orig.shape[0]):
             _6evs_orig_flat_list.append(orig[li])
             _6evs_gen_flat_list.append(gen[li])
-    # Include external (fixed) reference points in PDP matrices
+    # Include external (fixed) reference points in PDP matrices.
+    # Keep this consistent with generation-time preprocessing to avoid
+    # false mismatch visuals (especially on d1 when snapping is enabled).
     _6evs_mat_ext_pts = st.session_state.get("external_points", []) if st.session_state.get("use_external_points", False) else []
+    if st.session_state.get("cfg_snap_ext_to_road_edge", False):
+        _6evs_mat_ext_pts = _snap_ext_points_to_road_edges(list(_6evs_mat_ext_pts))
     _6evs_n_ext_in_matrix = 0
     for _ep in _6evs_mat_ext_pts:
         if len(_ep) >= 2:
@@ -12862,18 +12880,18 @@ if st.session_state.get("_generate_6ev_single_results", None):
         for oid in _6evs_sorted_oids:
             _6evs_obj_labels_short.append(OBJECT_LABELS[int(oid) % len(OBJECT_LABELS)])
 
-        # Build label list matching flat order (obj-first: k₀ k₁ k₂ ... l₀ l₁ l₂ ... e₀ e₁ ...)
+        # Build label list matching flat order (obj-first: A_{t_0} A_{t_1} ... B_{t_0} B_{t_1} ... e₀ e₁ ...)
         _6evs_flat_labels: list[str] = []
         for idx_o, oid in enumerate(_6evs_sorted_oids):
             lbl = _6evs_obj_labels_short[idx_o]
             ts_arr = _6evs_vp[oid]
             for li in range(len(ts_arr)):
-                _6evs_flat_labels.append(f"{lbl}{_subscript(li)}")
+                _6evs_flat_labels.append(f"$\\mathit{{{lbl}}}_{{t_{li}}}$")
         # Append labels for external points
         for _ei in range(_6evs_n_ext_in_matrix):
             _6evs_flat_labels.append(f"e{_subscript(_ei)}")
 
-        # Reorder to interleaved by timestamp: (k_t0, l_t0, k_t1, l_t1, ... e₀, e₁, ...)
+        # Reorder to interleaved by timestamp: (A_t0, B_t0, A_t1, B_t1, ... e₀, e₁, ...)
         _6evs_n_obj = len(_6evs_sorted_oids)
         _6evs_n_ts = len(_6evs_timestamps_used)
         # Build mapping: for each (timestamp_idx, obj_idx) -> flat_idx
@@ -12909,14 +12927,16 @@ if st.session_state.get("_generate_6ev_single_results", None):
         def _6evs_create_heatmap(matrix: np.ndarray, title: str) -> Figure:
             n = matrix.shape[0]
             display = _6evs_reorder_matrix(matrix)
-            fig_hm, ax_hm = plt.subplots(figsize=(3.5, 3.5))
+            fig_hm, ax_hm = plt.subplots(figsize=(4, 4))
             ax_hm.imshow(display, cmap=_6evs_hm_cmap, vmin=0, vmax=2, aspect='equal')
             if len(_6evs_reorder_labels) == n and n <= 24:
                 ax_hm.set_xticks(range(n))
                 ax_hm.set_yticks(range(n))
-                _hm_fsize = 5 if n <= 16 else 4
+                _hm_fsize = 10 if n <= 16 else 9
                 ax_hm.set_xticklabels(_6evs_reorder_labels, fontsize=_hm_fsize, rotation=90)
                 ax_hm.set_yticklabels(_6evs_reorder_labels, fontsize=_hm_fsize)
+                ax_hm.tick_params(axis='x', pad=4)
+                ax_hm.tick_params(axis='y', pad=4)
             else:
                 ax_hm.set_xticks([])
                 ax_hm.set_yticks([])
@@ -14133,17 +14153,16 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
     offsets = [(3, 3), (3, -8), (-8, 3)]
 
     def make_label(prefix: str, tval: float, gen_marker: str = "") -> str:
-        """Helper to build a LaTeX label with italic letter and subscript number."""
+        """Helper to build a LaTeX label with A/B object names and t-subscripts."""
         try:
             tnum = float(tval)
         except (TypeError, ValueError):
             tnum = float(np.array(tval, dtype=float))
         lbl = str(int(tnum)) if tnum.is_integer() else f"{tnum:g}"
+        display_prefix = {"k": "A", "l": "B"}.get(prefix, str(prefix))
         if gen_marker:
-            # e.g., k'_0 becomes $\mathit{k}'_0$
-            return f"$\\mathit{{{prefix}}}{gen_marker}_{{{lbl}}}$"
-        # e.g., k_0 becomes $\mathit{k}_0$
-        return f"$\\mathit{{{prefix}}}_{{{lbl}}}$"
+            return f"$\\mathit{{{display_prefix}}}{gen_marker}_{{t_{lbl}}}$"
+        return f"$\\mathit{{{display_prefix}}}_{{t_{lbl}}}$"
 
     def _get_original_index(sp: SuccessfulPoint) -> int | None:
         """Return original parent index if present, otherwise None."""
@@ -15086,14 +15105,14 @@ with tab_static:
             return matrix[np.ix_(idx, idx)]
 
         def get_point_labels(n: int) -> list[str]:
-            """Generate labels: k0, l0, k1, l1, k2, l2 (sorted by timestamp, then object)."""
+            """Generate labels: A_{t_0}, B_{t_0}, A_{t_1}, B_{t_1}, ... with math notation."""
             if n > 6:
                 return []  # Don't show labels if more than 6 points
             labels = []
             for t in range(3):  # 3 timestamps
-                for obj in ["k", "l"]:  # 2 objects per timestamp
+                for obj in ["A", "B"]:  # 2 objects per timestamp
                     if len(labels) < n:
-                        labels.append(f"{obj}{t}")
+                        labels.append(f"$\\mathit{{{obj}}}_{{t_{t}}}$")
             return labels
 
         def create_heatmap_figure(matrix: np.ndarray, title: str, 
@@ -15143,8 +15162,8 @@ with tab_static:
             if point_labels:
                 ax_hm.set_xticks(range(n))
                 ax_hm.set_yticks(range(n))
-                ax_hm.set_xticklabels(point_labels, fontsize=7)
-                ax_hm.set_yticklabels(point_labels, fontsize=7)
+                ax_hm.set_xticklabels(point_labels, fontsize=11)
+                ax_hm.set_yticklabels(point_labels, fontsize=11)
             else:
                 ax_hm.set_xticks([])
                 ax_hm.set_yticks([])
