@@ -6141,7 +6141,7 @@ if generate_5000_btn:
 if generate_6ev_single_btn:
     st.session_state["_generate_6ev_single_requested"] = True
     st.session_state["_generate_6ev_single_results"] = None
-    st.session_state["_6evs_batch_count"] = 200  # start with 200 iterations
+    st.session_state["_6evs_batch_count"] = 500  # start with 500 iterations
     st.session_state.pop("_6evs_points_plot", None)
     st.session_state.pop("_6evs_vals_plot", None)
 
@@ -14802,8 +14802,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _anim_col1, _anim_col2, _anim_col3 = st.columns([1, 1, 1], gap="small")
     with _anim_col1:
         _6evs_anim_n = st.number_input(
-            "Anim. iterations", min_value=2, max_value=5000, value=200, step=10,
-            key="_6evs_anim_n_input_v3", label_visibility="collapsed",
+            "Anim. iterations", min_value=2, max_value=5000, value=500, step=10,
+            key="_6evs_anim_n_input_v4", label_visibility="collapsed",
             help="Number of iterations to generate and then animate through.",
             disabled=_6evs_anim_active,
         )
