@@ -6626,17 +6626,17 @@ def _run_simple_generation(
     st.rerun()
 
 
-# ============= Generate 200 configs x 200 iterations (reinsertion) ============
+# ============= Generate 500 configs x 500 iterations (reinsertion) ============
 if st.session_state.get("_generate_50_requested", False) and not st.session_state.get("_generate_50_results", None):
     _run_simple_generation(
         request_key="_generate_50_requested",
         results_key="_generate_50_results",
-        num_configs=200,
-        num_iterations=200,
+        num_configs=500,
+        num_iterations=500,
         top_n=25,
-        title="Generating 200 Configurations (reinsertion zone: t=131–138, 200 iterations each)...",
+        title="Generating 500 Configurations (reinsertion zone: t=131–138, 500 iterations each)...",
         caption="Using 8 timestamps from the reinsertion zone. This may take several minutes.",
-        label="200",
+        label="500",
         set_prefer_high_d2_false=True,
         per_iter_status=True,
     )
@@ -9847,10 +9847,10 @@ if st.session_state.get("_generate_50_results", None):
     top_5 = st.session_state["_generate_50_results"]
     
     st.markdown("---")
-    st.markdown("### Top 25 Most Deviating Configurations (from 200 generated, 200 iterations each)")
+    st.markdown("### Top 25 Most Deviating Configurations (from 500 generated, 500 iterations each)")
     st.markdown("""These configurations exhibit the largest spatial deviations from the original while maintaining the PDP inequality pattern.
     
-**Generation settings**: 200 configurations × 200 iterations, focused on the reinsertion zone.
+**Generation settings**: 500 configurations × 500 iterations, focused on the reinsertion zone.
 
 **Deviation Metrics (calculated per configuration):**
 - **Perpendicular Variance (m²)**: Variance of the perpendicular (shortest) distances from each generated point to the original trajectory polyline. Higher values indicate more uneven lateral path deviation.
