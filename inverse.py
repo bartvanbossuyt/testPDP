@@ -252,12 +252,28 @@ st.set_page_config(
 )
 
 # ============= One-time settings migration =============
-# Force dimensional/directional scaling OFF and allow 360° random directions
-# (override any stale session-state values from earlier app versions).
-_SETTINGS_VERSION = "v2_no_constraints"
+# Bump _SETTINGS_VERSION to force-update defaults whenever they change.
+# v3: default PDP variant = bufferrough (rough d1=0.30, buffer d0=15.0),
+#     dimensional steering ON (2-4h / 8-10h), external pts (0,0) & (0,-3.70).
+_SETTINGS_VERSION = "v3_bufferrough_steering"
 if st.session_state.get("_settings_version") != _SETTINGS_VERSION:
-    st.session_state["cfg_constrain_horizontal"] = False
-    st.session_state["_6evs_dir_scaling_enabled"] = False
+    # Movement direction: constrained horizontal (2-4h / 8-10h)
+    st.session_state["cfg_constrain_horizontal"] = True
+    # Directional scaling enabled
+    st.session_state["_6evs_dir_scaling_enabled"] = True
+    # PDP variant: bufferrough with rough d1=0.30, buffer d0=15.0
+    st.session_state["_6evs_pdp_variant"] = "bufferrough"
+    st.session_state["_6evs_buffer_x"] = 15.0
+    st.session_state["_6evs_buffer_y"] = 0.0
+    st.session_state["_6evs_rough_x"] = 0.0
+    st.session_state["_6evs_rough_y"] = 0.30
+    # External reference points: (0, 0) and (0, -3.70)
+    st.session_state["external_points"] = [(0.0, 0.0), (0.0, -3.70)]
+    st.session_state["_ext_n_pts"] = 2
+    st.session_state["_ext_pt_0_x"] = 0.0
+    st.session_state["_ext_pt_0_y"] = 0.0
+    st.session_state["_ext_pt_1_x"] = 0.0
+    st.session_state["_ext_pt_1_y"] = -3.70
     st.session_state["_settings_version"] = _SETTINGS_VERSION
 
 # ============= Authentication =============
@@ -2035,7 +2051,7 @@ with st.expander("Advanced Point Selection", expanded=False):
         )
         constrain_horizontal = st.checkbox(
             "Constrain direction to horizontal (2–4 or 8–10 o'clock)",
-            value=False,
+            value=True,
             key="cfg_constrain_horizontal",
             help="When enabled, random movement vectors are constrained to point roughly horizontally: between 2 and 4 o'clock (rightward, ±30°) or between 8 and 10 o'clock (leftward, ±30°). Disable for fully random 360° directions."
         )
@@ -2302,12 +2318,10 @@ with st.expander("External Reference Points", expanded=False):
 
         # Initialize external points if not present
         if "external_points" not in st.session_state:
-            # Calculate what the snapped values should be:
-            # Lane 1 center = 0.0, Lane 2 center = -3.7, Lane width = 3.7
-            # Road edges: top = 1.85, bottom = -5.55
+            # Defaults: (0, 0) and (0, -3.70) — lane center positions.
             st.session_state["external_points"] = [
-                (0.0, 1.85),   # Top road edge
-                (0.0, -5.55),  # Bottom road edge
+                (0.0, 0.0),
+                (0.0, -3.70),
             ]
 
         _ext_pts_src = st.session_state.get("external_points", [])
@@ -6127,7 +6141,7 @@ if generate_5000_btn:
 if generate_6ev_single_btn:
     st.session_state["_generate_6ev_single_requested"] = True
     st.session_state["_generate_6ev_single_results"] = None
-    st.session_state["_6evs_batch_count"] = 100  # start with 100 iterations
+    st.session_state["_6evs_batch_count"] = 200  # start with 200 iterations
     st.session_state.pop("_6evs_points_plot", None)
     st.session_state.pop("_6evs_vals_plot", None)
 
@@ -7604,7 +7618,7 @@ with st.expander("⚙️ 6-Event generation settings", expanded=False):
     with _6evs_ds_col1:
         _6evs_dir_scaling_enabled = st.checkbox(
             "↔️ Directional scaling",
-            value=st.session_state.get("_6evs_dir_scaling_enabled", False),
+            value=st.session_state.get("_6evs_dir_scaling_enabled", True),
             key="_6evs_dir_scaling_enabled",
             help="Scale step size independently per axis. "
                  "X-component scaled by d0, Y-component scaled by d1. "
@@ -14788,8 +14802,8 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _anim_col1, _anim_col2, _anim_col3 = st.columns([1, 1, 1], gap="small")
     with _anim_col1:
         _6evs_anim_n = st.number_input(
-            "Anim. iterations", min_value=2, max_value=5000, value=100, step=10,
-            key="_6evs_anim_n_input_v2", label_visibility="collapsed",
+            "Anim. iterations", min_value=2, max_value=5000, value=200, step=10,
+            key="_6evs_anim_n_input_v3", label_visibility="collapsed",
             help="Number of iterations to generate and then animate through.",
             disabled=_6evs_anim_active,
         )
