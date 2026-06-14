@@ -16823,13 +16823,12 @@ def create_smooth_animation(
             y_range = [y_min - y_margin, y_max + y_margin]
 
     # Always ensure the right x-bound shows the full trajectory extent.
+    # External reference points are intentionally NOT included here: the x-axis
+    # range must stay pinned to the original trajectories, even when the user
+    # adds external points that lie outside that range.
     all_x_values: list[float] = []
     for traj_data in all_frames_data:
         all_x_values.extend(traj_data["x_smooth"])
-    if external_pts_for_window:
-        ext_arr = np.array(external_pts_for_window)
-        if ext_arr.size > 0:
-            all_x_values.extend(ext_arr[:, 0].tolist())
     if all_x_values:
         x_max_data = float(max(all_x_values))
         x_range[1] = max(x_range[1], x_max_data)
