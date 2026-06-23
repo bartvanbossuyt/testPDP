@@ -8336,22 +8336,35 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
             # ONE attempt: pick random point + direction, configurable halvings.
             # If PDP fails, point stays at start.
-            sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
-                current_points=current_points,
-                successful_points=dict(sp_dict),  # pass dict copy (dict path, O(1) lookups)
-                pdp_variant=pdp_variant,
-                buffer_x=buffer_x,
-                buffer_y=buffer_y,
-                rough_x=rough_x,
-                rough_y=rough_y,
-                max_search_steps=_6evs_cfg_max_halvings,
-                pdp_checker=_active_checker,
-                sa_temperature=_sa_temp,
-                soft_pdp_threshold=_soft_pdp_thresh,
-                coordinated_move_prob=_coord_prob,
-                force_strict_exact=True,  # 6-event search ALWAYS forces strict
-                extra_validator=_chain_validator,
-            )
+            _had_dir_d0 = "_6evs_dir_lat_min" in st.session_state
+            _saved_dir_d0 = float(st.session_state.get("_6evs_dir_lat_min", 20.0))
+            try:
+                # From generated configuration 31 onward, force stronger
+                # longitudinal scaling (d0) as requested.
+                if _next_cnum >= 31:
+                    st.session_state["_6evs_dir_lat_min"] = 2000.0
+
+                sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
+                    current_points=current_points,
+                    successful_points=dict(sp_dict),  # pass dict copy (dict path, O(1) lookups)
+                    pdp_variant=pdp_variant,
+                    buffer_x=buffer_x,
+                    buffer_y=buffer_y,
+                    rough_x=rough_x,
+                    rough_y=rough_y,
+                    max_search_steps=_6evs_cfg_max_halvings,
+                    pdp_checker=_active_checker,
+                    sa_temperature=_sa_temp,
+                    soft_pdp_threshold=_soft_pdp_thresh,
+                    coordinated_move_prob=_coord_prob,
+                    force_strict_exact=True,  # 6-event search ALWAYS forces strict
+                    extra_validator=_chain_validator,
+                )
+            finally:
+                if _had_dir_d0:
+                    st.session_state["_6evs_dir_lat_min"] = _saved_dir_d0
+                else:
+                    st.session_state.pop("_6evs_dir_lat_min", None)
 
             # Restore global maxdist
             globals()["maxdist"] = _saved_maxdist
@@ -8438,6 +8451,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             # Always record the iteration (successful or not)
             _6evs_iters_completed += 1
             _sp_list_for_storage = list(sp_dict.values())  # serialize as list for config_data
+            _moved_points_this_iter = int(len(_6evs_iter_diag.get("selected_indices", []))) if _6evs_ok else 0
             config_data = {
                 "successful_points": _sp_list_for_storage,
                 "config_number": _next_cnum,
@@ -8447,6 +8461,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 "rough_x": rough_x, "rough_y": rough_y,
                 "threshold_mode": mode, "max_threshold": max_threshold,
                 "move_succeeded": _6evs_ok,
+                "moved_points_this_iter": _moved_points_this_iter,
             }
             pv = _perpendicular_variance(_6evs_points_plot, _sp_list_for_storage)
             _6evs_existing_results.append((_next_cnum, pv, config_data))
@@ -12930,15 +12945,12 @@ if st.session_state.get("_generate_6ev_single_results", None):
     _6evs_disp_rx = st.session_state.get("_6evs_rough_x", _gen_rx_d)
     _6evs_disp_ry = st.session_state.get("_6evs_rough_y", _gen_ry_d)
     _6evs_sp = _6evs_cfg.get("successful_points", [])
-    # Cumulative successful moves up to (and including) the currently-browsed
-    # iteration. Each iteration moves ONE point; if the same point is moved
-    # multiple times, sp_dict only stores its latest entry, so len(_6evs_sp)
-    # is the count of UNIQUE points moved (capped at the dataset size).
-    # The true "points moved" count is the number of iterations whose
-    # move_succeeded flag is True.
+    # Cumulative successful moved points up to (and including) the currently-
+    # browsed iteration. For multi/consecutive selection modes, one iteration
+    # may move multiple points; use stored per-iteration moved-point counts.
     _6evs_n_moves = sum(
-        1 for (_cn, _pv, _cf) in _6evs_results[1:_6evs_browse_idx + 1]
-        if _cf.get("move_succeeded", True)
+        int(_cf.get("moved_points_this_iter", 1 if _cf.get("move_succeeded", True) else 0))
+        for (_cn, _pv, _cf) in _6evs_results[1:_6evs_browse_idx + 1]
     )
     # Count unique point indices that have been moved
     _6evs_unique_moved = len({int(sp["original_parent_idx"]) for sp in _6evs_sp})
@@ -13409,10 +13421,10 @@ if st.session_state.get("_generate_6ev_single_results", None):
     def _6evs_build_png_for_iter(_zi: int) -> bytes:
         _zcnum, _zdev, _zcfg = _6evs_results[_zi]
         _zsp = _zcfg.get("successful_points", [])
-        # Cumulative successful moves up to and including this iteration
+        # Cumulative successful moved points up to and including this iteration
         _znmoves = sum(
-            1 for (_cn, _pv, _cf) in _6evs_results[1:_zi + 1]
-            if _cf.get("move_succeeded", True)
+            int(_cf.get("moved_points_this_iter", 1 if _cf.get("move_succeeded", True) else 0))
+            for (_cn, _pv, _cf) in _6evs_results[1:_zi + 1]
         )
         _zunique = len({int(sp["original_parent_idx"]) for sp in _zsp})
         _zgen_map: dict[int, np.ndarray] = {}
