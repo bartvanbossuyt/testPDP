@@ -3450,7 +3450,8 @@ def generate_movement_vectors(selected_indices: list[int], base_distance: float)
 
     # ── Directional scaling ──
     _dir_scaling_on = bool(st.session_state.get("_6evs_dir_scaling_enabled", True))
-    _dir_lat_min = float(st.session_state.get("_6evs_dir_lat_min", 20.0))    # d0 – longitudinal (along road)
+    # Check for temporary override first (config 31+), then fall back to widget key
+    _dir_lat_min = float(st.session_state.get("_6evs_temp_override_d0", st.session_state.get("_6evs_dir_lat_min", 20.0)))    # d0 – longitudinal (along road)
     _dir_long_max = float(st.session_state.get("_6evs_dir_long_max", 1.00))  # d1 – lateral (across lanes)
 
     def _scaled_deltas(angle: float, dist: float) -> tuple[float, float]:
@@ -8336,13 +8337,12 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
 
             # ONE attempt: pick random point + direction, configurable halvings.
             # If PDP fails, point stays at start.
-            _had_dir_d0 = "_6evs_dir_lat_min" in st.session_state
-            _saved_dir_d0 = float(st.session_state.get("_6evs_dir_lat_min", 20.0))
+            # From generated configuration 31 onward, force stronger
+            # longitudinal scaling (d0) as requested using a temporary override key
+            # (not the widget key, which cannot be modified).
             try:
-                # From generated configuration 31 onward, force stronger
-                # longitudinal scaling (d0) as requested.
                 if _next_cnum >= 31:
-                    st.session_state["_6evs_dir_lat_min"] = 2000.0
+                    st.session_state["_6evs_temp_override_d0"] = 2000.0
 
                 sp_dict_candidate, _6evs_ok, _6evs_iter_diag = run_multipoint_iteration(
                     current_points=current_points,
@@ -8361,10 +8361,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                     extra_validator=_chain_validator,
                 )
             finally:
-                if _had_dir_d0:
-                    st.session_state["_6evs_dir_lat_min"] = _saved_dir_d0
-                else:
-                    st.session_state.pop("_6evs_dir_lat_min", None)
+                st.session_state.pop("_6evs_temp_override_d0", None)
 
             # Restore global maxdist
             globals()["maxdist"] = _saved_maxdist
