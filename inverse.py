@@ -89,6 +89,8 @@ MAX_FILTER_CONFIGS: int = 100          # Max configs for filtered timestamp gene
 MAX_FILTER_ITERATIONS: int = 2500      # Max iterations per config for filtered generation
 EARLY_STOP_PATIENCE: int = 50          # Stop config early after this many stagnant iterations
 EARLY_STOP_EPSILON: float = 1e-9       # Movement threshold below which an iteration counts as stagnant
+SPEEDUP_START_AFTER_ITERATIONS: int = 250  # Activate speed-up only after this many completed iterations
+SPEEDUP_MAXDIST_MULTIPLIER: float = 2000.0 # Speed-up distance multiplier applied to maxdist
 GIF_FRAME_DURATION_MS: int = 200       # Milliseconds per GIF frame
 GIF_LAST_FRAME_PAUSE_MS: int = 1500    # Milliseconds to pause on the last GIF frame
 DEFAULT_BUFFER_X: float = 25.0         # Default x-axis buffer margin
@@ -3433,6 +3435,45 @@ def select_points_for_iteration() -> list[int]:
     # Default fallback
     return [int(np.random.choice(movable_indices))]
 
+
+def _get_speedup_iteration_counter() -> int:
+    """Return the current global iteration counter used for speed-up activation."""
+    raw_val = st.session_state.get(
+        "_speedup_iteration_counter",
+        st.session_state.get("anim_completed_iterations", 0),
+    )
+    try:
+        return int(raw_val)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _select_last_three_events_per_object(candidate_indices: list[int]) -> list[int]:
+    """Select the last 3 local-timestamp points for each object from candidates."""
+    per_object: dict[int, list[tuple[int, int]]] = {}
+    for flat_idx in candidate_indices:
+        if not (0 <= int(flat_idx) < n_total_points):
+            continue
+        obj_id = int(all_obj_ids_flat[flat_idx])
+        if obj_id == -1:
+            # Never include fixed external reference points.
+            continue
+        local_idx = int(all_local_idx_flat[flat_idx])
+        per_object.setdefault(obj_id, []).append((local_idx, int(flat_idx)))
+
+    selected: list[int] = []
+    for _obj_id, local_and_flat in per_object.items():
+        local_and_flat.sort(key=lambda it: it[0])
+        for _local_idx, flat_idx in local_and_flat[-3:]:
+            selected.append(flat_idx)
+
+    # Keep deterministic ordering by object then local timestamp index.
+    selected_unique = sorted(
+        set(selected),
+        key=lambda idx: (int(all_obj_ids_flat[idx]), int(all_local_idx_flat[idx])),
+    )
+    return [int(idx) for idx in selected_unique]
+
 def generate_movement_vectors(selected_indices: list[int], base_distance: float) -> dict[int, tuple[float, float]]:
     """
     Generate movement vectors for selected points based on movement direction mode.
@@ -4733,6 +4774,8 @@ def run_multipoint_iteration(
         "n_halvings_tried": 0,
         "sa_temperature": sa_temperature,
         "selected_indices": [],
+        "speedup_active": False,
+        "speedup_mechanisms": [],
         "pdp_variant": pdp_variant,
         "buffer_x": buffer_x, "buffer_y": buffer_y,
         "rough_x": rough_x, "rough_y": rough_y,
@@ -4744,9 +4787,18 @@ def run_multipoint_iteration(
         _result = list(_sp_dict.values()) if _return_as_list else _sp_dict
         return _result, False, diagnostics
 
+    # Speed-up override: after N completed iterations, force the target subset and movement constraints.
+    _speedup_active = _get_speedup_iteration_counter() > SPEEDUP_START_AFTER_ITERATIONS
+    _speedup_mechanisms: list[str] = []
+    if _speedup_active:
+        _speedup_targets = _select_last_three_events_per_object(get_movable_indices())
+        if _speedup_targets:
+            selected_indices = _speedup_targets
+            _speedup_mechanisms.append("last3_events")
+
     # Coordinated move override: with probability p, move ALL moveable points together
     _is_coordinated = False
-    if coordinated_move_prob > 0.0 and np.random.random() < coordinated_move_prob:
+    if (not _speedup_active) and coordinated_move_prob > 0.0 and np.random.random() < coordinated_move_prob:
         _all_moveable = get_movable_indices()
         if len(_all_moveable) > 1:
             selected_indices = _all_moveable
@@ -4756,16 +4808,41 @@ def run_multipoint_iteration(
     
     # Generate initial movement vectors (scaled by SA temperature)
     base_distance = maxdist * sa_temperature
-    if _is_coordinated:
-        # Force "Same direction" for coordinated moves
-        _prev_dir = st.session_state.get("cfg_movement_direction", "Same direction")
-        st.session_state["_override_movement_direction"] = "Same direction"
-        movement_vectors = generate_movement_vectors(selected_indices, base_distance)
-        # Restore original setting
-        if "_override_movement_direction" in st.session_state:
-            del st.session_state["_override_movement_direction"]
-    else:
-        movement_vectors = generate_movement_vectors(selected_indices, base_distance)
+    if _speedup_active:
+        base_distance *= SPEEDUP_MAXDIST_MULTIPLIER
+        _speedup_mechanisms.append("distance_2000x_maxdist")
+
+    _override_sentinel = object()
+    _prev_constrain_override = st.session_state.get("_override_constrain_horizontal", _override_sentinel)
+    if _speedup_active:
+        # Force orientation to 2-4h or 8-10h via constrained random-angle generation.
+        st.session_state["_override_constrain_horizontal"] = True
+        _speedup_mechanisms.append("orientation_2to4_or_8to10")
+
+    try:
+        if _is_coordinated:
+            # Force "Same direction" for coordinated moves
+            _prev_dir = st.session_state.get("cfg_movement_direction", "Same direction")
+            st.session_state["_override_movement_direction"] = "Same direction"
+            movement_vectors = generate_movement_vectors(selected_indices, base_distance)
+            # Restore original setting
+            if "_override_movement_direction" in st.session_state:
+                del st.session_state["_override_movement_direction"]
+        else:
+            movement_vectors = generate_movement_vectors(selected_indices, base_distance)
+    finally:
+        if _prev_constrain_override is _override_sentinel:
+            st.session_state.pop("_override_constrain_horizontal", None)
+        else:
+            st.session_state["_override_constrain_horizontal"] = _prev_constrain_override
+
+    diagnostics["speedup_active"] = _speedup_active
+    diagnostics["speedup_mechanisms"] = list(_speedup_mechanisms)
+    if _speedup_mechanisms:
+        _speedup_counts = dict(st.session_state.get("_speedup_usage_counts", {}))
+        for mech in _speedup_mechanisms:
+            _speedup_counts[mech] = int(_speedup_counts.get(mech, 0)) + 1
+        st.session_state["_speedup_usage_counts"] = _speedup_counts
     
     # Build current configuration with already-accepted points
     def build_current_config(additional_positions: dict[int, np.ndarray] = {}) -> np.ndarray:
@@ -4911,7 +4988,7 @@ def run_multipoint_iteration(
         
         # Also try random angle perturbation for "Same direction" mode
         movement_direction = st.session_state.get("cfg_movement_direction", "Same direction")
-        if movement_direction == "Same direction" and search_step > 0:
+        if (not _speedup_active) and movement_direction == "Same direction" and search_step > 0:
             # Perturb the shared angle slightly
             angle_perturbation = float(np.random.uniform(-0.3, 0.3))
             # Regenerate vectors with new angle, respecting directional scaling
@@ -4965,6 +5042,7 @@ def generate_exp_multipoint() -> None:
     
     all_configs: list[dict[str, Any]] = []
     current_points: np.ndarray = all_pts_flat.copy()
+    st.session_state["_speedup_usage_counts"] = {}
     
     # Show progress for large point sets
     n_total = len(all_pts_flat)
@@ -4985,6 +5063,7 @@ def generate_exp_multipoint() -> None:
             # Run iterations for this configuration
             for iteration in range(num_iterations):
                 st.session_state["anim_completed_iterations"] = iteration
+                st.session_state["_speedup_iteration_counter"] = iteration
                 completed += 1
                 progress_bar.progress(
                     completed / total_iters,
@@ -5000,6 +5079,8 @@ def generate_exp_multipoint() -> None:
                     rough_x=rough_x,
                     rough_y=rough_y
                 )
+
+            st.session_state.pop("_speedup_iteration_counter", None)
             
             # Store this configuration
             for sp in successful_points:
@@ -8341,6 +8422,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
             # longitudinal scaling (d0) as requested using a temporary override key
             # (not the widget key, which cannot be modified).
             try:
+                st.session_state["_speedup_iteration_counter"] = int(_next_cnum)
                 if _next_cnum >= 31:
                     st.session_state["_6evs_temp_override_d0"] = 2000.0
 
@@ -8362,6 +8444,7 @@ if st.session_state.get("_generate_6ev_single_requested", False) and not st.sess
                 )
             finally:
                 st.session_state.pop("_6evs_temp_override_d0", None)
+                st.session_state.pop("_speedup_iteration_counter", None)
 
             # Restore global maxdist
             globals()["maxdist"] = _saved_maxdist
@@ -17047,6 +17130,26 @@ def draw_generated_empty(ax: matplotlib.axes.Axes) -> None:
 
     ax.text(0.02, 0.98, status_text, transform=ax.transAxes, fontsize=9,  # type: ignore
             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    _speedup_counts = st.session_state.get("_speedup_usage_counts", {})
+    if isinstance(_speedup_counts, dict):
+        _speed_last3 = int(_speedup_counts.get("last3_events", 0))
+        _speed_dist = int(_speedup_counts.get("distance_2000x_maxdist", 0))
+        _speed_orient = int(_speedup_counts.get("orientation_2to4_or_8to10", 0))
+        if (_speed_last3 + _speed_dist + _speed_orient) > 0:
+            _speed_text = (
+                f"Speed-up usage | last-3 events/object: {_speed_last3}x | "
+                f"2000x maxdist: {_speed_dist}x | angle 2-4h or 8-10h: {_speed_orient}x"
+            )
+            ax.text(
+                0.02,
+                0.92,
+                _speed_text,
+                transform=ax.transAxes,
+                fontsize=8,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8),
+            )
 
     has_animation = st.session_state.get("show_anim_circle", False)
     successful_points: list[SuccessfulPoint] = st.session_state.get("anim_successful_points", [])
