@@ -1,0 +1,519 @@
+Point-Descriptor-Precedence (PDP): a reference report on the current state of the framework
+Refined working version
+Preface
+This report is intended as a reference document for researchers working with the Point-Descriptor-Precedence framework. Its purpose is not merely to restate the earliest formalisation of PDP, but to document the current state of the framework in a way that is useful for onboarding, reuse, and further development.
+The report distinguishes between four statuses:
+• [T] theoretical core
+• [C] current-state convention or extension
+• [I] visible implementation support
+• [V] verification pending against the current GitHub implementation
+These labels are used to keep concept, practice, and implementation clearly separated. Some items marked [C] are conceptually central even when their full implementation still requires verification.
+1. Introduction[OV1]
+Point-Descriptor-Precedence, abbreviated as PDP, is a qualitative framework for representing and analysing configurations and interactions of moving objects in space and time. Its central idea is that many analytically meaningful movement phenomena can be described through qualitative precedence relations between points with respect to one or more descriptors, rather than through fully quantitative trajectory representations alone.
+PDP is situated at the intersection of qualitative spatial reasoning, GIScience, movement-data analysis, and GeoAI. It is especially relevant in domains where interpretability matters, such as traffic interaction analysis, sports analytics, and other forms of spatiotemporal pattern analysis. Existing work has shown that PDP can be used not only to represent movement qualitatively, but also to support pattern retrieval, clustering, visualisation, safety-oriented interpretation, and exploratory similarity analysis.
+This report is intended as a reference work rather than a short tutorial. It documents:
+• the canonical core of PDP,
+• the main current-state extensions,
+• the currently adopted interpretation of temporal PDP,
+• the main analytical workflows already in use,
+• and the role of inverse PDP in exploration, calibration, and further development.
+A key principle of the report is that it does not simply reproduce the earliest formalisation of PDP. The framework has evolved through foundational theory, applied work, implementation choices, and broader interaction-centred conceptual integration. For that reason, the report explicitly distinguishes between theoretical core, current-state convention, visible implementation, and implementation items still pending verification.
+The report is organised as follows. It begins with conceptual foundations, then introduces the basic formal ingredients of the framework, including points, descriptors, scalarisation, and inequality matrices. It then treats temporal variants, PDP trajectories, distance and similarity, pattern analysis, the core extensions of roughness, buffer, and external points, environmental embedding in traffic-related settings, inverse PDP, implementation considerations, visualisation, and future directions.
+2. Conceptual foundations
+PDP is based on the idea that many movement phenomena can be analysed more effectively when the focus shifts from full quantitative detail to qualitatively meaningful relations. In this sense, PDP belongs to the broader tradition of qualitative reasoning: it attempts to preserve the aspects of movement that remain analytically and cognitively meaningful, while discarding part of the quantitative overload that may hinder interpretation.
+This does not imply that quantitative data are irrelevant. On the contrary, PDP begins from quantitative spatiotemporal information, such as trajectories expressed as coordinates over time. What changes is the analytical emphasis. Instead of directly analysing full metric trajectories, PDP transforms those data into descriptor-based precedence relations between points.
+A second core conceptual feature of PDP is that it is, in its canonical form, a movement-first framework. It begins from moving objects and their relations. Environmental information is introduced only afterwards, when analytically necessary. This is methodologically important. In many GIScience and traffic-modelling approaches, the environment is defined first and movement is inserted into it. PDP reverses that order. It starts from the interaction and adds environmental structure only when relative relations alone are insufficient.
+A further distinction that recurs throughout the report is that between a raw trajectory and a PDP trajectory. A raw trajectory is a quantitative spatiotemporal representation, typically expressed as coordinates over time. A PDP trajectory is the qualitative counterpart obtained after transforming raw movement data into descriptor-based precedence relations represented in matrix form over time.
+Finally, PDP should not be seen as a framework that directly defines patterns by itself. Rather, it provides a structured qualitative representation that enables patterns to be discovered, compared, clustered, queried, visualised, and explored inversely. In that sense, PDP is both a representational calculus and an analytical substrate.
+3. Basic definitions
+3.1 Object
+An object is the real-world entity under analysis. Depending on the application, this may be a vehicle, cyclist, pedestrian, player, animal, ball, or any other moving entity of interest. In PDP, objects are not analysed directly as full geometric bodies, but through one or more points that represent the spatial aspects relevant for the task.
+3.2 Point [T]
+A point is the fundamental representational unit in PDP. It denotes the spatial position of an object, or of a meaningful part of an object, at a specific timestamp. The exact point representation depends on the application. In some cases, one object is represented by one point only, for example its centroid. In other cases, one object may be represented by several points, for example front and rear points, or four points corresponding to a rectangular approximation.
+3.3 Indexed point or point-time instance [T]
+An indexed point, also called a point-time instance, is a point explicitly tied to a specific timestamp. This notion is necessary because temporal PDP does not compare timeless objects, but object-time instances such as A_(t_1 ), A_(t_2 ), B_(t_1 ), and B_(t_2 ).
+3.4 Configuration [T]
+A configuration is the set of indexed points that are jointly compared in a PDP representation. In PDP-S, a configuration corresponds to the relevant points at one timestamp. In PDP-D[OV2] and PDP-G, a configuration consists of all indexed points within the chosen temporal window or temporal extent.
+3.5 Descriptor [T]
+A descriptor is a directed reference structure that maps each indexed point in a configuration to a scalar value. This scalarisation induces a qualitative ordering between the indexed points. A descriptor may coincide with a coordinate dimension, but it may also be defined independently of the coordinate axes, for example as a flow-relative direction or as a directed polyline in a curved movement environment.
+3.6 Scalarisation [T]
+Scalarisation is the process by which a descriptor assigns a real-valued position to each indexed point. Formally, a descriptor d induces a scalar function
+s_d:P?R
+that maps each indexed point in the configuration P to a real-valued scalar.
+3.7 Qualitative relation [T]
+For a descriptor d, the qualitative relation between two indexed points p_i and p_j is determined by comparing their scalar values under d. In exact PDP, the base relations are
+p_i <_d p_j,??p_i =_d p_j,??p_i >_d p_j.
+These relations express precedence along the descriptor. They should not be confused with general metric closeness or arbitrary symbolic categories.
+3.8 PDP matrix [T]
+For a fixed descriptor d and a fixed configuration P={p_1,…,p_n}, the PDP matrix M_d is the n×n matrix whose entry at row i, column j records the qualitative relation between indexed points p_i and p_j under d.
+3.9 PDP trajectory [C]
+A PDP trajectory is a temporally ordered PDP representation of one or more interacting objects, expressed as a sequence of PDP matrices or, in the limiting case of PDP-G, as a single matrix over the full temporal extent. It is therefore the qualitative counterpart of a raw spatiotemporal trajectory representation.
+3.10 PDP pattern [C]
+A PDP pattern is a set of similar PDP representations, typically identified through a PDP-based distance measure and grouped by clustering or similarity search, optionally enriched by interpretation.
+3.11 Inverse PDP [C]
+Inverse PDP is the process of generating one or more spatiotemporal configurations of indexed points that satisfy a given PDP representation under a chosen descriptor setup and parameter setting. Since multiple configurations may satisfy the same representation, inverse PDP is fundamentally a one-to-many generation problem.
+4. Descriptor-based formulation
+Descriptors define the geometric logic behind PDP. They turn positions into scalar values, and scalar values into qualitative precedence. If this part of the framework is not understood clearly, the remainder becomes much harder to follow[OV3].
+4.1 General descriptor definition [T]
+Let P be the set of indexed points under consideration. A descriptor d induces a scalar function
+s_d:P?R
+that maps each indexed point to a scalar value. The qualitative relations in PDP are then derived entirely from the ordering of these scalar values.
+4.2 Dimensional descriptors [T]
+The simplest descriptor coincides with a coordinate dimension. If a point p has coordinates (x,y), then one may define
+s_(d_1 ) (p)=x,??s_(d_2 ) (p)=y.
+This is often the most natural entry point in domains such as tennis and football, where a pitch or court already provides a clear external reference system.
+4.3 Straight directed descriptors [T]
+A descriptor need not coincide with a coordinate axis. More generally, one may define a straight descriptor by an origin o and a direction vector v ?. Then the scalar value of point p under that descriptor is determined by
+s_d (p)=(p-o)?v ?,
+where v ? is the unit vector in the direction of v ?.
+4.4 Curved descriptors [T]
+Many real-world movements do not follow straight lines. PDP therefore also allows descriptors defined as directed polylines. Let ? be a directed polyline representing the descriptor. For a point p, one first determines the closest point q on ?, and then computes the directed arc length from the start of ? to q:
+s_d (p)=?arc_length?_? (q).
+If more than one equally close projection exists, the current report convention is to select the one with the smallest arc length [C].
+4.5 Orthogonal descriptors [T]
+For a main directed descriptor, one may define an associated orthogonal descriptor. If q is the projection of point p onto the main descriptor, then the orthogonal descriptor value is the signed perpendicular distance between p and q.
+The sign convention adopted in this report is:
+• positive on the left,
+• negative on the right,
+relative to the direction of the main descriptor.
+4.6 Multiple descriptors [T][C]
+A PDP representation typically uses more than one descriptor. Let
+D={d_1,d_2,…,d_k}
+be the descriptor set. Each descriptor produces its own matrix. The complete PDP representation of a configuration is therefore the collection of all descriptor-specific matrices.
+For a fixed analysis, the descriptor set must remain stable. Changing descriptors changes the meaning of the representation itself. Descriptor selection is therefore one of the most important modelling decisions in PDP.
+4.7 Descriptor selection [C]
+Descriptor choice is not merely geometric, but also semantic. In traffic, one often works with along-flow and cross-flow descriptors. In football or tennis, the most natural entry point may instead be the dimensions of the pitch or court.
+For pedagogical reasons, the report adopts the following order:
+1. begin with simple dimension-based descriptors,
+2. generalise to straight directed descriptors,
+3. then introduce curved and flow-relative descriptors.
+5. Inequality matrices
+The PDP matrix is the central representational structure of the framework. It records the full pairwise qualitative ordering of the indexed points in a configuration with respect to one descriptor.
+5.1 Definition of a PDP matrix [T]
+Let P={p_1,…,p_n} be a configuration of indexed points and let d be a descriptor with scalarisation function s_d. The PDP matrix M_d is defined by
+M_d (i,j)={?(<&"if " s_d (p_i )<s_d (p_j )@=&"if " s_d (p_i )=s_d (p_j )@>&"if " s_d (p_i )>s_d (p_j ) )?
+Each cell therefore records the qualitative relation between indexed points p_i and p_j under descriptor d.
+5.2 Structural properties of exact PDP [T]
+For every indexed point p_i,
+M_d (i,i)==
+For i?j:
+• if M_d (i,j)=<, then M_d (j,i)=>
+• if M_d (i,j)=>, then M_d (j,i)=<
+• if M_d (i,j)==, then M_d (j,i)==
+In exact PDP, the descriptor-induced relation forms a total preorder on the indexed points. Every pair is comparable, and equality is allowed. If equality classes are collapsed, those classes are totally ordered.
+5.3 Interpretation of matrix structure [T]
+A PDP matrix is not merely a storage structure. It is the qualitative expression of the ordering induced by a descriptor.
+• each row shows how one indexed point relates to all others,
+• each column shows how all others relate to that indexed point,
+• the diagonal expresses trivial self-equality.
+In temporal PDP, the indexed points may correspond to point-time instances, so the matrix may contain comparisons both within one timestamp and across several timestamps.
+5.4 One matrix per descriptor [T]
+For a descriptor set
+D={d_1,…,d_k}
+one obtains the matrix family
+{M_(d_1 ),M_(d_2 ),…,M_(d_k )}.
+The complete PDP representation of a configuration is the collection of these descriptor-specific matrices.
+5.5 Matrix indexing and ordering [C][I][V]
+The interpretation of a PDP matrix depends not only on the cell values, but also on the ordering of the indexed entities.
+• In PDP-S, the entities are the points relevant at one timestamp.
+• In PDP-D and PDP-G, the entities are indexed points, usually object-time pairs.
+The currently visible implementation sorts such entities primarily by timestamp, then by object, and then by optional sub-order or subtype fields [I]. This means that the visible implementation follows a time-major ordering[OV4], not an object-major one. Final confirmation against the current GitHub implementation remains pending [V].
+Because ordering affects matrix comparison and distance calculation, it must remain consistent throughout an analysis.
+5.6 Exact PDP and numerical implementation [T][C][I]
+In theoretical exact PDP, equality means true equality of descriptor values. In implementation, only negligible numerical artefacts introduced by computation itself may be neutralised. If the underlying data values genuinely differ, that difference must be preserved. Domain-level tolerance belongs to Rough PDP, not to exact PDP.
+5.7 Rough PDP [C][I]
+Rough PDP modifies the treatment of equality through a descriptor-specific threshold ?_d. One then defines
+M_d (i,j)={?(<&"if " s_d (p_i )<s_d (p_j )-?_d@=&"if " |s_d (p_i )-s_d (p_j )|??_d@>&"if " s_d (p_i )>s_d (p_j )+?_d )?
+A crucial conceptual point is that “=” in Rough PDP no longer denotes exact identity of descriptor values. It denotes tolerance-based sameness[OV5].
+5.8 Buffer PDP [C][V]
+Buffer PDP enlarges the represented point set. For each original point p and each descriptor d, this report uses the notation
+p_d^-,??p,??p_d^+
+for the negative buffer point, original point, and positive buffer point, respectively.
+Conceptually, buffer is a point-expansion mechanism. It allows PDP to represent not only ordering, but also margins, proximity zones, or safety distances. This is fundamentally different from Rough PDP. Roughness modifies the semantics of equality. Buffer changes the represented point set itself.
+5.9 External points [C][I][V]
+External points are fixed reference points that are not part of the moving-object configuration itself, but are added to embed that configuration in a wider environment. They allow PDP to move from purely relative reasoning to context-aware reasoning.
+5.10 Summary
+For one descriptor, a PDP matrix expresses the full pairwise qualitative structure of a configuration of indexed points. In exact PDP, this structure forms a total preorder. Roughness, buffer, and external points extend this core in different ways: roughness modifies the semantics of equality, buffer enlarges the point set through point expansion, and external points embed the interaction in an external context.
+6. Temporal PDP
+The canonical PDP matrix describes one configuration with respect to one descriptor. Many research questions, however, concern not only isolated configurations but also how relations evolve over time. For that reason, PDP includes temporal variants that extend the static representation to moving objects and interactions.
+The foundational literature introduced three temporal families: PDPS, PDPD, and PDPG. In this report, the reader-friendly aliases PDP-S, PDP-D, and PDP-G are used. Where necessary, their interpretation is aligned explicitly with the currently adopted practice in the visible implementation and recent applied workflows.
+6.1 PDP-S [T]
+PDP-S is the static temporal variant of PDP. For each descriptor and each timestamp, one matrix is constructed over the relevant points at that timestamp only.
+Let T={t_1,…,t_N} be the sequence of timestamps, and let P(t_k ) be the set of indexed points at timestamp t_k. Then, for each descriptor d, one constructs:
+M_d^((t_k ) )
+PDP-S therefore provides a sequence of qualitative snapshots when several timestamps are available. Each matrix is static in itself. Temporal change is not represented inside one matrix, but through the succession of matrices across timestamps.
+6.2 PDP-D [F][C][I]
+The most important divergence between the foundational theory and the currently adopted working practice concerns PDP-D.
+In the foundational literature, PDPD was introduced as a representation during intervals. In the current report convention, which follows the currently visible implementation and recent practical usage, PDP-D is understood as a sliding-window representation.
+Let the temporal window length be w, and let the total number of timestamps be N. Then the k-th window is
+W_k={t_k,t_(k+1),…,t_(k+w-1)}
+with
+k=1,…,N-(w-1).
+For each descriptor d, one then constructs one matrix over all indexed points contained in that window:
+M_d^((W_k ) )
+The number of such matrices is therefore:
+N-(w-1)
+The important analytical consequence is that PDP-D no longer compares only points at the same timestamp. It compares indexed points across several timestamps inside one matrix. In that sense, PDP-D captures local temporal structure within the representation itself.
+6.3 PDP-G [F][C][I]
+In the foundational literature, PDPG was introduced as the general representation, combining static and dynamic perspectives in a broader temporal form.
+In the current report convention, aligned with the currently visible implementation, PDP-G denotes the matrix family constructed over the full temporal extent under consideration. In practice, this means that the temporal window equals the total number of timestamps:
+w=N
+and therefore one obtains exactly one matrix per descriptor:
+M_d^((G) )
+PDP-G thus yields the strongest temporal constraints of the three temporal variants, because all indexed points in the full period are represented jointly.
+6.4 Continuum between PDP-S, PDP-D, and PDP-G [C]
+Under the current report convention, the three temporal variants can be interpreted as a continuum governed by window size:
+• PDP-S: w=1
+• PDP-D: 1<w<N
+• PDP-G: w=N
+This interpretation is analytically useful because it makes explicit that increasing the temporal window:
+• increases the temporal constraints inside the representation,
+• reduces the variability of admissible configurations,
+• and generally increases computational cost.
+6.5 Indexed entities in temporal PDP [T][C]
+In PDP-S, the matrix entities are simply the points relevant at one timestamp.
+In PDP-D and PDP-G, the matrix entities are indexed points, that is, point-time instances. Temporal PDP does not compare timeless objects such as “car A” and “car B” in the abstract. It compares instances such as A_(t_1 ), A_(t_2 ), B_(t_1 ), and so on.
+6.6 Temporal resolution [C]
+PDP can be applied both to:
+• equal-interval data, where timestamps are evenly spaced,
+• and event-based data, where timestamps correspond to analytically meaningful changes or events.
+This distinction is important for interpretation, but it does not alter the formal matrix construction itself.
+6.7 Temporal coherence [C]
+In the current canonical form of the framework, temporal coherence is represented implicitly, not through a separate trajectory-smoothing calculus. PDP-D and PDP-G capture temporal structure by including indexed points from several timestamps in one representation. They do not, however, by default impose an explicit physical model of motion continuity, smoothness, or realism.
+6.8 Summary
+Temporal PDP extends the static descriptor-based representation to evolving interactions. In the current report convention, PDP-S corresponds to one timestamp, PDP-D to a sliding temporal window, and PDP-G to the full temporal extent.
+7. PDP trajectories[OV6]
+Once temporal PDP has been defined, the next task is to identify the analytical object that is built from these matrices. That object is the PDP trajectory.
+7.1 Definition of a PDP trajectory [C]
+A PDP trajectory is a temporally ordered PDP representation of one or more interacting objects, expressed as a sequence of PDP matrices or, in the limiting case of PDP-G, as a single matrix over the full temporal extent.
+A useful formal shorthand is:
+T_PDP=(D,O,T,{M_?})
+where:
+• D is the fixed descriptor set,
+• O is the set of represented objects,
+• T is the relevant temporal structure,
+• {M_?} is the ordered family of PDP matrices indexed by timestamp or temporal window.
+7.2 PDP-S, PDP-D, and PDP-G trajectories [C]
+For PDP-S, the PDP trajectory is the timestamp-ordered sequence
+T_(PDP-S)={M^((t_1 ) ),M^((t_2 ) ),…,M^((t_N ) )}
+For PDP-D, the PDP trajectory is the ordered sequence of window-based matrices
+T_(PDP-D)={M^((W_1 ) ),M^((W_2 ) ),…,M^((W_(N-w+1) ) )}
+For PDP-G, the trajectory reduces to the one-matrix case
+T_(PDP-G)={M^((G) )}.
+7.3 Raw trajectory versus PDP trajectory [C]
+A raw trajectory is a quantitative spatiotemporal representation, typically expressed through coordinates over time. A PDP trajectory is the qualitative representation obtained after transforming that data into descriptor-based precedence relations.
+7.4 Interaction-centred interpretation [C]
+In classical movement-data analysis, a trajectory often refers to one object moving over time. In PDP, the more important use is broader: a PDP trajectory usually represents relations between several objects over time. It is therefore often more accurate to think of it as an interaction-centred trajectory rather than as a mere single-object path.
+7.5 Descriptor consistency [T][C]
+For direct comparison between PDP trajectories, the descriptor set must remain fixed. Changing descriptors changes the meaning of the scalarisation, the relations, and therefore the meaning of the resulting matrices themselves.
+7.6 Object consistency [C]
+In the current state of the framework, direct comparison assumes that the represented trajectories involve the same number of objects, represented in a compatible manner.
+7.7 Temporal alignment [C]
+The canonical trajectory-comparison strategy used in this report is strict alignment:
+• matrices are compared index by index,
+• trajectories must have compatible temporal structure,
+• and the same ordering convention must be respected.
+7.8 Units of comparison [C]
+Depending on the analytical task, one may compare:
+• full PDP trajectories,
+• fixed-length windows,
+• or single matrices.
+The canonical unit for pattern detection in this report is the PDP-D window, because it provides a useful balance between local interaction detail and analytical tractability.
+7.9 Summary
+A PDP trajectory is the temporally ordered qualitative counterpart of a raw spatiotemporal trajectory representation. It is descriptor-dependent, typically interaction-centred, and, in the current state of the framework, most often analysed through aligned matrix sequences or aligned temporal windows.
+8. Distance between PDP representations
+PDP matrices are qualitative objects. To support clustering, querying, similarity search, top-k retrieval, and pattern detection, one needs a distance measure defined on these matrices and on their temporal sequences.
+8.1 Relation encoding [C][I]
+The currently adopted coding of the three base relations is:
+<?0,??=?1,??>?2
+Its main practical advantage is that it produces a simple ordinal distance structure:
+• identical relations differ by 0,
+• adjacent relations differ by 1,
+• opposite relations differ by 2.
+8.2 Cell-wise distance [T][C]
+Let M_d and M'_d be two PDP matrices for the same descriptor d, defined over the same indexed entities and in the same order. The contribution of cell (i,j) to the matrix distance is:
+?_d (i,j)=|M_d (i,j)-M'_d (i,j)|
+8.3 Absolute matrix distance [T][C][I]
+The absolute distance between the two matrices is defined as
+D_d (M_d,M'_d )=?_(i?j)^???_d  (i,j)
+Only off-diagonal cells are included. The diagonal expresses trivial self-equality and therefore should not contribute to dissimilarity.
+8.4 Maximum matrix distance [T][C]
+For one descriptor and n indexed entities, the maximum possible absolute matrix distance is
+D_max=2n(n-1)
+because there are n(n-1) off-diagonal ordered pairs and each pair can differ by at most 2.
+8.5 Normalised distance [C][I]
+To make distances comparable across analyses, one defines the normalised distance as
+D_d^norm=D_d/D_max 
+This yields a value in the range [0,1].
+In current practical use, it is often convenient to display this same quantity on a [0,100] scale:
+D_d^%=100?D_d^norm
+8.6 Distance across descriptors [C]
+If the PDP representation uses several descriptors D={d_1,…,d_k}, the current canonical formulation gives all descriptors equal weight. The overall matrix distance is therefore the arithmetic mean of the descriptor-specific distances:
+D(M,M')=1/k ?_(r=1)^k?D_(d_r )  (M_(d_r ),M'_(d_r ) )
+8.7 Distance between temporal PDP representations [C][I]
+For aligned temporal PDP representations, distance is computed by aggregating corresponding matrix distances over the temporal sequence.
+For two aligned trajectories
+T={M_1,…,M_T},??T'={M'_1,…,M'_T}
+the canonical current-state definition is
+D(T,T')=?_(?=1)^T?D (M_?,M'_? )
+followed by normalisation over the full temporal extent.
+8.8 Interpretation of distance [C]
+The PDP distance does not measure direct metric closeness in Euclidean space. It measures qualitative structural similarity. Small distance means that two configurations or interactions are qualitatively similar with respect to the chosen descriptors and temporal setup.
+8.9 Summary
+The PDP distance is a relation-based dissimilarity measure defined on inequality matrices and their temporal sequences. It uses a simple and interpretable relation coding, excludes trivial self-relations on the diagonal, and provides both absolute and normalised forms for practical analysis.
+9. Pattern detection and analysis
+PDP itself does not define patterns. Instead, it provides a qualitative structure from which patterns can be detected, compared, grouped, queried, and interpreted.
+9.1 Conceptual definition of a pattern [C]
+A pattern is a recognisable spatiotemporal configuration or evolution of one or more objects that becomes analytically meaningful in a given task or domain.
+9.2 Operational PDP definition of a pattern [C]
+A PDP pattern is a set of similar PDP representations, typically identified through a PDP-based distance measure and grouped by clustering or similarity search, optionally enriched by interpretation.
+9.3 Canonical unit for pattern detection [C]
+The canonical unit for pattern detection in this report is the PDP-D window. This reflects the current working practice and provides a good balance between local interaction detail and analytical tractability.
+9.4 Pattern types [C]
+The report distinguishes four practically relevant pattern types:
+• frequent patterns, obtained through clustering,
+• rare patterns, treated as outliers or unusual cases,
+• query-driven patterns, obtained through similarity search such as top-k retrieval,
+• expert-labelled patterns, where domain experts assign meaning to a discovered group or instance.
+9.5 Clustering workflow [C][I]
+A standard PDP analytical workflow proceeds as follows:
+1. raw trajectory data are transformed into PDP representations,
+2. distances between those representations are computed,
+3. the resulting instances are clustered,
+4. representative instances are identified,
+5. the resulting groups are interpreted.
+9.6 Pattern representative: medoid [C]
+The canonical representative of a PDP pattern is the medoid, not the centroid.
+A medoid is the real observed PDP instance within a cluster that minimises total dissimilarity to the other members. It is preferred because it always corresponds to an actual observed interaction and therefore remains interpretable and physically plausible.
+9.7 Interpretation [C]
+Pattern discovery in PDP combines two perspectives.
+A data-driven perspective groups qualitatively similar structures on the basis of PDP distance. A domain-driven perspective interprets those groups in terms of overtaking, crossing, safe interaction, dangerous interaction, tactical behaviour, and so on.
+9.8 Practical analytical outputs [C][I]
+The current practical PDP workflow already supports several useful analytical outputs:
+• dendrogram-based clustering,
+• static visualisations of grouped patterns,
+• heatmaps,
+• multidimensional scaling plots,
+• top-k similarity retrieval.
+9.9 Summary
+PDP pattern analysis combines qualitative representation, distance-based grouping, medoid-based representation, and optional domain interpretation. In the current state of the framework, the most important operational unit for this is the PDP-D window.
+10. Core extensions: rough, buffer, and external points
+The canonical PDP core assumes exact positional relations and a purely relative configuration. In practical applications, these assumptions are often too restrictive. The current state of the PDP framework therefore includes three major core extensions:
+• Rough PDP
+• Buffer PDP
+• External points
+These are not marginal additions. They belong to the current-state extension layer of the framework, even if parts of their implementation still require verification.
+10.1 Rough PDP [C][I]
+Rough PDP addresses the fact that real-world positional data often contain minor deviations or measurement noise that should not always alter the qualitative interpretation.
+For a descriptor d with roughness threshold ?_d, one defines
+M_d (i,j)={?(<&"if " s_d (p_i )<s_d (p_j )-?_d@=&"if " |s_d (p_i )-s_d (p_j )|??_d@>&"if " s_d (p_i )>s_d (p_j )+?_d )?
+This means that equality in Rough PDP no longer denotes exact equality of descriptor values, but indistinguishability within tolerance.
+10.2 Buffer PDP [C][V]
+Buffer PDP enlarges the represented point set. For each original point p and each descriptor d, this report uses the notation
+p_d^-,??p,??p_d^+
+for the negative buffer point, original point, and positive buffer point, respectively.
+Conceptually, buffer is a point-expansion mechanism. It allows PDP to represent not only ordering, but also safety margins, tolerance zones, or proximity relations.
+10.3 Descriptor-specific parameters [C[OV7]]
+In the current report convention, both roughness and buffer should be treated as potentially descriptor-specific. The same tolerance or margin need not be appropriate for all descriptors, because descriptors may correspond to analytically different directions or semantic roles.
+10.4 External points [C][I][V]
+External points allow PDP to move from purely relative reasoning to environment-aware reasoning.
+An external point is a fixed reference point that is not part of the moving-object configuration itself, but is added to the PDP representation to embed that configuration in a wider spatial context.
+10.5 Combining the extensions [C]
+These core extensions are not mutually exclusive. In the current state of PDP, it is conceptually possible to combine roughness, buffer, and external points where analytically justified.
+10.6 Computational implications [C][I][V]
+These extensions affect complexity in different ways:
+• Rough PDP modifies relation assignment.
+• Buffer PDP increases the number of represented points.
+• External points enlarge the configuration by embedding it in a wider environment.
+10.7 Summary
+Roughness, buffer, and external points form the main current-state extension layer of PDP. Roughness handles tolerance-based indistinguishability, buffer handles point expansion for margins and proximity, and external points embed relative interactions in a wider environment.
+11. Environmental embedding and traffic-oriented PDP examples
+The canonical PDP core is descriptor-based and relation-based. It does not require that the broader environment be represented explicitly. In many applications, however, purely relative reasoning is not sufficient. One often needs to know not only how objects interact, but also where those interactions take place with respect to lanes, flows, entry zones, court geometry, or intersection structure.
+11.1 From relative interaction to embedded interaction [C]
+PDP begins from the interaction of moving objects and only afterwards, when analytically necessary, brings in the environment. This is a distinctive design choice. In many traffic and GIS approaches, the environment is defined first and the moving objects are inserted into it. PDP reverses that order.
+11.2 Flows and bifurcations in traffic settings [F][C]
+In traffic-oriented PDP work, especially at intersections, the movement environment can be represented through flows and bifurcations. Flows describe the dominant movement directions through the intersection. Bifurcations indicate where such flows split or merge.
+11.3 Alignment lines and entry/leave points [F][C]
+The environmental representation can be refined further by introducing:
+• alignment lines, which represent analytically relevant movement directions,
+• entry points and leave points, which delimit the part of the environment relevant for the analysis.
+11.4 Environmental embedding through external points [C][I][V]
+External points are one of the main mechanisms by which the environment is incorporated into PDP. They allow the representation to move from purely relative reasoning to context-aware reasoning without abandoning the movement-first logic of the framework.
+11.5 Multiple points per vehicle in traffic analysis [F][C]
+One of the strengths of PDP in traffic analysis is that a vehicle need not be represented by only one point. Depending on the analytical objective, one may use one point, two points, four points, or richer derived sets.
+11.6 Safe and unsafe variants of traffic interactions [F][C]
+Traffic-oriented PDP work has shown that the framework can distinguish qualitatively different variants of the same broad interaction type, including potentially dangerous and non-dangerous cases.
+11.7 Beyond traffic [C]
+Although traffic is one of the clearest demonstration domains for environmental embedding, the same logic applies in other domains. In sports, for example, external points may represent court corners, pitch boundaries, service-line anchors, or other stable spatial references.
+11.8 Why this section matters for new researchers [C]
+For new researchers, this section is important because it shows that PDP should not be misunderstood as a purely abstract matrix calculus. It is a movement-first framework that can be extended toward environmental interpretation without losing its qualitative and interpretable character.
+11.9 Summary
+Environmental embedding in PDP is achieved not by making the environment primary, but by extending the movement-first representation through flows, alignment structures, entry and leave logic, and external points.
+12. Inverse PDP
+Forward PDP transforms observed spatiotemporal configurations into qualitative matrices. Inverse PDP reverses that direction. It starts from a PDP representation and seeks one or more configurations of indexed points that satisfy the constraints encoded in that representation.
+12.1 Forward and inverse direction [C]
+In forward PDP, one starts from moving objects and computes their descriptor-based precedence relations. In inverse PDP, one starts from those qualitative relations and generates configurations that satisfy them.
+The asymmetry between the two directions is fundamental:
+• in the forward direction, a fixed configuration yields one PDP representation,
+• in the inverse direction, one PDP representation may correspond to many different configurations.
+Inverse PDP is therefore a one-to-many generation problem.
+12.2 Input and output of inverse PDP [C]
+The input of inverse PDP consists of:
+• a valid PDP representation,
+• a fixed descriptor setup,
+• and the relevant parameter settings, such as roughness, buffer, and external-point design.
+The output consists of:
+• one or more valid configurations of indexed points,
+• and, more broadly, access to the solution space of configurations that satisfy the chosen representation.
+12.3 Why valid input is not a major practical obstacle [C]
+In the current workflow, inverse PDP typically starts from matrices derived from real observed interactions. Such matrices are valid by construction, because they originate from actual point configurations in space and time.
+12.4 Constraint interpretation [T][C]
+For one descriptor d, the inverse task consists of generating indexed points whose scalar values satisfy the relations encoded in the matrix.
+For exact PDP:
+M_d (i,j)=<?s_d (p_i )<s_d (p_j )
+M_d (i,j)==?s_d (p_i )=s_d (p_j )
+M_d (i,j)=>?s_d (p_i )>s_d (p_j )
+For Rough PDP:
+M_d (i,j)==?|s_d (p_i )-s_d (p_j )|??_d
+All descriptor constraints must hold simultaneously.
+12.5 Solution space [C]
+For a given PDP representation M, the solution space is the set of all spatiotemporal configurations that satisfy the constraints encoded in M.
+Inverse PDP does not reconstruct one unique original trajectory. It explores this solution space.
+12.6 The current inverse heuristic [C]
+The currently adopted inverse method is a stochastic local-search heuristic.
+Its basic logic is:
+1. choose one indexed point, or a group of indexed points,
+2. choose a random direction,
+3. move the selected point or block,
+4. check whether the resulting configuration still satisfies the PDP constraints,
+5. if not, reduce the step size, typically by repeated halving,
+6. accept the move when the constraints are again satisfied.
+12.7 Single-point and multi-point moves [C]
+Inverse PDP is not limited to changing one indexed point at a time. One may distinguish at least two broad move types:
+• single-point movement,
+• multi-point movement.
+12.8 Rigid block translation as preferred current-state strategy [C]
+Among multi-point operations, the preferred current-state strategy is rigid block translation. In that case, several indexed points, often temporally consecutive ones, are translated together as one block.
+12.9 Human-in-the-loop refinement [C]
+Inverse PDP is not only a generator. It is also a diagnostic and calibration tool. If the generated instances do not resemble what a domain expert would still regard as a meaningful interaction type, then this indicates that the chosen PDP parameterisation is not yet appropriate.
+12.10 Practical meaning of inverse PDP [C]
+Inverse PDP currently has at least four practical roles:
+• exploring the qualitative solution space,
+• refining parameter settings,
+• generating multiple valid instances of one qualitative interaction type,
+• and supporting possible future integration with hybrid AI workflows.
+12.11 Summary
+Inverse PDP is a constraint-based generative extension of the framework. In the current state of the method, it is realised through stochastic local search and is most useful as a human-guided exploration and calibration mechanism rather than as a fully automatic solver.
+13. Implementation considerations
+The conceptual structure of PDP is relatively compact. Its implementation, however, depends on a number of decisions that strongly affect correctness, interpretability, reproducibility, and computational feasibility.
+13.1 Why implementation choices matter [C]
+In PDP, several decisions that might appear merely technical are in fact conceptually important. Examples include matrix index order, treatment of exact equality, roughness thresholds, buffer semantics, external-point handling, temporal alignment, and representative choice in pattern analysis.
+13.2 Matrix index order [I][V]
+One of the most important implementation choices is the ordering of indexed points in the matrix.
+The currently visible implementation sorts temporal data primarily by:
+• timestamp,
+• then object,
+• then optional sub-order or subtype fields.
+This means that the visible implementation follows a time-major ordering.
+13.3 Equality handling [T][C][I]
+The distinction between exact equality and rough sameness must be preserved in implementation.
+In exact PDP: - equality should remain exact, except for negligible numerical artefacts caused by computation itself.
+In Rough PDP: - equality becomes tolerance-based by design.
+13.4 Buffer semantics [C][V]
+Conceptually, this report treats buffer as a point-expansion mechanism. This is one of the clearest places where the report’s current-state convention must later be checked carefully against the current GitHub implementation.
+13.5 External-point handling [I][V]
+The visible implementation already supports external points by constructing them as fixed entities, replicating them across timestamps, and inserting them into the data before PDP processing.
+13.6 Temporal implementation [I]
+The currently visible code clearly supports the practical window-based interpretation of temporal PDP.
+13.7 Computational complexity [C][I]
+PDP is conceptually elegant, but computationally it can become expensive. Matrix size and computation time increase rapidly with longer windows, more objects, more points per object, buffer expansion, and external-point insertion.
+13.8 Current optimisation ideas [C]
+Several optimisation directions already arise naturally from the framework and current implementation logic. These include excluding diagonal cells from distance calculations, avoiding repeated computation of trivial relations, using early mismatch detection, and using structured inverse-PDP moves.
+13.9 Need for GitHub audit [V]
+A final version of the report should not claim full implementation alignment before checking the current GitHub codebase systematically.
+13.10 Summary
+Implementation is not secondary in PDP. It forms part of the methodological identity of the framework.
+14. Visualisation
+PDP is a qualitative framework, but it is not self-explanatory without visual support. Visualisation plays a central role because it helps researchers connect geometry, descriptors, matrices, patterns, and interpretation.
+14.1 Why visualisation matters [C]
+Because PDP compresses quantitative movement data into qualitative relations, some geometric detail is deliberately removed. This is analytically valuable, but it also creates a risk: without visual support, the representation may become too abstract.
+14.2 Main visualisation families already used in PDP practice [I][C]
+The current body of work already contains several important visualisation families:
+• descriptor and geometry figures,
+• matrix visualisations,
+• pattern-analysis visualisations,
+• traffic-environment figures.
+14.3 Static, dynamic, and interactive visualisation [C]
+The current body of work is strongest in static visualisation, but it is useful to distinguish three broad forms:
+• static visualisation,
+• dynamic visualisation,
+• interactive visualisation.
+14.4 Visualisation and inverse PDP [C]
+Inverse PDP creates a special visualisation challenge because it does not produce one fixed trajectory, but potentially many valid configurations within one solution space.
+14.5 Visual strategy of version 1 of the report [C]
+The visual strategy of version 1 is deliberately conservative:
+• major figures are reused from existing PDP work wherever possible,
+• each reused figure is explicitly sourced,
+• minor later fine-tuning of labels or captions may be noted,
+• new figures are avoided unless no existing figure can explain an essential concept adequately.
+14.6 Summary
+Visualisation is not a decorative add-on in PDP. It is part of the framework’s logic and part of how new researchers learn to connect geometry, qualitative structure, and domain interpretation.
+15. Discussion and future work
+PDP has now developed beyond the status of a small exploratory idea. It has a formal core, a meaningful extension layer, analytical workflows, multiple domain applications, and an inverse direction that opens the door to structured generative analysis. At the same time, it is not a closed or final system.
+15.1 Main strengths of PDP [C]
+The first major strength of PDP is interpretability. It reduces spatiotemporal movement data to descriptor-based precedence relations that remain understandable to researchers and, with suitable visualisation, also to domain experts.
+The second major strength is flexibility. PDP can be adapted to different interaction-rich domains by changing descriptors, point representation, temporal setup, and extension design.
+A third strength is that PDP is not limited to representation alone. It already supports distance computation, clustering, top-k retrieval, visual exploration, and inverse generation.
+A fourth major strength is its potential role in hybrid AI. Because PDP produces symbolic but data-grounded interaction structures, it is well positioned to support future combinations of knowledge-driven and data-driven methods.
+15.2 Current limitations of PDP [C]
+Parameter sensitivity
+PDP is strongly influenced by descriptor choice, window size, roughness, buffer design, and external-point design.
+Computational growth
+Matrix size and computation time grow quickly with more objects, more timestamps, more points per object, buffer expansion, and external-point insertion[OV8].
+Restricted support for varying object counts
+The current framework still assumes that directly compared representations have compatible object sets.
+Dependence on fixed ordering
+The current workflow depends on known and fixed object-ordering conventions.
+Inverse PDP remains heuristic
+Inverse PDP is already powerful, but its current form remains heuristic and exploratory rather than exhaustive or optimisation-based.
+15.3 Short-term future work
+Audit the current GitHub implementation [V]
+The highest short-term priority is to compare the current GitHub codebase systematically with this report.
+Stabilise terminology
+A second short-term priority is to stabilise terminology across foundational PDP work, the current report, and the broader interaction-centred vocabulary of the HAIMO direction.
+Consolidate the figure and example base
+A third short-term goal is to stabilise a small set of canonical example figures and example datasets for onboarding new researchers.
+15.4 Medium-term future work
+Different object counts
+A major medium-term direction is to compare PDP representations with different numbers of objects.
+Permutation-invariant comparison
+A second medium-term direction is to reduce dependence on fixed ordering by allowing comparison under multiple or unknown orderings.
+Better inverse exploration
+Inverse PDP should develop from a useful heuristic into a more systematic exploration framework.
+More efficient handling of external points
+External points are conceptually important, but can enlarge the representation substantially.
+15.5 Longer-term future work
+Optimisation-based inverse PDP
+A longer-term goal is to formulate inverse PDP more explicitly as an optimisation or constraint-solving problem.
+Descriptor learning or semi-automatic descriptor support
+In the longer term, one may investigate whether data-driven or semi-automatic support can help identify useful descriptor structures without sacrificing interpretability.
+Hybrid AI integration
+A major long-term direction is the integration of PDP into hybrid or neuro-symbolic approaches.
+Broader domain transfer
+Although traffic and sports are already important domains, broader transfer to other movement and interaction domains remains a natural extension.
+15.6 Final discussion
+PDP should therefore be understood neither as a finished closed calculus nor as a loose collection of exploratory ideas. It is a structured and evolving framework with a stable core, a meaningful current extension layer, and several clearly identifiable open fronts.
+Appendix A. Symbol table
+SymbolMeaningppointoobjectddescriptorDset of descriptorss_d (p)scalar value of point p under descriptor dPconfiguration, that is, set of indexed pointsM_dPDP matrix for descriptor dM_d (i,j)matrix cell comparing indexed points i and j?_droughness threshold for descriptor dp_d^-negative buffer point of p along descriptor dp_d^+positive buffer point of p along descriptor dW_ktemporal window kT_PDPPDP trajectoryD(M,M')distance between two PDP representationsD_maxmaximum possible PDP distanceS(M)inverse-PDP solution space of representation MAppendix B. Abbreviations
+AbbreviationMeaningPDPPoint-Descriptor-PrecedencePDPSPoint-Descriptor-Precedence-StaticPDPDPoint-Descriptor-Precedence-DynamicPDPGPoint-Descriptor-Precedence-GeneralPDP-Sreader-friendly alias for PDPSPDP-Dreader-friendly alias for PDPDPDP-Greader-friendly alias for PDPGMDSMultidimensional Scalingtop-kk most similar retrieved instancesHAIMOHybrid Analysis of the Interaction of Moving ObjectsAppendix C. Preferred terminology and vocabulary
+Preferred termAvoid where possibleReasondescriptoraxis, dimension, unless it really is onedescriptor is the general conceptindexed pointtimeless point, point only, where ambiguity existsmakes temporal role explicitraw trajectorytrajectory only, where ambiguity existsdistinguishes quantitative representationPDP trajectorymatrix sequence onlykeeps the temporal qualitative object explicitmedoidcentroidmedoid preserves a real observed instancerough equalityplain equality, where ambiguity existsclarifies tolerance-based semanticsbuffer pointtolerance point onlybuffer is a structured point-expansion conceptexternal pointenvironmental point onlyexternal point is the stable PDP termAppendix D. Parameter overview
+Parameter or choiceRole in PDPCurrent statusdescriptor setdefines scalarisation and relation meaning[T][C]number of points per objectdetermines representational detail[T][C]temporal window lengthdetermines PDP-S / PDP-D / PDP-G position[C][I]roughness thresholdtolerance-based sameness[C][I]buffer sizepoint-expansion margin[C][V]external pointsenvironmental embedding[C][I][V]matrix index orderconsistency of comparison[I][V]temporal alignment strategytrajectory comparison[C]representative choicemedoid versus alternatives[C]Appendix E. Status map
+Component[T][C][I][V]point, descriptor, scalarisationyesexact PDP matrixyeswindow-based PDP-Dyesyesfull-window PDP-Gyesyesrough PDPyesyesbuffer PDP as point expansionyesyesexternal points as core extensionyesyesyesmedoid pattern representativeyesinverse PDP as constraint-based generationyesstochastic local-search heuristicyesyesrigid block translation as preferred moveyesyesmatrix ordering conventionyesyes
+[OV1]This is more a general remark on how this document is structured but for an introduction or beginning of this document I would like to see more explanation with the use of images and examples. I would assume that this document is more for the people who start using PDP for those people this beginning can be quite overwhelming and not clear. A simple but effective explanation of PDP can clear things up and make the rest of the document easier to read.
+[OV2]This is the first time that static and dynamic and general comes up, it can be already a lot for the reader, it is maybe an idea to put a sort of quick link to static, dynamic and general explained within this document
+[OV3]Again I should suggest a clear example that explains this well
+[OV4]That statement is correct
+[OV5]Again maybe a link to the rough explanation for easyness of the reader to quickly check what rough is if that is necesarry
+[OV6]I am a bit lost with the use of the term ‘trajectory’ , In the beginning it was therefore really difficult to comprehend where this was going, after reading everything I understand why this section exists but I think it will confuse the reader
+[OV7]IMPORTANT, right now PDP code is still hard coded to x and y descriptors, we need to change this
+[OV8]I would say that this is the biggest hurdle time wise and will be for sure the biggest hurdle when we get a lot of data from the streams project, it would be super helpfull if the new colleauges can help resolve this issue
